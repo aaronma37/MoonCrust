@@ -2,8 +2,10 @@
 #extension GL_EXT_nonuniform_qualifier : require
 
 struct Particle {
-    vec2 pos;
-    vec2 vel;
+    vec3 pos;
+    float padding1;
+    vec3 vel;
+    float padding2;
 };
 
 layout(set = 0, binding = 0) buffer ParticleBuffer {
@@ -25,24 +27,23 @@ void main() {
     
     if (idx >= all_buffers[bid].particles.length()) return;
 
-    vec2 pos = all_buffers[bid].particles[idx].pos;
-    vec2 vel = all_buffers[bid].particles[idx].vel;
+    vec3 pos = all_buffers[bid].particles[idx].pos;
+    vec3 vel = all_buffers[bid].particles[idx].vel;
 
-    // Moving Attractor
-    vec2 target;
-    target.x = cos(pc.time * 1.5) * 0.7;
-    target.y = sin(pc.time * 3.0) * 0.35;
+    // Advanced 3D Figure-Eight (Lissajous Knot)
+    vec3 target;
+    target.x = cos(pc.time * 1.5) * 0.8;
+    target.y = sin(pc.time * 3.0) * 0.4;
+    target.z = sin(pc.time * 2.1) * 0.6;
 
-    // Vector to attractor - stronger gravity for more speed
-    vec2 dir = target - pos;
-    float distSq = dot(dir, dir) + 0.05; 
-    vec2 accel = normalize(dir) * (1.2 / distSq);
+    // Vector to attractor
+    vec3 dir = target - pos;
+    float distSq = dot(dir, dir) + 0.1; 
+    vec3 accel = normalize(dir) * (1.8 / distSq);
 
     // Apply forces
     vel += accel * pc.dt;
-    
-    // Slightly less damping for more "swing"
-    vel *= 0.99;
+    vel *= 0.98; // More damping for cleaner trails
 
     // Integration
     pos += vel * pc.dt;

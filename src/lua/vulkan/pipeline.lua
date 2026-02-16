@@ -84,7 +84,7 @@ function M.create_graphics_pipeline(device, layout, vert_module, frag_module, op
 
     local input_assembly = ffi.new("VkPipelineInputAssemblyStateCreateInfo", {
         sType = vk.VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
-        topology = vk.VK_PRIMITIVE_TOPOLOGY_POINT_LIST
+        topology = options.topology or vk.VK_PRIMITIVE_TOPOLOGY_POINT_LIST
     })
 
     local viewport_state = ffi.new("VkPipelineViewportStateCreateInfo", {
@@ -97,7 +97,7 @@ function M.create_graphics_pipeline(device, layout, vert_module, frag_module, op
         sType = vk.VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
         polygonMode = vk.VK_POLYGON_MODE_FILL,
         lineWidth = 1.0,
-        cullMode = vk.VK_CULL_MODE_NONE,
+        cullMode = options.cull_mode or vk.VK_CULL_MODE_NONE,
         frontFace = vk.VK_FRONT_FACE_CLOCKWISE
     })
 
@@ -127,6 +127,15 @@ function M.create_graphics_pipeline(device, layout, vert_module, frag_module, op
         pAttachments = color_blend_attachment
     })
 
+    local depth_stencil = ffi.new("VkPipelineDepthStencilStateCreateInfo", {
+        sType = vk.VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+        depthTestEnable = options.depth_test and vk.VK_TRUE or vk.VK_FALSE,
+        depthWriteEnable = options.depth_write and vk.VK_TRUE or vk.VK_FALSE,
+        depthCompareOp = vk.VK_COMPARE_OP_LESS,
+        depthBoundsTestEnable = vk.VK_FALSE,
+        stencilTestEnable = vk.VK_FALSE
+    })
+
     local dynamic_states = ffi.new("VkDynamicState[2]", { vk.VK_DYNAMIC_STATE_VIEWPORT, vk.VK_DYNAMIC_STATE_SCISSOR })
     local dynamic_state = ffi.new("VkPipelineDynamicStateCreateInfo", {
         sType = vk.VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
@@ -138,7 +147,8 @@ function M.create_graphics_pipeline(device, layout, vert_module, frag_module, op
     local rendering_info = ffi.new("VkPipelineRenderingCreateInfo", {
         sType = vk.VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
         colorAttachmentCount = 1,
-        pColorAttachmentFormats = formats
+        pColorAttachmentFormats = formats,
+        depthAttachmentFormat = options.depth_format or vk.VK_FORMAT_UNDEFINED
     })
 
     local info = ffi.new("VkGraphicsPipelineCreateInfo[1]")
@@ -152,6 +162,7 @@ function M.create_graphics_pipeline(device, layout, vert_module, frag_module, op
     info[0].pRasterizationState = rasterizer
     info[0].pMultisampleState = multisampling
     info[0].pColorBlendState = color_blending
+    info[0].pDepthStencilState = depth_stencil
     info[0].pDynamicState = dynamic_state
     info[0].layout = layout
     info[0].renderPass = nil

@@ -3,6 +3,22 @@ local vk = require("vulkan.ffi")
 
 local M = {}
 
+function M.find_depth_format(physical_device)
+    local candidates = {
+        vk.VK_FORMAT_D32_SFLOAT,
+        vk.VK_FORMAT_D32_SFLOAT_S8_UINT,
+        vk.VK_FORMAT_D24_UNORM_S8_UINT
+    }
+    for _, format in ipairs(candidates) do
+        local props = ffi.new("VkFormatProperties")
+        vk.vkGetPhysicalDeviceFormatProperties(physical_device, format, props)
+        if bit.band(props.optimalTilingFeatures, vk.VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT) ~= 0 then
+            return format
+        end
+    end
+    error("Failed to find supported depth format")
+end
+
 function M.create_2d(device, width, height, format, usage)
     local info = ffi.new("VkImageCreateInfo", {
         sType = vk.VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,

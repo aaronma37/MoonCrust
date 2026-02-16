@@ -7,8 +7,9 @@ MoonCrust is a minimalist, industrial-grade compute and render kernel that expos
 *   **Hybrid Universal Bootstrapper:** A stable C++/SDL3 shell handles fragile driver handshakes and dynamic hardware discovery, then hands full control to Lua.
 *   **The Bindless Revolution:** Forget "Binding Slots." Shaders access a global array of 1,000+ buffers and textures instantly via push-constant indexing.
 *   **Auto-Sync Render Graph:** A 150-line Lua "brain" that automatically calculates `VkPipelineBarrier` and Image Layout transitions based on pass requirements.
+*   **Data-Driven Interactivity:** Uses mapped host-visible buffers for real-time input (Mouse/Time) instead of expensive command re-recording, ensuring rock-solid driver stability.
 *   **Zero-Copy Memory:** Managed by a custom **Lua-TLSF** (Two-Level Segregated Fit) allocator for $O(1)$ GPU sub-allocation without C++ overhead.
-*   **Hot-Reloading Shaders:** Shaders and pipelines are file-watched and hot-swapped at runtime without restarting the kernel.
+*   **"Death Row" Resource Safety:** An asynchronous garbage collector that prevents GPU crashes by delaying resource destruction until they are guaranteed to be unused (Frame-in-Flight safety).
 
 ---
 
@@ -19,8 +20,11 @@ MoonCrust uses modern Vulkan descriptor indexing. You never have to call "BindTe
 ```glsl
 // GLSL (Shaders)
 layout(set = 0, binding = 1) uniform sampler2D all_textures[];
+layout(set = 0, binding = 2) uniform image2D all_storage_images[]; // Writable!
+
 void main() {
-    vec4 tex = texture(all_textures[pc.texture_id], uv);
+    vec4 val = texture(all_textures[pc.tex_id], uv);
+    imageStore(all_storage_images[pc.out_id], ivec2(uv * 1024), val);
 }
 ```
 
@@ -35,15 +39,6 @@ graph:add_pass("Render", function(cb)
     vk.vkCmdDraw(cb, count, 1, 0, 0)
 end):using(pBuffer, vk.VK_ACCESS_SHADER_READ_BIT, vk.VK_PIPELINE_STAGE_VERTEX_INPUT_BIT)
    :using(swImage, vk.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, vk.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL)
-```
-
-### 3. High-Speed Staging
-Upload massive datasets (like 1M particles or 4K textures) using the async staging engine.
-```lua
-local staging = require("vulkan.staging")
-local engine = staging.new(physical_device, device, host_heap, 64MB)
-engine:upload_buffer(vram_buffer, lua_data, 0, queue, family)
-engine:upload_image(vram_image, w, h, pixels, queue, family)
 ```
 
 ---
@@ -63,22 +58,38 @@ cmake ..
 make
 ```
 
-### Running the Flagship Demo
-The flagship demo simulates **1,048,576 particles** using a figure-eight attractor and additive solar glow.
+### Running the Examples
+Switch between examples using command line arguments:
+
+**1. The Flagship Interactive Demo (Default)**
+Simulates **1,048,576 particles** in a 3D figure-eight attractor.
 ```bash
-./build/mooncrust
+./build/mooncrust 07
 ```
 
-To switch examples, modify `src/lua/init.lua`.
+**2. The Visual Benchmark**
+A non-interactive version of the particle system (useful for benchmarking raw GPU throughput).
+```bash
+./build/mooncrust 06
+```
 
 ---
 
-## 📜 Roadmap
-*   [x] Universal Bootstrapper (C++/Lua Hybrid)
-*   [x] Bindless Buffer & Texture Arrays
-*   [x] Auto-Sync Render Graph
-*   [ ] **Full 3D Support** (Depth/Stencil buffers)
-*   [ ] **Death Row Manager** (Async resource cleanup)
-*   [ ] **SDL3 Input & Audio Bridge**
+## 📜 Roadmap: Phase 2 "The Simulation Era"
+
+We are expanding MoonCrust to support advanced compute simulations and modern geometry processing.
+
+### Core Features (The "Finite Four" Bindings)
+*   [x] **Storage Buffers** (Binding 0) - Physics/Data
+*   [x] **Sampled Images** (Binding 1) - Textures/Sprites
+*   [ ] **Storage Images** (Binding 2) - Writable Textures (Required for Slime Mold/Ray Tracing)
+*   [ ] **Mesh Shaders** (Pipeline Type) - Infinite Geometry (100M instances)
+*   [ ] **Indirect Dispatch** (Command) - GPU-driven work generation
+
+### Planned Examples
+*   [ ] **Neural Cellular Automata:** "Slime Mold" simulation using Storage Images.
+*   [ ] **Fluid Dynamics (SPH):** 1M particle liquid simulation using Spatial Hashing.
+*   [ ] **Mesh Shader Grass:** Rendering 100 million blades of grass.
+*   [ ] **Path Tracer:** Real-time ray tracing in a Compute Shader.
 
 MoonCrust is built for those who want to drive the GPU at 200mph without wearing a C++ straightjacket. MIT Licensed.

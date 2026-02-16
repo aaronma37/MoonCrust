@@ -8,28 +8,36 @@ local MAX_BINDLESS_RESOURCES = 1000
 
 function M.create_bindless_layout(device)
     -- Binding 0: Storage Buffers (Bindless)
-    -- Binding 1: Combined Image Samplers (Bindless)
-    local bindings = ffi.new("VkDescriptorSetLayoutBinding[2]")
+    -- Binding 1: Combined Image Samplers (Bindless) - Reading
+    -- Binding 2: Storage Images (Bindless) - Writing
+    local bindings = ffi.new("VkDescriptorSetLayoutBinding[3]")
     
+    -- 0: Buffers
     bindings[0].binding = 0
     bindings[0].descriptorType = vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER
     bindings[0].descriptorCount = MAX_BINDLESS_RESOURCES
     bindings[0].stageFlags = vk.VK_SHADER_STAGE_ALL
     
+    -- 1: Sampled Images (Textures)
     bindings[1].binding = 1
     bindings[1].descriptorType = vk.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER
     bindings[1].descriptorCount = MAX_BINDLESS_RESOURCES
     bindings[1].stageFlags = vk.VK_SHADER_STAGE_ALL
 
-    -- Enable Bindless Flags for both
-    local flags = ffi.new("VkDescriptorBindingFlags[2]", {
-        bit.bor(vk.VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT, vk.VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT, vk.VK_DESCRIPTOR_BINDING_UPDATE_UNUSED_WHILE_PENDING_BIT),
-        bit.bor(vk.VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT, vk.VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT, vk.VK_DESCRIPTOR_BINDING_UPDATE_UNUSED_WHILE_PENDING_BIT)
-    })
+    -- 2: Storage Images (Writable)
+    bindings[2].binding = 2
+    bindings[2].descriptorType = vk.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE
+    bindings[2].descriptorCount = MAX_BINDLESS_RESOURCES
+    bindings[2].stageFlags = vk.VK_SHADER_STAGE_ALL
+
+    -- Enable Bindless Flags for all
+    local bindless_flags = bit.bor(vk.VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT, vk.VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT, vk.VK_DESCRIPTOR_BINDING_UPDATE_UNUSED_WHILE_PENDING_BIT)
+    
+    local flags = ffi.new("VkDescriptorBindingFlags[3]", { bindless_flags, bindless_flags, bindless_flags })
 
     local binding_flags = ffi.new("VkDescriptorSetLayoutBindingFlagsCreateInfo", {
         sType = vk.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO,
-        bindingCount = 2,
+        bindingCount = 3,
         pBindingFlags = flags
     })
 
@@ -37,7 +45,7 @@ function M.create_bindless_layout(device)
         sType = vk.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
         pNext = binding_flags,
         flags = vk.VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT,
-        bindingCount = 2,
+        bindingCount = 3,
         pBindings = bindings
     })
 
@@ -48,17 +56,19 @@ function M.create_bindless_layout(device)
 end
 
 function M.create_bindless_pool(device)
-    local sizes = ffi.new("VkDescriptorPoolSize[2]")
+    local sizes = ffi.new("VkDescriptorPoolSize[3]")
     sizes[0].type = vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER
     sizes[0].descriptorCount = MAX_BINDLESS_RESOURCES
     sizes[1].type = vk.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER
     sizes[1].descriptorCount = MAX_BINDLESS_RESOURCES
+    sizes[2].type = vk.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE
+    sizes[2].descriptorCount = MAX_BINDLESS_RESOURCES
 
     local info = ffi.new("VkDescriptorPoolCreateInfo", {
         sType = vk.VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
         flags = vk.VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT,
         maxSets = MAX_BINDLESS_RESOURCES,
-        poolSizeCount = 2,
+        poolSizeCount = 3,
         pPoolSizes = sizes
     })
 
@@ -106,6 +116,23 @@ function M.update_image_set(device, set, binding, type, view, sampler, layout, a
         sampler = sampler,
         imageView = view,
         imageLayout = layout or vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+    })
+    local write = ffi.new("VkWriteDescriptorSet", {
+        sType = vk.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+        dstSet = set,
+        dstBinding = binding,
+        dstArrayElement = array_element or 0,
+        descriptorCount = 1,
+        descriptorType = type,
+        pImageInfo = image_info
+    })
+    vk.vkUpdateDescriptorSets(device, 1, write, 0, nil)
+end
+
+function M.update_storage_image_set(device, set, binding, type, view, layout, array_element)
+    local image_info = ffi.new("VkDescriptorImageInfo", {
+        imageView = view,
+        imageLayout = layout or vk.VK_IMAGE_LAYOUT_GENERAL
     })
     local write = ffi.new("VkWriteDescriptorSet", {
         sType = vk.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,

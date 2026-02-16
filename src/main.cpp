@@ -143,6 +143,11 @@ int main(int argc, char* argv[]) {
     lua_pushinteger(L, graphicsFamily); lua_setglobal(L, "_VK_GRAPHICS_FAMILY");
     lua_pushlightuserdata(L, (void*)SDL_Vulkan_GetVkGetInstanceProcAddr()); lua_setglobal(L, "_VK_GET_INSTANCE_PROC_ADDR");
 
+    if (argc > 1) {
+        lua_pushstring(L, argv[1]);
+        lua_setglobal(L, "_STARTUP_ARG");
+    }
+
     if (luaL_dofile(L, "src/lua/init.lua")) {
         std::cerr << "Lua Error: " << lua_tostring(L, -1) << std::endl;
         return 1;
@@ -153,6 +158,20 @@ int main(int argc, char* argv[]) {
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
             if (event.type == SDL_EVENT_QUIT) running = false;
+            if (event.type == SDL_EVENT_KEY_DOWN) {
+                if (event.key.key == SDLK_ESCAPE) running = false;
+            }
+            
+            if (event.type == SDL_EVENT_MOUSE_MOTION) {
+                lua_pushnumber(L, event.motion.x); lua_setglobal(L, "_MOUSE_X");
+                lua_pushnumber(L, event.motion.y); lua_setglobal(L, "_MOUSE_Y");
+            }
+            if (event.type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
+                lua_pushboolean(L, true); lua_setglobal(L, "_MOUSE_DOWN");
+            }
+            if (event.type == SDL_EVENT_MOUSE_BUTTON_UP) {
+                lua_pushboolean(L, false); lua_setglobal(L, "_MOUSE_DOWN");
+            }
         }
 
         lua_getglobal(L, "mooncrust_update");

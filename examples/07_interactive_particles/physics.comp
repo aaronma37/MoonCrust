@@ -1,0 +1,83 @@
+#version 450
+#extension GL_EXT_nonuniform_qualifier : require
+
+struct Particle {
+    vec3 pos;
+    float padding1;
+    vec3 vel;
+    float padding2;
+};
+
+struct AttractorData {
+    float time;
+    float mouse_x;
+    float mouse_y;
+    uint  mouse_down;
+};
+
+layout(set = 0, binding = 0) buffer AllBuffers {
+    float data[];
+} all_buffers[];
+
+layout(push_constant) uniform PushConstants {
+    float dt;
+    uint  buf_id;
+    uint  attr_id;
+    uint  tex_id;
+} pc;
+
+layout (local_size_x = 256) in;
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    
+    // We use raw float pointers to access our structs from the bindless pool
+    // Buffer 0 = Particles
+    // Buffer 1 = AttractorData
+    if (idx >= 1024 * 1024) return;
+
+    // Manual offset calculation for Particle struct (8 floats)
+    uint p_offset = idx * 8;
+    vec3 pos = vec3(all_buffers[pc.buf_id].data[p_offset+0], 
+                    all_buffers[pc.buf_id].data[p_offset+1], 
+                    all_buffers[pc.buf_id].data[p_offset+2]);
+    vec3 vel = vec3(all_buffers[pc.buf_id].data[p_offset+4], 
+                    all_buffers[pc.buf_id].data[p_offset+5], 
+                    all_buffers[pc.buf_id].data[p_offset+6]);
+
+    // Attractor Data (Buffer 1)
+    float time = all_buffers[pc.attr_id].data[0];
+    float mx   = all_buffers[pc.attr_id].data[1];
+    float my   = all_buffers[pc.attr_id].data[2];
+    uint  mdown = floatBitsToUint(all_buffers[pc.attr_id].data[3]);
+
+    vec3 target;
+    if (mdown == 1) {
+        target = vec3(mx, my, 0.0);
+    } else {
+        target.x = cos(time * 1.5) * 0.8;
+        target.y = sin(time * 3.0) * 0.4;
+        target.z = sin(time * 2.1) * 0.6;
+    }
+
+    vec3 dir = target - pos;
+    float dist = length(dir);
+    
+    if (dist > 0.001) {
+        float distSq = dist * dist + 0.1;
+        float strength = (mdown == 1) ? 3.5 : 1.8;
+        vec3 accel = (dir / dist) * (strength / distSq);
+        vel += accel * pc.dt;
+    }
+
+    vel *= 0.985; 
+    pos += vel * pc.dt;
+
+    // Save back
+    all_buffers[pc.buf_id].data[p_offset+0] = pos.x;
+    all_buffers[pc.buf_id].data[p_offset+1] = pos.y;
+    all_buffers[pc.buf_id].data[p_offset+2] = pos.z;
+    all_buffers[pc.buf_id].data[p_offset+4] = vel.x;
+    all_buffers[pc.buf_id].data[p_offset+5] = vel.y;
+    all_buffers[pc.buf_id].data[p_offset+6] = vel.z;
+}
