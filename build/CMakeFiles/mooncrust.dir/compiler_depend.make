@@ -45,12 +45,15 @@ CMakeFiles/mooncrust.dir/src/main.cpp.o: /home/aaron-ma/mooncrust/src/main.cpp \
   /usr/include/c++/13/bits/requires_hosted.h \
   /usr/include/c++/13/bits/std_abs.h \
   /usr/include/c++/13/bits/stl_algobase.h \
+  /usr/include/c++/13/bits/stl_bvector.h \
   /usr/include/c++/13/bits/stl_construct.h \
   /usr/include/c++/13/bits/stl_function.h \
   /usr/include/c++/13/bits/stl_iterator.h \
   /usr/include/c++/13/bits/stl_iterator_base_funcs.h \
   /usr/include/c++/13/bits/stl_iterator_base_types.h \
   /usr/include/c++/13/bits/stl_pair.h \
+  /usr/include/c++/13/bits/stl_uninitialized.h \
+  /usr/include/c++/13/bits/stl_vector.h \
   /usr/include/c++/13/bits/streambuf.tcc \
   /usr/include/c++/13/bits/streambuf_iterator.h \
   /usr/include/c++/13/bits/string_view.tcc \
@@ -58,6 +61,7 @@ CMakeFiles/mooncrust.dir/src/main.cpp.o: /home/aaron-ma/mooncrust/src/main.cpp \
   /usr/include/c++/13/bits/uses_allocator.h \
   /usr/include/c++/13/bits/uses_allocator_args.h \
   /usr/include/c++/13/bits/utility.h \
+  /usr/include/c++/13/bits/vector.tcc \
   /usr/include/c++/13/cctype \
   /usr/include/c++/13/cerrno \
   /usr/include/c++/13/clocale \
@@ -90,6 +94,7 @@ CMakeFiles/mooncrust.dir/src/main.cpp.o: /home/aaron-ma/mooncrust/src/main.cpp \
   /usr/include/c++/13/tuple \
   /usr/include/c++/13/type_traits \
   /usr/include/c++/13/typeinfo \
+  /usr/include/c++/13/vector \
   /usr/include/x86_64-linux-gnu/c++/13/bits/atomic_word.h \
   /usr/include/x86_64-linux-gnu/c++/13/bits/c++allocator.h \
   /usr/include/x86_64-linux-gnu/c++/13/bits/c++config.h \
@@ -343,13 +348,13 @@ CMakeFiles/mooncrust.dir/src/main.cpp.o: /home/aaron-ma/mooncrust/src/main.cpp \
 
 /usr/local/include/SDL3/SDL_locale.h:
 
-/usr/local/include/SDL3/SDL_loadso.h:
+/usr/local/include/SDL3/SDL_iostream.h:
 
-/usr/include/strings.h:
+/usr/local/include/SDL3/SDL_hints.h:
 
-/usr/include/x86_64-linux-gnu/bits/struct_rwlock.h:
+/usr/local/include/SDL3/SDL_hidapi.h:
 
-/usr/include/stdlib.h:
+/usr/local/include/SDL3/SDL_haptic.h:
 
 /usr/include/linux/limits.h:
 
@@ -357,13 +362,9 @@ CMakeFiles/mooncrust.dir/src/main.cpp.o: /home/aaron-ma/mooncrust/src/main.cpp \
 
 /usr/include/pthread.h:
 
-/usr/local/include/SDL3/SDL_hidapi.h:
-
 /usr/local/include/SDL3/SDL_pixels.h:
 
 /usr/include/luajit-2.1/luaconf.h:
-
-/usr/include/string.h:
 
 /usr/include/luajit-2.1/lua.h:
 
@@ -388,8 +389,6 @@ CMakeFiles/mooncrust.dir/src/main.cpp.o: /home/aaron-ma/mooncrust/src/main.cpp \
 /home/aaron-ma/mooncrust/src/main.cpp:
 
 /usr/include/x86_64-linux-gnu/c++/13/bits/ctype_base.h:
-
-/usr/local/include/SDL3/SDL_hints.h:
 
 /usr/local/include/SDL3/SDL_keycode.h:
 
@@ -463,17 +462,39 @@ CMakeFiles/mooncrust.dir/src/main.cpp.o: /home/aaron-ma/mooncrust/src/main.cpp \
 
 /usr/include/x86_64-linux-gnu/bits/types/struct_FILE.h:
 
+/usr/local/include/SDL3/SDL_loadso.h:
+
+/usr/include/c++/13/vector:
+
 /usr/include/c++/13/cstddef:
 
 /usr/include/c++/13/clocale:
 
+/usr/include/c++/13/cerrno:
+
+/usr/include/x86_64-linux-gnu/bits/stdint-least.h:
+
+/usr/include/x86_64-linux-gnu/bits/types/mbstate_t.h:
+
+/usr/include/c++/13/bits/vector.tcc:
+
+/usr/include/x86_64-linux-gnu/c++/13/bits/c++allocator.h:
+
+/usr/include/x86_64-linux-gnu/bits/floatn.h:
+
+/usr/include/x86_64-linux-gnu/bits/types/struct_itimerspec.h:
+
+/usr/include/x86_64-linux-gnu/bits/pthreadtypes-arch.h:
+
+/usr/include/c++/13/bits/utility.h:
+
+/usr/include/c++/13/bits/stl_function.h:
+
 /usr/include/x86_64-linux-gnu/c++/13/bits/error_constants.h:
 
-/usr/include/c++/13/bits/memoryfwd.h:
+/usr/local/include/SDL3/SDL_init.h:
 
-/usr/include/vk_video/vulkan_video_codec_h264std_decode.h:
-
-/usr/include/vk_video/vulkan_video_codec_h265std_decode.h:
+/usr/include/c++/13/bits/locale_facets.tcc:
 
 /usr/include/c++/13/bits/locale_facets.h:
 
@@ -499,15 +520,11 @@ CMakeFiles/mooncrust.dir/src/main.cpp.o: /home/aaron-ma/mooncrust/src/main.cpp \
 
 /usr/include/c++/13/bits/hash_bytes.h:
 
+/usr/include/c++/13/bits/stl_vector.h:
+
 /usr/include/c++/13/bits/localefwd.h:
 
 /usr/lib/llvm-18/lib/clang/18/include/__stddef_size_t.h:
-
-/usr/include/c++/13/cerrno:
-
-/usr/include/x86_64-linux-gnu/bits/stdint-least.h:
-
-/usr/include/x86_64-linux-gnu/bits/types/mbstate_t.h:
 
 /usr/local/include/SDL3/SDL_keyboard.h:
 
@@ -549,13 +566,9 @@ CMakeFiles/mooncrust.dir/src/main.cpp.o: /home/aaron-ma/mooncrust/src/main.cpp \
 
 /usr/include/c++/13/bits/move.h:
 
-/usr/include/c++/13/bits/stl_function.h:
-
-/usr/include/x86_64-linux-gnu/bits/pthreadtypes-arch.h:
-
-/usr/include/c++/13/bits/utility.h:
-
 /usr/include/c++/13/bits/allocator.h:
+
+/usr/include/c++/13/bits/stl_bvector.h:
 
 /usr/include/c++/13/bits/locale_classes.tcc:
 
@@ -575,12 +588,6 @@ CMakeFiles/mooncrust.dir/src/main.cpp.o: /home/aaron-ma/mooncrust/src/main.cpp \
 
 /usr/include/c++/13/bits/nested_exception.h:
 
-/usr/local/include/SDL3/SDL_iostream.h:
-
-/usr/include/stdio.h:
-
-/usr/include/c++/13/bits/stl_iterator_base_types.h:
-
 /usr/include/alloca.h:
 
 /usr/include/x86_64-linux-gnu/c++/13/bits/ctype_inline.h:
@@ -593,13 +600,17 @@ CMakeFiles/mooncrust.dir/src/main.cpp.o: /home/aaron-ma/mooncrust/src/main.cpp \
 
 /usr/include/c++/13/bits/uses_allocator_args.h:
 
-/usr/include/c++/13/bits/new_allocator.h:
-
 /usr/include/x86_64-linux-gnu/bits/long-double.h:
 
 /usr/include/c++/13/bits/invoke.h:
 
 /usr/include/wchar.h:
+
+/usr/include/c++/13/bits/memoryfwd.h:
+
+/usr/include/vk_video/vulkan_video_codec_h264std_decode.h:
+
+/usr/include/vk_video/vulkan_video_codec_h265std_decode.h:
 
 /usr/include/c++/13/iosfwd:
 
@@ -639,12 +650,6 @@ CMakeFiles/mooncrust.dir/src/main.cpp.o: /home/aaron-ma/mooncrust/src/main.cpp \
 
 /usr/include/x86_64-linux-gnu/bits/errno.h:
 
-/usr/include/x86_64-linux-gnu/c++/13/bits/c++allocator.h:
-
-/usr/include/x86_64-linux-gnu/bits/floatn.h:
-
-/usr/include/x86_64-linux-gnu/bits/types/struct_itimerspec.h:
-
 /usr/include/c++/13/stdexcept:
 
 /usr/include/linux/errno.h:
@@ -667,6 +672,10 @@ CMakeFiles/mooncrust.dir/src/main.cpp.o: /home/aaron-ma/mooncrust/src/main.cpp \
 
 /usr/lib/llvm-18/lib/clang/18/include/stdint.h:
 
+/usr/include/c++/13/bits/new_allocator.h:
+
+/usr/include/c++/13/bits/stl_uninitialized.h:
+
 /usr/include/features.h:
 
 /usr/local/include/SDL3/SDL_time.h:
@@ -674,6 +683,18 @@ CMakeFiles/mooncrust.dir/src/main.cpp.o: /home/aaron-ma/mooncrust/src/main.cpp \
 /usr/include/x86_64-linux-gnu/bits/thread-shared-types.h:
 
 /usr/include/c++/13/bits/string_view.tcc:
+
+/usr/include/c++/13/bits/stl_iterator_base_types.h:
+
+/usr/include/stdio.h:
+
+/usr/include/stdlib.h:
+
+/usr/include/string.h:
+
+/usr/include/strings.h:
+
+/usr/include/x86_64-linux-gnu/bits/struct_rwlock.h:
 
 /usr/include/c++/13/ostream:
 
@@ -819,10 +840,6 @@ CMakeFiles/mooncrust.dir/src/main.cpp.o: /home/aaron-ma/mooncrust/src/main.cpp \
 
 /usr/include/x86_64-linux-gnu/bits/waitstatus.h:
 
-/usr/include/c++/13/bits/locale_facets.tcc:
-
-/usr/local/include/SDL3/SDL_init.h:
-
 /usr/include/x86_64-linux-gnu/bits/xopen_lim.h:
 
 /usr/include/x86_64-linux-gnu/gnu/stubs-64.h:
@@ -876,5 +893,3 @@ CMakeFiles/mooncrust.dir/src/main.cpp.o: /home/aaron-ma/mooncrust/src/main.cpp \
 /usr/lib/llvm-18/lib/clang/18/include/__stdarg___va_copy.h:
 
 /usr/local/include/SDL3/SDL_gamepad.h:
-
-/usr/local/include/SDL3/SDL_haptic.h:

@@ -1,33 +1,39 @@
 #version 450
+#extension GL_EXT_nonuniform_qualifier : require
 
 struct Particle {
     vec2 pos;
     vec2 vel;
 };
 
+// Bindless array
 layout(set = 0, binding = 0) buffer ParticleBuffer {
     Particle particles[];
-};
+} all_buffers[];
 
 layout(push_constant) uniform PushConstants {
     float dt;
+    uint particle_buffer_id;
 } pc;
 
 layout (local_size_x = 256) in;
 
 void main() {
     uint idx = gl_GlobalInvocationID.x;
-    if (idx >= particles.length()) return;
+    // We use nonuniformEXT for indexing the bindless array
+    uint bid = pc.particle_buffer_id;
+    
+    if (idx >= all_buffers[bid].particles.length()) return;
 
     // Gravity
-    particles[idx].vel.y += 0.5 * pc.dt;
+    all_buffers[bid].particles[idx].vel.y += 0.5 * pc.dt;
 
     // Integration
-    particles[idx].pos += particles[idx].vel * pc.dt;
+    all_buffers[bid].particles[idx].pos += all_buffers[bid].particles[idx].vel * pc.dt;
 
     // Boundary check (bounce)
-    if (particles[idx].pos.x < -1.0) { particles[idx].pos.x = -1.0; particles[idx].vel.x *= -0.8; }
-    if (particles[idx].pos.x >  1.0) { particles[idx].pos.x =  1.0; particles[idx].vel.x *= -0.8; }
-    if (particles[idx].pos.y < -1.0) { particles[idx].pos.y = -1.0; particles[idx].vel.y *= -0.8; }
-    if (particles[idx].pos.y >  1.0) { particles[idx].pos.y =  1.0; particles[idx].vel.y *= -0.8; }
+    if (all_buffers[bid].particles[idx].pos.x < -1.0) { all_buffers[bid].particles[idx].pos.x = -1.0; all_buffers[bid].particles[idx].vel.x *= -0.8; }
+    if (all_buffers[bid].particles[idx].pos.x >  1.0) { all_buffers[bid].particles[idx].pos.x =  1.0; all_buffers[bid].particles[idx].vel.x *= -0.8; }
+    if (all_buffers[bid].particles[idx].pos.y < -1.0) { all_buffers[bid].particles[idx].pos.y = -1.0; all_buffers[bid].particles[idx].vel.y *= -0.8; }
+    if (all_buffers[bid].particles[idx].pos.y >  1.0) { all_buffers[bid].particles[idx].pos.y =  1.0; all_buffers[bid].particles[idx].vel.y *= -0.8; }
 }
