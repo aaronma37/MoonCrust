@@ -6,15 +6,16 @@ local pipeline = require("vulkan.pipeline")
 local descriptors = require("vulkan.descriptors")
 local command = require("vulkan.command")
 local graph = require("vulkan.graph")
+local staging = require("vulkan.staging")
+local vshader = require("vulkan.shader")
+local vswapchain = require("vulkan.swapchain")
+
 local M = {}
 
 local PARTICLE_COUNT = 1024 * 1024
-local device, queue, graphics_family, sw, cache, rg, cb, pool, sets, image_available_sem, render_finished_sem, pipe_layout, vswapchain, vshader
+local device, queue, graphics_family, sw, cache, rg, cb, pool, sets, image_available_sem, render_finished_sem, pipe_layout
 
 function M.init()
-    vvshader.= require("vulkan.vshader.)
-    vswapchain = require("vulkan.swapchain")
-    
     print("Example 06: Visual 1M Particle Simulation")
     
     local inst = vulkan.create_instance("MoonCrust_Particles_Visual")

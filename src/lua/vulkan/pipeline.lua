@@ -1,5 +1,7 @@
 local ffi = require("ffi")
 local vk = require("vulkan.ffi")
+local shader = require("vulkan.shader")
+local reload = require("vulkan.reload")
 
 local M = {}
 local Pipeline = {}
@@ -62,20 +64,18 @@ function M.create_compute_pipeline(device, layout, shader_module, entry_point)
 end
 
 function M.create_graphics_pipeline(device, layout, vert_module, frag_module)
-    local stages = ffi.new("VkPipelineShaderStageCreateInfo[2]", {
-        {
-            sType = vk.VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-            stage = vk.VK_SHADER_STAGE_VERTEX_BIT,
-            module = vert_module,
-            pName = "main"
-        },
-        {
-            sType = vk.VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-            stage = vk.VK_SHADER_STAGE_FRAGMENT_BIT,
-            module = frag_module,
-            pName = "main"
-        }
-    })
+    local name_main = ffi.new("char[5]", "main")
+    
+    local stages = ffi.new("VkPipelineShaderStageCreateInfo[2]")
+    stages[0].sType = vk.VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO
+    stages[0].stage = vk.VK_SHADER_STAGE_VERTEX_BIT
+    stages[0].module = vert_module
+    stages[0].pName = name_main
+    
+    stages[1].sType = vk.VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO
+    stages[1].stage = vk.VK_SHADER_STAGE_FRAGMENT_BIT
+    stages[1].module = frag_module
+    stages[1].pName = name_main
 
     local vertex_input = ffi.new("VkPipelineVertexInputStateCreateInfo", {
         sType = vk.VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO
@@ -123,7 +123,6 @@ function M.create_graphics_pipeline(device, layout, vert_module, frag_module)
         pDynamicStates = dynamic_states
     })
 
-    -- Dynamic Rendering Info
     local formats = ffi.new("VkFormat[1]", { vk.VK_FORMAT_B8G8R8A8_SRGB })
     local rendering_info = ffi.new("VkPipelineRenderingCreateInfo", {
         sType = vk.VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
@@ -131,21 +130,20 @@ function M.create_graphics_pipeline(device, layout, vert_module, frag_module)
         pColorAttachmentFormats = formats
     })
 
-    local info = ffi.new("VkGraphicsPipelineCreateInfo", {
-        sType = vk.VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
-        pNext = rendering_info,
-        stageCount = 2,
-        pStages = stages,
-        pVertexInputState = vertex_input,
-        pInputAssemblyState = input_assembly,
-        pViewportState = viewport_state,
-        pRasterizationState = rasterizer,
-        pMultisampleState = multisampling,
-        pColorBlendState = color_blending,
-        pDynamicState = dynamic_state,
-        layout = layout,
-        renderPass = nil -- Using Dynamic Rendering
-    })
+    local info = ffi.new("VkGraphicsPipelineCreateInfo[1]")
+    info[0].sType = vk.VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO
+    info[0].pNext = rendering_info
+    info[0].stageCount = 2
+    info[0].pStages = stages
+    info[0].pVertexInputState = vertex_input
+    info[0].pInputAssemblyState = input_assembly
+    info[0].pViewportState = viewport_state
+    info[0].pRasterizationState = rasterizer
+    info[0].pMultisampleState = multisampling
+    info[0].pColorBlendState = color_blending
+    info[0].pDynamicState = dynamic_state
+    info[0].layout = layout
+    info[0].renderPass = nil
 
     local pPipeline = ffi.new("VkPipeline[1]")
     local result = vk.vkCreateGraphicsPipelines(device, nil, 1, info, nil, pPipeline)
@@ -154,9 +152,6 @@ function M.create_graphics_pipeline(device, layout, vert_module, frag_module)
     end
     return pPipeline[0]
 end
-
-local shader = require("vulkan.shader")
-local reload = require("vulkan.reload")
 
 local Cache = {}
 Cache.__index = Cache
@@ -181,7 +176,6 @@ function Cache:add_compute_from_file(name, path, layout, entry_point)
         local mod = shader.create_module(self.device, spirv)
         local pipe = M.create_compute_pipeline(self.device, layout, mod, entry_point)
         
-        -- Destroy old pipeline if it exists
         if self.pipelines[name] then
             vk.vkDestroyPipeline(self.device, self.pipelines[name], nil)
         end

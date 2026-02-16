@@ -27,14 +27,15 @@ function M.create_instance(app_name)
     })
 
     local sdl_exts = ffi.new("const char*[2]", {"VK_KHR_surface", "VK_KHR_xlib_surface"})
+    local layers = ffi.new("const char*[1]", {"VK_LAYER_KHRONOS_validation"})
 
     local inst_info = ffi.new("VkInstanceCreateInfo", {
         sType = vk.VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
         pApplicationInfo = app_info,
         enabledExtensionCount = 2,
         ppEnabledExtensionNames = sdl_exts,
-        enabledLayerCount = 0,
-        ppEnabledLayerNames = nil
+        enabledLayerCount = 1,
+        ppEnabledLayerNames = layers
     })
 
     local pInstance = ffi.new("VkInstance[1]")
