@@ -1,20 +1,22 @@
--- MoonCrust Kernel Launcher
-package.path = package.path .. ";src/lua/?.lua;src/lua/?/init.lua;./?.lua"
+package.path = "src/lua/?.lua;src/lua/?/init.lua;" .. package.path
+local ffi = require("ffi")
+local vk = require("vulkan.ffi")
+local vulkan = require("vulkan")
 
--- Configuration: Set the example you want to run here
+-- Example Selector
 local CURRENT_EXAMPLE = "examples.06_particles_visual.main"
-
-print("MoonCrust Kernel Starting...")
-print("Loading Example: " .. CURRENT_EXAMPLE)
-
 local example = require(CURRENT_EXAMPLE)
+
+function mooncrust_update()
+    jit.off(true)
+    local ok, err = pcall(example.update)
+    if not ok then
+        print("mooncrust_update: ERROR:", err)
+        error(err)
+    end
+end
 
 -- Initialize the selected example
 example.init()
 
-function mooncrust_update()
-    -- Main loop delegate to the example
-    example.update()
-end
-
-print("MoonCrust Kernel Ready.")
+print("MoonCrust Hybrid Kernel Ready.")

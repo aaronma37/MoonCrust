@@ -125,25 +125,20 @@ function M.dispatch(buffer, x, y, z)
     vk.vkCmdDispatch(buffer, x, y, z)
 end
 
-function M.begin_rendering(buffer, width, height, image_view)
-    local color_attachment = ffi.new("VkRenderingAttachmentInfo", {
-        sType = vk.VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-        imageView = image_view,
-        imageLayout = vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-        loadOp = vk.VK_ATTACHMENT_LOAD_OP_CLEAR,
-        storeOp = vk.VK_ATTACHMENT_STORE_OP_STORE,
-        clearValue = { color = { float32 = {0, 0, 0, 1} } }
-    })
+function M.begin_rendering(buffer, width, height, image_view, image)
+    local clear_color = ffi.new("VkClearColorValue")
+    clear_color.float32[0] = 0.1
+    clear_color.float32[1] = 0.1
+    clear_color.float32[2] = 0.1
+    clear_color.float32[3] = 1.0
 
-    local rendering_info = ffi.new("VkRenderingInfo", {
-        sType = vk.VK_STRUCTURE_TYPE_RENDERING_INFO,
-        renderArea = { offset = {0, 0}, extent = {width = width, height = height} },
-        layerCount = 1,
-        colorAttachmentCount = 1,
-        pColorAttachments = color_attachment
+    local range = ffi.new("VkImageSubresourceRange", {
+        aspectMask = vk.VK_IMAGE_ASPECT_COLOR_BIT,
+        baseMipLevel = 0, levelCount = 1,
+        baseArrayLayer = 0, layerCount = 1
     })
-
-    vk.vkCmdBeginRendering(buffer, rendering_info)
+    
+    vk.vkCmdClearColorImage(buffer, image, vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, clear_color, 1, range)
 end
 
 function M.end_rendering(buffer)
@@ -221,10 +216,14 @@ function Encoder:pipeline_barrier(src_stages, dst_stages, memory_barriers, buffe
     return self
 end
 
-function M.encode(buffer, callback)
+function M.encode(buffer, callback, ...)
     local enc = Encoder.new(buffer)
     M.begin_one_time(buffer)
-    callback(enc)
+    callback(enc, ...)
+    local result = vk.vkEndCommandBuffer(buffer)
+    if result ~= vk.VK_SUCCESS then
+        error("Failed to end Command Buffer in encode(): " .. tostring(result))
+    end
 end
 
 return M

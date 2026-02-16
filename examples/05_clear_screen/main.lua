@@ -18,7 +18,7 @@ function M.init()
 
     -- Create Swapchain
     sw = swapchain.new(instance, physical_device, device, _SDL_WINDOW)
-    print("Swapchain created with", #sw.images, "images.")
+    print("Swapchain created with", sw.image_count, "images.")
 
     -- Create Semaphores
     local sem_info = ffi.new("VkSemaphoreCreateInfo", {
@@ -38,7 +38,7 @@ function M.update()
     
     -- 1. Acquire Image
     local img_idx = sw:acquire_next_image(image_available_sem)
-    local img = sw.images[img_idx]
+    local img = ffi.cast("VkImage", sw.images[img_idx])
 
     -- 2. Record Clear Command
     command.begin_one_time(cb)

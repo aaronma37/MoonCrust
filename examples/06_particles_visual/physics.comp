@@ -19,10 +19,15 @@ void main() {
     uint idx = gl_GlobalInvocationID.x;
     if (idx >= particles.length()) return;
 
-    // Simple Euler integration
+    // Gravity
+    particles[idx].vel.y += 0.5 * pc.dt;
+
+    // Integration
     particles[idx].pos += particles[idx].vel * pc.dt;
 
     // Boundary check (bounce)
-    if (particles[idx].pos.x < -1.0 || particles[idx].pos.x > 1.0) particles[idx].vel.x *= -1.0;
-    if (particles[idx].pos.y < -1.0 || particles[idx].pos.y > 1.0) particles[idx].vel.y *= -1.0;
+    if (particles[idx].pos.x < -1.0) { particles[idx].pos.x = -1.0; particles[idx].vel.x *= -0.8; }
+    if (particles[idx].pos.x >  1.0) { particles[idx].pos.x =  1.0; particles[idx].vel.x *= -0.8; }
+    if (particles[idx].pos.y < -1.0) { particles[idx].pos.y = -1.0; particles[idx].vel.y *= -0.8; }
+    if (particles[idx].pos.y >  1.0) { particles[idx].pos.y =  1.0; particles[idx].vel.y *= -0.8; }
 }

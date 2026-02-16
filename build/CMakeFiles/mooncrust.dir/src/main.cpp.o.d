@@ -94,12 +94,24 @@ CMakeFiles/mooncrust.dir/src/main.cpp.o: \
   /usr/local/include/SDL3/SDL_tray.h \
   /usr/local/include/SDL3/SDL_version.h \
   /usr/local/include/SDL3/SDL_oldnames.h \
-  /usr/local/include/SDL3/SDL_vulkan.h /usr/include/luajit-2.1/lua.hpp \
-  /usr/include/luajit-2.1/lua.h \
+  /usr/local/include/SDL3/SDL_vulkan.h /usr/include/vulkan/vulkan.h \
+  /usr/include/vulkan/vk_platform.h \
   /usr/lib/llvm-18/lib/clang/18/include/__stddef_ptrdiff_t.h \
   /usr/lib/llvm-18/lib/clang/18/include/__stddef_nullptr_t.h \
   /usr/lib/llvm-18/lib/clang/18/include/__stddef_max_align_t.h \
   /usr/lib/llvm-18/lib/clang/18/include/__stddef_offsetof.h \
+  /usr/include/vulkan/vulkan_core.h \
+  /usr/include/vk_video/vulkan_video_codec_h264std.h \
+  /usr/include/vk_video/vulkan_video_codecs_common.h \
+  /usr/include/vk_video/vulkan_video_codec_h264std_encode.h \
+  /usr/include/vk_video/vulkan_video_codec_h265std.h \
+  /usr/include/vk_video/vulkan_video_codec_h265std_encode.h \
+  /usr/include/vk_video/vulkan_video_codec_h264std_decode.h \
+  /usr/include/vk_video/vulkan_video_codec_h265std_decode.h \
+  /usr/include/vk_video/vulkan_video_codec_av1std.h \
+  /usr/include/vk_video/vulkan_video_codec_av1std_decode.h \
+  /usr/include/vk_video/vulkan_video_codec_av1std_encode.h \
+  /usr/include/luajit-2.1/lua.hpp /usr/include/luajit-2.1/lua.h \
   /usr/include/luajit-2.1/luaconf.h \
   /usr/lib/llvm-18/lib/clang/18/include/limits.h /usr/include/limits.h \
   /usr/include/x86_64-linux-gnu/bits/posix1_lim.h \

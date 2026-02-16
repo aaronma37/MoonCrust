@@ -1,1 +1,1 @@
-/usr/bin/clang++ CMakeFiles/mooncrust.dir/src/main.cpp.o -o mooncrust  -Wl,-rpath,/usr/local/lib /usr/lib/x86_64-linux-gnu/libvulkan.so /usr/lib/x86_64-linux-gnu/libluajit-5.1.so /usr/local/lib/libSDL3.so.0.5.0 
+/usr/bin/clang++ -Wl,--export-dynamic -rdynamic CMakeFiles/mooncrust.dir/src/main.cpp.o -o mooncrust  -Wl,-rpath,/usr/local/lib /usr/lib/x86_64-linux-gnu/libvulkan.so /usr/lib/x86_64-linux-gnu/libluajit-5.1.so /usr/local/lib/libSDL3.so.0.5.0 

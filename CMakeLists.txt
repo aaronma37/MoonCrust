@@ -22,4 +22,5 @@ endif()
 include_directories(${Vulkan_INCLUDE_DIRS} ${LUAJIT_INCLUDE_DIR})
 
 add_executable(mooncrust src/main.cpp)
+set_target_properties(mooncrust PROPERTIES ENABLE_EXPORTS ON)
 target_link_libraries(mooncrust ${Vulkan_LIBRARIES} ${LUAJIT_LIBRARY} SDL3::SDL3)

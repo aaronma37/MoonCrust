@@ -1,5 +1,4 @@
 local ffi = require("ffi")
-local ffi = require("ffi")
 local vk = require("vulkan.ffi")
 local sdl = require("vulkan.sdl")
 
@@ -15,7 +14,7 @@ function M.new(instance, physical_device, device, window)
     if not sdl.SDL_Vulkan_CreateSurface(window, instance, nil, pSurface) then
         error("Failed to create SDL Vulkan Surface")
     end
-    self.surface = ffi.cast("VkSurfaceKHR", pSurface[0])
+    self.surface = pSurface[0]
     self.device = device
 
     -- 2. Get Window Size
@@ -25,11 +24,10 @@ function M.new(instance, physical_device, device, window)
     local width, height = pw[0], ph[0]
 
     -- 3. Create Swapchain
-    -- For simplicity, we'll hardcode B8G8R8A8_SRGB and FIFO mode for now
     local swap_info = ffi.new("VkSwapchainCreateInfoKHR", {
         sType = vk.VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
-        surface = self.surface,
-        minImageCount = 3, -- Triple buffering
+        surface = ffi.cast("VkSurfaceKHR", self.surface),
+        minImageCount = 3,
         imageFormat = vk.VK_FORMAT_B8G8R8A8_SRGB,
         imageColorSpace = vk.VK_COLOR_SPACE_SRGB_NONLINEAR_KHR,
         imageExtent = { width = width, height = height },
@@ -49,20 +47,27 @@ function M.new(instance, physical_device, device, window)
     end
     self.handle = pSwapchain[0]
 
-    -- 4. Get Images
+    -- 4. Get Images and Create Views
     local count = ffi.new("uint32_t[1]")
     vk.vkGetSwapchainImagesKHR(device, self.handle, count, nil)
-    local pImages = ffi.new("VkImage[?]", count[0])
-    vk.vkGetSwapchainImagesKHR(device, self.handle, count, pImages)
     
-    self.images = {}
-    self.views = {}
-    for i=0, count[0]-1 do
-        table.insert(self.images, pImages[i])
+    -- HARDENING: Store images and views in persistent FFI arrays
+    self.image_count = count[0]
+    self.images = ffi.new("uint64_t[?]", self.image_count)
+    self.views = ffi.new("uint64_t[?]", self.image_count)
+    self.semaphores = ffi.new("VkSemaphore[?]", self.image_count)
+    
+    local pImgs = ffi.new("VkImage[?]", self.image_count)
+    vk.vkGetSwapchainImagesKHR(device, self.handle, count, pImgs)
+    
+    local sem_info = ffi.new("VkSemaphoreCreateInfo", { sType = vk.VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO })
+
+    for i=0, self.image_count-1 do
+        self.images[i] = ffi.cast("uint64_t", pImgs[i])
         
         local view_info = ffi.new("VkImageViewCreateInfo", {
             sType = vk.VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
-            image = pImages[i],
+            image = pImgs[i],
             viewType = vk.VK_IMAGE_VIEW_TYPE_2D,
             format = vk.VK_FORMAT_B8G8R8A8_SRGB,
             subresourceRange = {
@@ -73,7 +78,11 @@ function M.new(instance, physical_device, device, window)
         })
         local pView = ffi.new("VkImageView[1]")
         vk.vkCreateImageView(device, view_info, nil, pView)
-        table.insert(self.views, pView[0])
+        self.views[i] = ffi.cast("uint64_t", pView[0])
+
+        local pSem = ffi.new("VkSemaphore[1]")
+        vk.vkCreateSemaphore(device, sem_info, nil, pSem)
+        self.semaphores[i] = pSem[0]
     end
     
     self.extent = { width = width, height = height }
@@ -83,17 +92,13 @@ end
 
 function Swapchain:acquire_next_image(semaphore)
     local pIndex = ffi.new("uint32_t[1]")
-    print("Acquiring next image...")
     local result = vk.vkAcquireNextImageKHR(self.device, self.handle, 0xFFFFFFFFFFFFFFFFULL, semaphore, nil, pIndex)
-    if result ~= vk.VK_SUCCESS then
-        print("Acquire failed:", result)
-    end
-    print("Acquired index:", pIndex[0])
-    return pIndex[0] + 1 -- 1-based indexing for Lua
+    if result ~= vk.VK_SUCCESS then return nil end
+    return pIndex[0] -- 0-based for FFI array access
 end
 
 function Swapchain:present(queue, image_index, wait_semaphore)
-    local pIndex = ffi.new("uint32_t[1]", {image_index - 1})
+    local pIndex = ffi.new("uint32_t[1]", {image_index})
     local present_info = ffi.new("VkPresentInfoKHR", {
         sType = vk.VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
         waitSemaphoreCount = wait_semaphore and 1 or 0,
