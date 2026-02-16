@@ -6,34 +6,48 @@ struct Particle {
     vec2 vel;
 };
 
-// Bindless array
 layout(set = 0, binding = 0) buffer ParticleBuffer {
     Particle particles[];
 } all_buffers[];
 
 layout(push_constant) uniform PushConstants {
     float dt;
-    uint particle_buffer_id;
+    float time;
+    uint buf_id;
+    uint tex_id;
 } pc;
 
 layout (local_size_x = 256) in;
 
 void main() {
     uint idx = gl_GlobalInvocationID.x;
-    // We use nonuniformEXT for indexing the bindless array
-    uint bid = pc.particle_buffer_id;
+    uint bid = pc.buf_id;
     
     if (idx >= all_buffers[bid].particles.length()) return;
 
-    // Gravity
-    all_buffers[bid].particles[idx].vel.y += 0.5 * pc.dt;
+    vec2 pos = all_buffers[bid].particles[idx].pos;
+    vec2 vel = all_buffers[bid].particles[idx].vel;
+
+    // Moving Attractor
+    vec2 target;
+    target.x = cos(pc.time * 1.5) * 0.7;
+    target.y = sin(pc.time * 3.0) * 0.35;
+
+    // Vector to attractor - stronger gravity for more speed
+    vec2 dir = target - pos;
+    float distSq = dot(dir, dir) + 0.05; 
+    vec2 accel = normalize(dir) * (1.2 / distSq);
+
+    // Apply forces
+    vel += accel * pc.dt;
+    
+    // Slightly less damping for more "swing"
+    vel *= 0.99;
 
     // Integration
-    all_buffers[bid].particles[idx].pos += all_buffers[bid].particles[idx].vel * pc.dt;
+    pos += vel * pc.dt;
 
-    // Boundary check (bounce)
-    if (all_buffers[bid].particles[idx].pos.x < -1.0) { all_buffers[bid].particles[idx].pos.x = -1.0; all_buffers[bid].particles[idx].vel.x *= -0.8; }
-    if (all_buffers[bid].particles[idx].pos.x >  1.0) { all_buffers[bid].particles[idx].pos.x =  1.0; all_buffers[bid].particles[idx].vel.x *= -0.8; }
-    if (all_buffers[bid].particles[idx].pos.y < -1.0) { all_buffers[bid].particles[idx].pos.y = -1.0; all_buffers[bid].particles[idx].vel.y *= -0.8; }
-    if (all_buffers[bid].particles[idx].pos.y >  1.0) { all_buffers[bid].particles[idx].pos.y =  1.0; all_buffers[bid].particles[idx].vel.y *= -0.8; }
+    // Save back
+    all_buffers[bid].particles[idx].pos = pos;
+    all_buffers[bid].particles[idx].vel = vel;
 }

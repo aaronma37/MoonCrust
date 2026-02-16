@@ -107,6 +107,7 @@ int main(int argc, char* argv[]) {
     indexing.pNext = &dynRender;
     indexing.descriptorBindingPartiallyBound = VK_TRUE;
     indexing.descriptorBindingStorageBufferUpdateAfterBind = VK_TRUE;
+    indexing.descriptorBindingSampledImageUpdateAfterBind = VK_TRUE; // Added for textures
     indexing.runtimeDescriptorArray = VK_TRUE;
     indexing.descriptorBindingVariableDescriptorCount = VK_TRUE;
 

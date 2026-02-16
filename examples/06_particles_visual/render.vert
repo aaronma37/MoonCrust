@@ -11,11 +11,22 @@ layout(set = 0, binding = 0) buffer ParticleBuffer {
 } all_buffers[];
 
 layout(push_constant) uniform PushConstants {
-    float dt; // Padding to match compute shader
+    float dt;
+    float time;
     uint particle_buffer_id;
+    uint texture_id;
 } pc;
 
+layout(location = 0) out float vSpeed;
+
 void main() {
-    gl_Position = vec4(all_buffers[pc.particle_buffer_id].particles[gl_VertexIndex].pos, 0.0, 1.0);
-    gl_PointSize = 1.0;
+    uint bid = pc.particle_buffer_id;
+    vec2 pos = all_buffers[bid].particles[gl_VertexIndex].pos;
+    vec2 vel = all_buffers[bid].particles[gl_VertexIndex].vel;
+    
+    gl_Position = vec4(pos, 0.0, 1.0);
+    gl_PointSize = 2.5; 
+    
+    // Pass speed to fragment shader for coloring
+    vSpeed = length(vel);
 }

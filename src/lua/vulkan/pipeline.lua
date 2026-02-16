@@ -63,7 +63,8 @@ function M.create_compute_pipeline(device, layout, shader_module, entry_point)
     return pPipeline[0]
 end
 
-function M.create_graphics_pipeline(device, layout, vert_module, frag_module)
+function M.create_graphics_pipeline(device, layout, vert_module, frag_module, options)
+    options = options or {}
     local name_main = ffi.new("char[5]", "main")
     
     local stages = ffi.new("VkPipelineShaderStageCreateInfo[2]")
@@ -105,10 +106,20 @@ function M.create_graphics_pipeline(device, layout, vert_module, frag_module)
         rasterizationSamples = vk.VK_SAMPLE_COUNT_1_BIT
     })
 
-    local color_blend_attachment = ffi.new("VkPipelineColorBlendAttachmentState", {
-        colorWriteMask = bit.bor(vk.VK_COLOR_COMPONENT_R_BIT, vk.VK_COLOR_COMPONENT_G_BIT, vk.VK_COLOR_COMPONENT_B_BIT, vk.VK_COLOR_COMPONENT_A_BIT),
-        blendEnable = vk.VK_FALSE
-    })
+    local color_blend_attachment = ffi.new("VkPipelineColorBlendAttachmentState")
+    color_blend_attachment.colorWriteMask = bit.bor(vk.VK_COLOR_COMPONENT_R_BIT, vk.VK_COLOR_COMPONENT_G_BIT, vk.VK_COLOR_COMPONENT_B_BIT, vk.VK_COLOR_COMPONENT_A_BIT)
+    
+    if options.additive then
+        color_blend_attachment.blendEnable = vk.VK_TRUE
+        color_blend_attachment.srcColorBlendFactor = vk.VK_BLEND_FACTOR_ONE
+        color_blend_attachment.dstColorBlendFactor = vk.VK_BLEND_FACTOR_ONE
+        color_blend_attachment.colorBlendOp = vk.VK_BLEND_OP_ADD
+        color_blend_attachment.srcAlphaBlendFactor = vk.VK_BLEND_FACTOR_ONE
+        color_blend_attachment.dstAlphaBlendFactor = vk.VK_BLEND_FACTOR_ZERO
+        color_blend_attachment.alphaBlendOp = vk.VK_BLEND_OP_ADD
+    else
+        color_blend_attachment.blendEnable = vk.VK_FALSE
+    end
 
     local color_blending = ffi.new("VkPipelineColorBlendStateCreateInfo", {
         sType = vk.VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
