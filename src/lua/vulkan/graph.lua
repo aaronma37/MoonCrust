@@ -10,15 +10,16 @@ M.TYPE_IMAGE = 2
 local Resource = {}
 Resource.__index = Resource
 
-function Resource.new(id, type, handle, initial_access, initial_stage)
-    return setmetatable({
+function Resource.new(id, type, handle, initial_state)
+    local self = setmetatable({
         id = id,
         type = type,
         handle = handle,
-        access = initial_access or 0,
-        stage = initial_stage or vk.VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
-        layout = vk.VK_IMAGE_LAYOUT_UNDEFINED -- Only for images
+        access = initial_state and initial_state.access or 0,
+        stage = initial_state and initial_state.stage or vk.VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+        layout = initial_state and initial_state.layout or vk.VK_IMAGE_LAYOUT_UNDEFINED, -- Only for images
     }, Resource)
+    return self
 end
 
 local Pass = {}
@@ -28,18 +29,18 @@ function Pass.new(name, callback)
     return setmetatable({
         name = name,
         callback = callback,
-        reads = {},
-        writes = {}
+        requirements = {}
     }, Pass)
 end
 
-function Pass:read(resource, access, stage)
-    table.insert(self.reads, { res = resource, access = access, stage = stage })
-    return self
-end
-
-function Pass:write(resource, access, stage)
-    table.insert(self.writes, { res = resource, access = access, stage = stage })
+-- unified requirement registration
+function Pass:using(resource, access, stage, layout)
+    table.insert(self.requirements, {
+        res = resource,
+        access = access,
+        stage = stage,
+        layout = layout or vk.VK_IMAGE_LAYOUT_GENERAL
+    })
     return self
 end
 
@@ -50,13 +51,14 @@ function M.new(device)
     return setmetatable({
         device = device,
         resources = {},
-        passes = {}
+        passes = {},
+        registry = {} -- persistence across frames
     }, Graph)
 end
 
-function Graph:add_resource(id, type, handle, initial_access, initial_stage)
-    local res = Resource.new(id, type, handle, initial_access, initial_stage)
-    self.resources[id] = res
+function Graph:register_resource(id, type, handle, initial_state)
+    local res = Resource.new(id, type, handle, initial_state)
+    self.registry[id] = res
     return res
 end
 
@@ -66,43 +68,87 @@ function Graph:add_pass(name, callback)
     return pass
 end
 
-function Graph:execute(cb, encoder)
+function Graph:reset()
+    self.passes = {}
+end
+
+function Graph:execute(cb)
     for _, pass in ipairs(self.passes) do
-        -- 1. Generate Barriers
         local buffer_barriers = {}
+        local image_barriers = {}
         local src_stages = 0
         local dst_stages = 0
         
-        local function process_res(req, is_write)
+        -- 1. Analyze requirements and build barriers
+        for _, req in ipairs(pass.requirements) do
             local res = req.res
+            local needs_barrier = false
+            
+            -- Check if state changed
             if res.type == M.TYPE_BUFFER then
-                table.insert(buffer_barriers, ffi.new("VkBufferMemoryBarrier", {
-                    sType = vk.VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
-                    srcAccessMask = res.access,
-                    dstAccessMask = req.access,
-                    srcQueueFamilyIndex = vk.VK_QUEUE_FAMILY_IGNORED,
-                    dstQueueFamilyIndex = vk.VK_QUEUE_FAMILY_IGNORED,
-                    buffer = res.handle,
-                    offset = 0,
-                    size = vk.VK_WHOLE_SIZE
-                }))
-                src_stages = bit.bor(src_stages, res.stage)
-                dst_stages = bit.bor(dst_stages, req.stage)
+                if res.access ~= req.access or res.stage ~= req.stage then
+                    needs_barrier = true
+                    table.insert(buffer_barriers, ffi.new("VkBufferMemoryBarrier", {
+                        sType = vk.VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
+                        srcAccessMask = res.access,
+                        dstAccessMask = req.access,
+                                            srcQueueFamilyIndex = vk.VK_QUEUE_FAMILY_IGNORED,
+                                            dstQueueFamilyIndex = vk.VK_QUEUE_FAMILY_IGNORED,
+                                            buffer = ffi.cast("VkBuffer", res.handle),
+                                            offset = 0,
+                        
+                        size = vk.VK_WHOLE_SIZE
+                    }))
+                end
+            elseif res.type == M.TYPE_IMAGE then
+                if res.layout ~= req.layout or res.access ~= req.access or res.stage ~= req.stage then
+                    needs_barrier = true
+                    table.insert(image_barriers, ffi.new("VkImageMemoryBarrier", {
+                        sType = vk.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                        srcAccessMask = res.access,
+                        dstAccessMask = req.access,
+                        oldLayout = res.layout,
+                        newLayout = req.layout,
+                        srcQueueFamilyIndex = vk.VK_QUEUE_FAMILY_IGNORED,
+                        dstQueueFamilyIndex = vk.VK_QUEUE_FAMILY_IGNORED,
+                        image = ffi.cast("VkImage", res.handle),
+                        subresourceRange = {
+                            aspectMask = vk.VK_IMAGE_ASPECT_COLOR_BIT,
+                            baseMipLevel = 0,
+                            levelCount = 1,
+                            baseArrayLayer = 0,
+                            layerCount = 1
+                        }
+                    }))
+                end
             end
             
-            res.stage = req.stage
-            res.access = req.access
+            if needs_barrier then
+                src_stages = bit.bor(src_stages, res.stage)
+                dst_stages = bit.bor(dst_stages, req.stage)
+                
+                -- Update tracking state
+                res.access = req.access
+                res.stage = req.stage
+                res.layout = req.layout
+            end
         end
 
-        for _, req in ipairs(pass.reads) do process_res(req, false) end
-        for _, req in ipairs(pass.writes) do process_res(req, true) end
-
-        -- 2. Apply Barriers
-        if #buffer_barriers > 0 then
+        -- 2. Emit barriers if needed
+        if #buffer_barriers > 0 or #image_barriers > 0 then
+            -- Sanitize stages
             if src_stages == 0 then src_stages = vk.VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT end
-            
-            local pBufs = ffi.new("VkBufferMemoryBarrier[?]", #buffer_barriers)
-            for i, b in ipairs(buffer_barriers) do pBufs[i-1] = b end
+            if dst_stages == 0 then dst_stages = vk.VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT end
+
+            local pBufs = nil
+            if #buffer_barriers > 0 then
+                pBufs = ffi.new("VkBufferMemoryBarrier[?]", #buffer_barriers, buffer_barriers)
+            end
+
+            local pImgs = nil
+            if #image_barriers > 0 then
+                pImgs = ffi.new("VkImageMemoryBarrier[?]", #image_barriers, image_barriers)
+            end
 
             vk.vkCmdPipelineBarrier(
                 cb,
@@ -111,12 +157,12 @@ function Graph:execute(cb, encoder)
                 0,
                 0, nil,
                 #buffer_barriers, pBufs,
-                0, nil
+                #image_barriers, pImgs
             )
         end
 
-        -- 3. Execute Pass
-        pass.callback(encoder)
+        -- 3. Execute pass
+        pass.callback(cb)
     end
 end
 

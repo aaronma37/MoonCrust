@@ -1,94 +1,84 @@
-# 🌙 MoonCrust: High-Performance GPU Kernel
+# 🌙 MoonCrust: Ultra-High-Performance GPU Kernel
 
-MoonCrust is a minimalist, ultra-high-performance compute and render kernel that exposes **Vulkan 1.4** directly to **LuaJIT**. It is designed for engine architects, roboticists, and simulation developers who require maximum GPU control with near-zero CPU overhead.
+MoonCrust is a minimalist, industrial-grade compute and render kernel that exposes **Vulkan 1.4** Directly to **LuaJIT**. It follows a "1% C++ / 99% Lua" architecture, giving you the raw performance of a compiled engine with the rapid iteration speed of a scripting language.
 
-## 🚀 Key Features
+## 🚀 The MoonCrust Advantage
 
-*   **1% Binary Rule:** The C++ bootstrapper is a tiny shell (< 200KB); 99% of all logic, including memory allocation and command orchestration, is written in pure Lua.
-*   **Zero-Copy Architecture:** Optimized for `VK_EXT_external_memory_host`, allowing LuaJIT FFI memory to be shared directly with the GPU without explicit copies.
-*   **Pure Lua-TLSF:** A custom Two-Level Segregated Fit memory allocator implemented in Lua for $O(1)$ GPU sub-allocation.
-*   **Automated Render Graph:** Define high-level passes and dependencies; the kernel automatically generates synchronization barriers and image layout transitions.
-*   **Hot-Reloading Shaders:** Pipelines are file-watched and automatically recompiled/hot-swapped at runtime.
+*   **Hybrid Universal Bootstrapper:** A stable C++/SDL3 shell handles fragile driver handshakes and dynamic hardware discovery, then hands full control to Lua.
+*   **The Bindless Revolution:** Forget "Binding Slots." Shaders access a global array of 1,000+ buffers and textures instantly via push-constant indexing.
+*   **Auto-Sync Render Graph:** A 150-line Lua "brain" that automatically calculates `VkPipelineBarrier` and Image Layout transitions based on pass requirements.
+*   **Zero-Copy Memory:** Managed by a custom **Lua-TLSF** (Two-Level Segregated Fit) allocator for $O(1)$ GPU sub-allocation without C++ overhead.
+*   **Hot-Reloading Shaders:** Shaders and pipelines are file-watched and hot-swapped at runtime without restarting the kernel.
 
 ---
 
-## 🏗️ Technical Architecture
+## 🏗️ Core Architectural Pillars
 
-### 1. Memory Management (`vulkan.memory`, `vulkan.heap`)
-MoonCrust bypasses heavy C++ allocators like VMA. Instead, it manages GPU memory blocks using a pure Lua implementation of the TLSF algorithm.
-```lua
-local heap = require("vulkan.heap")
--- Allocate 64MB of Device-Local VRAM
-local vram = heap.new(physical_device, device, vram_type_idx, 64 * 1024 * 1024)
-local allocation = vram:malloc(1024) -- Offset-based sub-allocation
+### 1. Bindless Resource Access
+MoonCrust uses modern Vulkan descriptor indexing. You never have to call "BindTexture" again.
+```glsl
+// GLSL (Shaders)
+layout(set = 0, binding = 1) uniform sampler2D all_textures[];
+void main() {
+    vec4 tex = texture(all_textures[pc.texture_id], uv);
+}
 ```
 
-### 2. Staging Engine (`vulkan.staging`)
-Efficiently move data from LuaJIT's heap to Device-Local VRAM using an asynchronous transfer pipeline.
+### 2. The Auto-Sync Render Graph
+The graph removes the most dangerous part of Vulkan: manual synchronization. You define what you need; the kernel handles the rest.
+```lua
+graph:add_pass("Physics", function(cb)
+    vk.vkCmdDispatch(cb, groups, 1, 1)
+end):using(pBuffer, vk.VK_ACCESS_SHADER_WRITE_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT)
+
+graph:add_pass("Render", function(cb)
+    vk.vkCmdDraw(cb, count, 1, 0, 0)
+end):using(pBuffer, vk.VK_ACCESS_SHADER_READ_BIT, vk.VK_PIPELINE_STAGE_VERTEX_INPUT_BIT)
+   :using(swImage, vk.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, vk.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL)
+```
+
+### 3. High-Speed Staging
+Upload massive datasets (like 1M particles or 4K textures) using the async staging engine.
 ```lua
 local staging = require("vulkan.staging")
-local engine = staging.new(physical_device, device, host_heap, 1MB)
-engine:upload_buffer(vram_buffer, lua_data, offset, queue, family)
-```
-
-### 3. Fluent Command Encoder (`vulkan.command`)
-Record complex Vulkan commands with a modern, readable API.
-```lua
-local command = require("vulkan.command")
-command.encode(cb, function(cmd)
-    cmd:bind_pipeline(vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe)
-       :bind_descriptor_sets(vk.VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, sets)
-       :dispatch(groups_x, 1, 1)
-end)
-```
-
-### 4. Render Graph (`vulkan.graph`)
-The graph eliminates manual `VkPipelineBarrier` management. It tracks resource state and injects barriers only when necessary.
-```lua
-local rg = graph.new(device)
-local res = rg:add_resource("particles", graph.TYPE_BUFFER, buf_handle)
-
-rg:add_pass("ComputePhysics", function(cmd) 
-    -- Compute logic here
-end):write(res, vk.VK_ACCESS_SHADER_WRITE_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT)
+local engine = staging.new(physical_device, device, host_heap, 64MB)
+engine:upload_buffer(vram_buffer, lua_data, 0, queue, family)
+engine:upload_image(vram_image, w, h, pixels, queue, family)
 ```
 
 ---
 
-## 🛠️ Development & Build
+## 🛠️ Build & Execute
 
 ### Prerequisites
-*   **LuaJIT** (with FFI support)
-*   **Vulkan SDK 1.3+**
+*   **Vulkan SDK 1.3+** (Roadmap 2026 Profile)
+*   **LuaJIT**
 *   **SDL3**
-*   **glslc** (for shader compilation)
+*   **glslc** (Shader compiler)
 
-### Building the Bootstrapper
+### Building the Shell
 ```bash
 mkdir build && cd build
 cmake ..
 make
 ```
 
-### Running Examples
-MoonCrust features a modular example system. To run an example, modify the `CURRENT_EXAMPLE` variable in `src/lua/init.lua`:
-
-```lua
--- src/lua/init.lua
-local CURRENT_EXAMPLE = "examples.04_particles_1m.main"
-```
-
-Then run the bootstrapper:
+### Running the Flagship Demo
+The flagship demo simulates **1,048,576 particles** using a figure-eight attractor and additive solar glow.
 ```bash
 ./build/mooncrust
 ```
 
-### Available Examples
-*   **01_hello_gpu**: Basic initialization and hardware info.
-*   **02_compute_basic**: Simple array math on the GPU.
-*   **04_particles_1m**: High-performance simulation of 1,048,576 particles.
+To switch examples, modify `src/lua/init.lua`.
 
 ---
 
-## 📜 License
-MoonCrust is released under the MIT License. Built for the future of GPU-driven logic.
+## 📜 Roadmap
+*   [x] Universal Bootstrapper (C++/Lua Hybrid)
+*   [x] Bindless Buffer & Texture Arrays
+*   [x] Auto-Sync Render Graph
+*   [ ] **Full 3D Support** (Depth/Stencil buffers)
+*   [ ] **Death Row Manager** (Async resource cleanup)
+*   [ ] **SDL3 Input & Audio Bridge**
+
+MoonCrust is built for those who want to drive the GPU at 200mph without wearing a C++ straightjacket. MIT Licensed.
