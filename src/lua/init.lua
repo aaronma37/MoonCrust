@@ -12,10 +12,11 @@ local examples = {
     ["06"] = "examples.06_particles_visual.main",
     ["07"] = "examples.07_interactive_particles.main",
     ["08"] = "examples.08_slime_mold.main",
+    ["09"] = "examples.09_fluid_sph.main",
 }
 
 -- Default to the flagship if no arg provided
-local target_key = _STARTUP_ARG or "08"
+local target_key = _STARTUP_ARG or "09"
 local target_path = examples[target_key]
 
 if not target_path then
@@ -25,8 +26,8 @@ if not target_path then
         print("  " .. k .. " -> " .. v)
     end
     -- Fallback to safe default
-    print("Falling back to Example 08...")
-    target_path = examples["08"]
+    print("Falling back to Example 09...")
+    target_path = examples["09"]
 end
 
 print("Loading: " .. target_path)
