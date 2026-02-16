@@ -1,0 +1,3 @@
+/home/aaron-ma/mooncrust/build/CMakeFiles/mooncrust.dir
+/home/aaron-ma/mooncrust/build/CMakeFiles/edit_cache.dir
+/home/aaron-ma/mooncrust/build/CMakeFiles/rebuild_cache.dir
