@@ -68,6 +68,7 @@ CMakeFiles/mooncrust.dir/src/main.cpp.o: /home/aaron-ma/mooncrust/src/main.cpp \
   /usr/include/c++/13/cstddef \
   /usr/include/c++/13/cstdio \
   /usr/include/c++/13/cstdlib \
+  /usr/include/c++/13/cstring \
   /usr/include/c++/13/cwchar \
   /usr/include/c++/13/cwctype \
   /usr/include/c++/13/debug/assertions.h \
@@ -356,10 +357,6 @@ CMakeFiles/mooncrust.dir/src/main.cpp.o: /home/aaron-ma/mooncrust/src/main.cpp \
 
 /usr/local/include/SDL3/SDL_haptic.h:
 
-/usr/include/linux/limits.h:
-
-/usr/include/x86_64-linux-gnu/bits/posix2_lim.h:
-
 /usr/include/pthread.h:
 
 /usr/local/include/SDL3/SDL_pixels.h:
@@ -373,6 +370,10 @@ CMakeFiles/mooncrust.dir/src/main.cpp.o: /home/aaron-ma/mooncrust/src/main.cpp \
 /usr/include/luajit-2.1/lauxlib.h:
 
 /usr/include/locale.h:
+
+/usr/include/linux/limits.h:
+
+/usr/include/x86_64-linux-gnu/bits/posix2_lim.h:
 
 /usr/include/stdint.h:
 
@@ -453,6 +454,8 @@ CMakeFiles/mooncrust.dir/src/main.cpp.o: /home/aaron-ma/mooncrust/src/main.cpp \
 /usr/include/c++/13/debug/assertions.h:
 
 /usr/local/include/SDL3/SDL_error.h:
+
+/usr/include/c++/13/cstring:
 
 /usr/include/c++/13/cstdlib:
 

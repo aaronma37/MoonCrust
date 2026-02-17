@@ -1,0 +1,40 @@
+#version 450
+#extension GL_EXT_mesh_shader : require
+
+layout(local_size_x = 32) in;
+layout(triangles, max_vertices = 64, max_primitives = 64) out;
+
+layout(push_constant) uniform PushConstants {
+    mat4 mvp;
+    float time;
+} pc;
+
+layout(location = 0) out vec3 vColor[];
+
+void main() {
+    uint i = gl_LocalInvocationID.x;
+    uint gid = gl_WorkGroupID.x * 32 + i;
+
+    // Procedural Pseudo-Random for position
+    float x = (float(gid % 1000) / 100.0) * 10.0 - 50.0;
+    float z = (float(gid / 1000) / 100.0) * 10.0 - 50.0;
+    
+    // Wind effect
+    float wind = sin(x * 0.5 + z * 0.3 + pc.time * 2.0) * 0.2;
+    float height = 0.5 + fract(sin(float(gid)) * 43758.5453) * 0.5;
+
+    // Set counts for this meshlet
+    SetMeshOutputsEXT(3, 1);
+
+    // Simple Triangle Blade
+    vColor[0] = vec3(0.1, 0.5, 0.1);
+    gl_MeshVerticesEXT[0].gl_Position = pc.mvp * vec4(x - 0.05, 0.0, z, 1.0);
+    
+    vColor[1] = vec3(0.1, 0.5, 0.1);
+    gl_MeshVerticesEXT[1].gl_Position = pc.mvp * vec4(x + 0.05, 0.0, z, 1.0);
+    
+    vColor[2] = vec3(0.2, 0.8, 0.2);
+    gl_MeshVerticesEXT[2].gl_Position = pc.mvp * vec4(x + wind, height, z + wind, 1.0);
+
+    gl_PrimitiveTriangleIndicesEXT[0] = uvec3(0, 1, 2);
+}

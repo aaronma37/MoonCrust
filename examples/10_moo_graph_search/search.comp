@@ -1,0 +1,132 @@
+#version 450
+#extension GL_EXT_nonuniform_qualifier : require
+
+layout(local_size_x = 256) in;
+
+struct Node {
+    vec4 pos;
+    vec4 color;
+};
+
+struct Edge {
+    uint a, b;
+    float dist;
+    float cost;
+};
+
+struct Solution {
+    float dist;
+    float cost;
+    uint parent_node;
+    uint parent_sol_idx;
+};
+
+layout(set = 0, binding = 0) buffer AllBuffers {
+    uint data[];
+} all_buffers[];
+
+layout(push_constant) uniform PushConstants {
+    uint node_count;
+    uint edge_count;
+    uint iter;
+    uint pad;
+    float obs_x, obs_y, obs_z, obs_r;
+} pc;
+
+void main() {
+    uint edge_idx = gl_GlobalInvocationID.x;
+    vec3 obs_pos = vec3(pc.obs_x, pc.obs_y, pc.obs_z);
+
+    // 1. Pathfinding Propagation
+    if (edge_idx < pc.edge_count) {
+        uint e_base = edge_idx * 4;
+        uint nodeA = all_buffers[1].data[e_base + 0];
+        uint nodeB = all_buffers[1].data[e_base + 1];
+        float e_dist = uintBitsToFloat(all_buffers[1].data[e_base + 2]);
+        float e_cost = uintBitsToFloat(all_buffers[1].data[e_base + 3]);
+
+        // Obstacle Check
+        uint nA_base = nodeA * 8;
+        uint nB_base = nodeB * 8;
+        vec3 pA = vec3(uintBitsToFloat(all_buffers[0].data[nA_base+0]), uintBitsToFloat(all_buffers[0].data[nA_base+1]), uintBitsToFloat(all_buffers[0].data[nA_base+2]));
+        vec3 pB = vec3(uintBitsToFloat(all_buffers[0].data[nB_base+0]), uintBitsToFloat(all_buffers[0].data[nB_base+1]), uintBitsToFloat(all_buffers[0].data[nB_base+2]));
+        
+        if (distance((pA + pB) * 0.5, obs_pos) < pc.obs_r) return;
+
+        for (int i = 0; i < 8; i++) {
+            uint solA_base = (nodeA * 8 + i) * 4;
+            float solA_dist = uintBitsToFloat(all_buffers[2].data[solA_base + 0]);
+            float solA_cost = uintBitsToFloat(all_buffers[2].data[solA_base + 1]);
+
+            if (solA_dist >= 1e8) continue;
+
+            float new_dist = solA_dist + e_dist;
+            float new_cost = solA_cost + e_cost;
+
+            bool dominated = false;
+            int empty_slot = -1;
+
+            for (int j = 0; j < 8; j++) {
+                uint solB_base = (nodeB * 8 + j) * 4;
+                float solB_dist = uintBitsToFloat(all_buffers[2].data[solB_base + 0]);
+                float solB_cost = uintBitsToFloat(all_buffers[2].data[solB_base + 1]);
+
+                if (solB_dist >= 1e8) {
+                    if (empty_slot == -1) empty_slot = j;
+                    continue;
+                }
+
+                if (solB_dist <= new_dist && solB_cost <= new_cost) {
+                    dominated = true;
+                    break;
+                }
+            }
+
+            if (!dominated && empty_slot != -1) {
+                uint target_base = (nodeB * 8 + empty_slot) * 4;
+                all_buffers[2].data[target_base + 0] = floatBitsToUint(new_dist);
+                all_buffers[2].data[target_base + 1] = floatBitsToUint(new_cost);
+                all_buffers[2].data[target_base + 2] = nodeA;
+                all_buffers[2].data[target_base + 3] = i; // Store parent solution index
+                
+                all_buffers[0].data[nodeB * 8 + 4] = floatBitsToUint(0.2);
+                all_buffers[0].data[nodeB * 8 + 5] = floatBitsToUint(0.5);
+                all_buffers[0].data[nodeB * 8 + 6] = floatBitsToUint(1.0);
+            }
+        }
+    }
+
+    // 2. Interactive Selection
+    if (edge_idx == 0) {
+        float mx = uintBitsToFloat(all_buffers[3].data[0]);
+        float my = uintBitsToFloat(all_buffers[3].data[1]);
+        
+        if (mx < 1.5) {
+            float min_d = 1e9;
+            uint best_node = 0xFFFFFFFF;
+            uint best_sol = 0;
+            
+            for (uint n = 0; n < pc.node_count; n++) {
+                for (int s = 0; s < 8; s++) {
+                    uint base = (n * 8 + s) * 4;
+                    float d = uintBitsToFloat(all_buffers[2].data[base + 0]);
+                    float c = uintBitsToFloat(all_buffers[2].data[base + 1]);
+                    if (d > 1e8) continue;
+                    
+                    float px = (d / 40.0) - 0.9;
+                    float py = (c / 40.0) - 0.9;
+                    float dist = (px - mx)*(px - mx) + (py - (-my))*(py - (-my));
+                    if (dist < min_d) {
+                        min_d = dist;
+                        best_node = n;
+                        best_sol = s;
+                    }
+                }
+            }
+            all_buffers[3].data[2] = best_node;
+            all_buffers[3].data[3] = best_sol;
+        } else {
+            all_buffers[3].data[2] = 0xFFFFFFFF;
+        }
+    }
+}

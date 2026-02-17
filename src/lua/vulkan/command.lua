@@ -163,6 +163,10 @@ function M.draw(buffer, vertex_count, instance_count, first_vertex, first_instan
     vk.vkCmdDraw(buffer, vertex_count, instance_count or 1, first_vertex or 0, first_instance or 0)
 end
 
+function M.draw_mesh_tasks(buffer, x, y, z)
+    vk.vkCmdDrawMeshTasksEXT(buffer, x, y, z)
+end
+
 -- Fluent Encoder API
 local Encoder = {}
 Encoder.__index = Encoder
@@ -183,6 +187,11 @@ end
 
 function Encoder:dispatch(x, y, z)
     M.dispatch(self.buffer, x, y, z)
+    return self
+end
+
+function Encoder:draw_mesh_tasks(x, y, z)
+    M.draw_mesh_tasks(self.buffer, x, y, z)
     return self
 end
 

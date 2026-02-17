@@ -1,0 +1,116 @@
+#version 450
+#extension GL_EXT_nonuniform_qualifier : require
+
+layout(local_size_x = 16, local_size_y = 16) in;
+layout(set = 0, binding = 2, rgba32f) uniform image2D all_storage_images[];
+
+layout(push_constant) uniform PushConstants {
+    uint out_img;
+    uint frame_count;
+    float time;
+    uint moving;
+} pc;
+
+uint seed;
+uint rand_u() {
+    seed = seed * 747796405u + 2891336453u;
+    uint word = ((seed >> ((seed >> 28u) + 4u)) ^ seed) * 277803737u;
+    return (word >> 22u) ^ word;
+}
+float rand_f() { return float(rand_u()) / 4294967296.0; }
+
+vec3 random_unit_vector() {
+    float theta = rand_f() * 6.283185;
+    float phi = acos(2.0 * rand_f() - 1.0);
+    return vec3(sin(phi) * cos(theta), sin(phi) * sin(theta), cos(phi));
+}
+
+struct Sphere { vec3 pos; float rad; vec3 color; float metal; vec3 emissive; };
+
+float intersect(vec3 ro, vec3 rd, Sphere s, out vec3 n) {
+    vec3 oc = ro - s.pos;
+    float b = dot(oc, rd);
+    float c = dot(oc, oc) - s.rad * s.rad;
+    float h = b * b - c;
+    if (h < 0.0) return -1.0;
+    h = sqrt(h);
+    float t = -b - h;
+    if (t < 0.001) t = -b + h;
+    if (t < 0.001) return -1.0;
+    n = normalize((ro + rd * t) - s.pos);
+    return t;
+}
+
+vec3 trace(vec3 ro, vec3 rd) {
+    Sphere scene[4];
+    scene[0] = Sphere(vec3(0, -100.5, -2), 100.0, vec3(0.2, 0.2, 0.2), 0.1, vec3(0)); 
+    scene[1] = Sphere(vec3(0, 0, -2), 0.5, vec3(0.8, 0.1, 0.1), 0.0, vec3(0));        
+    scene[2] = Sphere(vec3(-1.2, 0, -2.5), 0.5, vec3(0.9, 0.9, 0.9), 1.0, vec3(0)); 
+    scene[3] = Sphere(vec3(1.2, 0.2, -1.5), 0.4, vec3(0), 0.0, vec3(0.2, 0.6, 2.0) * 10.0); 
+
+    vec3 attenuation = vec3(1.0);
+    vec3 light = vec3(0.0);
+
+    for (int bounce = 0; bounce < 5; bounce++) {
+        float min_t = 1e9;
+        vec3 hit_n;
+        int hit_id = -1;
+
+        for (int i = 0; i < 4; i++) {
+            vec3 n;
+            float t = intersect(ro, rd, scene[i], n);
+            if (t > 0.0 && t < min_t) {
+                min_t = t;
+                hit_n = n;
+                hit_id = i;
+            }
+        }
+
+        if (hit_id == -1) {
+            float t = 0.5 * (rd.y + 1.0);
+            light += attenuation * mix(vec3(0.01), vec3(0.02, 0.03, 0.05), t);
+            break;
+        }
+
+        Sphere s = scene[hit_id];
+        light += s.emissive * attenuation;
+
+        ro = ro + rd * min_t + hit_n * 0.001;
+        vec3 diffuse_dir = normalize(hit_n + random_unit_vector());
+        vec3 reflect_dir = reflect(rd, hit_n);
+        rd = normalize(mix(diffuse_dir, reflect_dir, s.metal));
+        attenuation *= s.color + vec3(s.metal * 0.05);
+    }
+    return light;
+}
+
+void main() {
+    ivec2 pix = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(all_storage_images[pc.out_img]);
+    if (pix.x >= size.x || pix.y >= size.y) return;
+
+    seed = uint(pix.x * 1973 + pix.y * 9277 + pc.frame_count * 26699) | 1u;
+
+    vec2 uv = (vec2(pix) + vec2(rand_f(), rand_f())) / vec2(size);
+    uv = uv * 2.0 - 1.0;
+    uv.x *= float(size.x) / float(size.y);
+
+    // FIXED CAMERA POSITION
+    vec3 ro = vec3(3.0, 1.5, 3.0);
+    vec3 target = vec3(0, 0, -2);
+    
+    vec3 cw = normalize(target - ro);
+    vec3 cp = vec3(0, 1, 0);
+    vec3 cu = normalize(cross(cw, cp));
+    vec3 cv = normalize(cross(cu, cw));
+    vec3 rd = normalize(uv.x*cu + uv.y*cv + 2.0*cw);
+
+    vec3 col = trace(ro, rd);
+
+    if (pc.frame_count > 0) {
+        vec3 old_col = imageLoad(all_storage_images[pc.out_img], pix).rgb;
+        col = mix(old_col, col, 1.0 / float(pc.frame_count + 1));
+    }
+
+    imageStore(all_storage_images[pc.out_img], pix, vec4(col, 1.0));
+}

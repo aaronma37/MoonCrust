@@ -13,6 +13,10 @@ local examples = {
     ["07"] = "examples.07_interactive_particles.main",
     ["08"] = "examples.08_slime_mold.main",
     ["09"] = "examples.09_fluid_sph.main",
+    ["10"] = "examples.10_moo_graph_search.main",
+    ["11"] = "examples.11_grass_mesh_shader.main",
+    ["12"] = "examples.12_path_tracer.main",
+    ["13"] = "examples.13_graph_visualizer.main",
 }
 
 -- Default to the flagship if no arg provided
@@ -43,6 +47,10 @@ function mooncrust_update()
 end
 
 -- Initialize the selected example
-example.init()
+local ok, err = pcall(example.init)
+if not ok then
+    print("example.init: ERROR:", err)
+    error(err)
+end
 
 print("MoonCrust Kernel Ready.")

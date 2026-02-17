@@ -54,7 +54,7 @@ MoonCrust is a High-Performance Compute & Render Kernel that exposes Vulkan 1.4 
 
 ### Phase 4: The Kernel Release (Month 4) - [COMPLETE]
 - [x] **Render Graph:** Automatic barrier generation for multi-pass effects.
-- [x] **Compute-First Logic:** Example project showing a 1M+ particle simulation driven by Lua.
+- [x] **Compute-First Logic:** Example projects (Slime Mold, SPH Fluid, MOO Search, Path Tracer) showing complex GPU-driven simulations, interactive pathfinding, and cinematic rendering.
 - [x] **Documentation:** The "MoonCrust Manual" (README.md).
 
 ---

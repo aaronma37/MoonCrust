@@ -72,6 +72,26 @@ function Graph:reset()
     self.passes = {}
 end
 
+function Graph:get_introspection_data()
+    local data = { passes = {}, resources = {} }
+    for _, pass in ipairs(self.passes) do
+        local p = { name = pass.name, deps = {} }
+        for _, req in ipairs(pass.requirements) do
+            table.insert(p.deps, {
+                res_id = req.res.id,
+                access = req.access,
+                stage = req.stage,
+                layout = req.layout
+            })
+        end
+        table.insert(data.passes, p)
+    end
+    for id, res in pairs(self.registry) do
+        data.resources[id] = { type = res.type }
+    end
+    return data
+end
+
 function Graph:execute(cb)
     for _, pass in ipairs(self.passes) do
         local buffer_barriers = {}

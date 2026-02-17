@@ -63,28 +63,48 @@ function M.create_compute_pipeline(device, layout, shader_module, entry_point)
     return pPipeline[0]
 end
 
-function M.create_graphics_pipeline(device, layout, vert_module, frag_module, options)
+function M.create_graphics_pipeline(device, layout, vert_or_shaders, frag_module, options)
+    local shaders = {}
+    if type(vert_or_shaders) == "cdata" then
+        -- Legacy mode: (device, layout, vert, frag, options)
+        shaders = {
+            { stage = vk.VK_SHADER_STAGE_VERTEX_BIT, module = vert_or_shaders },
+            { stage = vk.VK_SHADER_STAGE_FRAGMENT_BIT, module = frag_module }
+        }
+    else
+        -- New mode: (device, layout, shaders_array, options)
+        shaders = vert_or_shaders
+        options = frag_module -- shift arguments
+    end
+
     options = options or {}
     local name_main = ffi.new("char[5]", "main")
     
-    local stages = ffi.new("VkPipelineShaderStageCreateInfo[2]")
-    stages[0].sType = vk.VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO
-    stages[0].stage = vk.VK_SHADER_STAGE_VERTEX_BIT
-    stages[0].module = vert_module
-    stages[0].pName = name_main
-    
-    stages[1].sType = vk.VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO
-    stages[1].stage = vk.VK_SHADER_STAGE_FRAGMENT_BIT
-    stages[1].module = frag_module
-    stages[1].pName = name_main
+    local stage_count = #shaders
+    local stages = ffi.new("VkPipelineShaderStageCreateInfo[?]", stage_count)
+    for i = 0, stage_count - 1 do
+        stages[i].sType = vk.VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO
+        stages[i].stage = shaders[i+1].stage
+        stages[i].module = shaders[i+1].module
+        stages[i].pName = name_main
+    end
 
     local vertex_input = ffi.new("VkPipelineVertexInputStateCreateInfo", {
-        sType = vk.VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO
+        sType = vk.VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+        vertexBindingDescriptionCount = options.vertex_binding and 1 or 0,
+        pVertexBindingDescriptions = options.vertex_binding,
+        vertexAttributeDescriptionCount = options.vertex_attributes and ffi.sizeof(options.vertex_attributes)/ffi.sizeof("VkVertexInputAttributeDescription") or 0,
+        pVertexAttributeDescriptions = options.vertex_attributes
     })
+
+    -- Check if we are using mesh shaders (if so, vertex_input should be ignored but still passed as empty)
+    local is_mesh = false
+    for i=1, stage_count do if bit.band(shaders[i].stage, vk.VK_SHADER_STAGE_MESH_BIT_EXT) ~= 0 then is_mesh = true break end end
+
 
     local input_assembly = ffi.new("VkPipelineInputAssemblyStateCreateInfo", {
         sType = vk.VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
-        topology = options.topology or vk.VK_PRIMITIVE_TOPOLOGY_POINT_LIST
+        topology = options.topology or vk.VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST
     })
 
     local viewport_state = ffi.new("VkPipelineViewportStateCreateInfo", {
@@ -154,10 +174,10 @@ function M.create_graphics_pipeline(device, layout, vert_module, frag_module, op
     local info = ffi.new("VkGraphicsPipelineCreateInfo[1]")
     info[0].sType = vk.VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO
     info[0].pNext = rendering_info
-    info[0].stageCount = 2
+    info[0].stageCount = stage_count
     info[0].pStages = stages
-    info[0].pVertexInputState = vertex_input
-    info[0].pInputAssemblyState = input_assembly
+    info[0].pVertexInputState = is_mesh and nil or vertex_input
+    info[0].pInputAssemblyState = is_mesh and nil or input_assembly
     info[0].pViewportState = viewport_state
     info[0].pRasterizationState = rasterizer
     info[0].pMultisampleState = multisampling

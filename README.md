@@ -82,14 +82,15 @@ We are expanding MoonCrust to support advanced compute simulations and modern ge
 ### Core Features (The "Finite Four" Bindings)
 *   [x] **Storage Buffers** (Binding 0) - Physics/Data
 *   [x] **Sampled Images** (Binding 1) - Textures/Sprites
-*   [ ] **Storage Images** (Binding 2) - Writable Textures (Required for Slime Mold/Ray Tracing)
+*   [x] **Storage Images** (Binding 2) - Writable Textures (Required for Slime Mold/Ray Tracing)
 *   [ ] **Mesh Shaders** (Pipeline Type) - Infinite Geometry (100M instances)
 *   [ ] **Indirect Dispatch** (Command) - GPU-driven work generation
 
 ### Planned Examples
-*   [ ] **Neural Cellular Automata:** "Slime Mold" simulation using Storage Images.
-*   [ ] **Fluid Dynamics (SPH):** 1M particle liquid simulation using Spatial Hashing.
+*   [x] **Neural Cellular Automata:** "Slime Mold" simulation using Storage Images.
+*   [x] **Fluid Dynamics (SPH):** 1M particle liquid simulation using Spatial Hashing.
+*   [x] **Interactive MOO Graph Search:** Real-time Pareto-frontier discovery with dual-window path visualization.
 *   [ ] **Mesh Shader Grass:** Rendering 100 million blades of grass.
-*   [ ] **Path Tracer:** Real-time ray tracing in a Compute Shader.
+*   [x] **Path Tracer:** Real-time progressive path tracing in a Compute Shader.
 
 MoonCrust is built for those who want to drive the GPU at 200mph without wearing a C++ straightjacket. MIT Licensed.
