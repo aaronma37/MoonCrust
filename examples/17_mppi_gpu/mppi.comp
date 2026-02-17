@@ -21,6 +21,10 @@ layout(push_constant) uniform PushConstants {
     float obs2_x, obs2_y, obs2_z, obs2_r;
     float obs3_x, obs3_y, obs3_z, obs3_r;
     float obs4_x, obs4_y, obs4_z, obs4_r;
+    float obs5_x, obs5_y, obs5_z, obs5_r;
+    float obs6_x, obs6_y, obs6_z, obs6_r;
+    float obs7_x, obs7_y, obs7_z, obs7_r;
+    float obs8_x, obs8_y, obs8_z, obs8_r;
 } pc;
 
 uint lcg(inout uint s) {
@@ -35,6 +39,10 @@ float frand(inout uint s) {
 
 float fsigned(inout uint s) {
     return frand(s) * 2.0 - 1.0;
+}
+
+float wrap_angle(float a) {
+    return atan(sin(a), cos(a));
 }
 
 float obs_pen(vec3 p, vec4 o) {
@@ -59,18 +67,38 @@ void main() {
     uint seed = sid * 747796405u + pc.iter * 2891336453u + 17u;
     float cost = 0.0;
 
+    vec3 g = vec3(pc.goal_x, pc.goal_y, pc.goal_z);
     vec4 o1 = vec4(pc.obs1_x, pc.obs1_y, pc.obs1_z, pc.obs1_r);
     vec4 o2 = vec4(pc.obs2_x, pc.obs2_y, pc.obs2_z, pc.obs2_r);
     vec4 o3 = vec4(pc.obs3_x, pc.obs3_y, pc.obs3_z, pc.obs3_r);
     vec4 o4 = vec4(pc.obs4_x, pc.obs4_y, pc.obs4_z, pc.obs4_r);
+    vec4 o5 = vec4(pc.obs5_x, pc.obs5_y, pc.obs5_z, pc.obs5_r);
+    vec4 o6 = vec4(pc.obs6_x, pc.obs6_y, pc.obs6_z, pc.obs6_r);
+    vec4 o7 = vec4(pc.obs7_x, pc.obs7_y, pc.obs7_z, pc.obs7_r);
+    vec4 o8 = vec4(pc.obs8_x, pc.obs8_y, pc.obs8_z, pc.obs8_r);
+    float sid_norm = float(sid) / max(1.0, float(pc.samples - 1u));
+    float noise_band = mix(0.35, 1.35, sid_norm);
+    if ((sid & 7u) == 0u) noise_band = 0.10; // keep a few near-deterministic elite samples
 
     for (uint t = 0u; t < pc.horizon; t++) {
         uint cbase = t * 2u;
         float u_yaw = uintBitsToFloat(all_buffers[0].data[cbase + 0]);
         float u_pitch = uintBitsToFloat(all_buffers[0].data[cbase + 1]);
 
-        u_yaw += fsigned(seed) * pc.noise_yaw;
-        u_pitch += fsigned(seed) * pc.noise_pitch;
+        vec3 to_goal_raw = g - pos;
+        float goal_dist = length(to_goal_raw) + 1e-6;
+        float desired_yaw = atan(to_goal_raw.z, to_goal_raw.x);
+        float desired_pitch = atan(to_goal_raw.y, length(to_goal_raw.xz) + 1e-6);
+        float yaw_err = wrap_angle(desired_yaw - yaw);
+        float pitch_err = clamp(desired_pitch - pitch, -1.2, 1.2);
+        float prior_w = 1.0 - float(t) / max(1.0, float(pc.horizon));
+        u_yaw += yaw_err * (1.05 * prior_w);
+        u_pitch += pitch_err * (0.92 * prior_w);
+
+        float dg_pre = distance(pos, g);
+        float noise_scale = clamp(dg_pre / 5.0, 0.08, 1.0) * noise_band;
+        u_yaw += fsigned(seed) * pc.noise_yaw * noise_scale;
+        u_pitch += fsigned(seed) * pc.noise_pitch * noise_scale;
 
         if (t == 0u) {
             uint fbase = sid * 2u;
@@ -91,19 +119,24 @@ void main() {
         all_buffers[1].data[rbase + 2] = floatBitsToUint(pos.z);
         all_buffers[1].data[rbase + 3] = 0u;
 
-        vec3 g = vec3(pc.goal_x, pc.goal_y, pc.goal_z);
-        float dg = distance(pos, g);
-        cost += dg * 1.1;
-        cost += (u_yaw * u_yaw + u_pitch * u_pitch) * 0.18;
+        float dg = goal_dist;
+        cost += dg * 1.9;
+        cost += (u_yaw * u_yaw + u_pitch * u_pitch) * 0.15;
         cost += obs_pen(pos, o1) + obs_pen(pos, o2) + obs_pen(pos, o3) + obs_pen(pos, o4);
+        cost += obs_pen(pos, o5) + obs_pen(pos, o6) + obs_pen(pos, o7) + obs_pen(pos, o8);
+        float near = max(0.0, pc.goal_r * 2.2 - dg);
+        cost -= near * near * 1.8;
+        vec3 to_goal = normalize(g - pos + vec3(1e-5));
+        float align = dot(dir, to_goal);
+        cost += (1.0 - align) * 0.55;
 
         if (abs(pos.x) > 11.5 || abs(pos.y) > 5.5 || abs(pos.z) > 11.5) {
             cost += 2000.0;
         }
     }
 
-    float terminal = distance(pos, vec3(pc.goal_x, pc.goal_y, pc.goal_z));
-    cost += terminal * terminal * 3.5;
+    float terminal = distance(pos, g);
+    cost += terminal * terminal * 14.0 + terminal * 14.0;
 
     all_buffers[2].data[sid] = floatBitsToUint(cost);
 

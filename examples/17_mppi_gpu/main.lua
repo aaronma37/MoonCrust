@@ -24,11 +24,14 @@ local FRAME_TIME = 1000 / FPS_LIMIT
 local SAMPLES = 1024
 local HORIZON = 48
 local DT = 0.08
-local SPEED = 3.4
+local SPEED = 4.0
 local NOISE_YAW = 0.9
 local NOISE_PITCH = 0.45
+local GOAL_REACHED_RADIUS = 0.45
+local GOAL_SLOW_RADIUS = 1.4
+local GOAL_HOLD_FRAMES = 0
 
-local MARKER_CAP = 8
+local MARKER_CAP = 12
 
 local device, queue, graphics_family
 local sw
@@ -49,6 +52,7 @@ local push_draw_size = 0
 local iter = 0
 local best_path_count = 0
 local trail_count = 0
+local goal_hold_frames_left = 0
 
 local function read_text(path)
     local f = io.open(path, "r")
@@ -108,7 +112,9 @@ end
 
 local function update_markers(t)
     local sx, sy, sz = agent_ptr[0].x, agent_ptr[0].y, agent_ptr[0].z
-    local gx, gy, gz = 8.0, 1.2, 8.0
+    local gx = math.sin(t * 0.95) * 8.6
+    local gy = 1.1 + math.sin(t * 1.35 + 0.7) * 1.7
+    local gz = math.cos(t * 0.82 + 0.4) * 8.2
 
     set_draw_point(marker_ptr, 0, sx, sy, sz, 11.0, 0.2, 1.0, 0.3, 1.0)
     set_draw_point(marker_ptr, 1, gx, gy, gz, 12.0, 1.0, 1.0, 0.2, 1.0)
@@ -118,9 +124,13 @@ local function update_markers(t)
         { math.sin(t * 0.33 + 2.0) * 5.2, math.sin(t * 0.27) * 1.0, math.cos(t * 0.33 + 2.0) * 5.2, 1.0 },
         { math.sin(t * 0.58 + 1.2) * 4.4, math.cos(t * 0.41 + 0.5) * 1.3, math.cos(t * 0.58 + 1.2) * 4.4, 1.05 },
         { math.sin(t * 0.39 + 3.7) * 6.0, math.cos(t * 0.36) * 1.1, math.cos(t * 0.39 + 3.7) * 6.0, 0.95 },
+        { math.sin(t * 0.67 + 1.8) * 7.0, math.cos(t * 0.44 + 0.2) * 1.8, math.cos(t * 0.67 + 1.8) * 6.8, 0.92 },
+        { math.sin(t * 0.52 + 4.4) * 6.6, math.sin(t * 0.63 + 0.8) * 1.9, math.cos(t * 0.52 + 4.4) * 6.5, 0.88 },
+        { math.sin(t * 0.73 + 2.7) * 7.4, math.cos(t * 0.28 + 1.5) * 2.0, math.cos(t * 0.73 + 2.7) * 7.2, 0.90 },
+        { math.sin(t * 0.61 + 5.5) * 5.8, math.sin(t * 0.49 + 2.1) * 1.7, math.cos(t * 0.61 + 5.5) * 6.1, 0.96 },
     }
 
-    for i = 1, 4 do
+    for i = 1, #obs do
         local o = obs[i]
         set_draw_point(marker_ptr, 1 + i, o[1], o[2], o[3], o[4] * 30.0, 1.0, 0.18, 0.18, 0.92)
     end
@@ -141,20 +151,27 @@ local function update_best_path_from_rollout(best_idx)
     end
 end
 
-local function apply_control_and_shift(best_idx)
+local function apply_control_and_shift(best_idx, gx, gy, gz)
     if best_idx < 0 or best_idx >= SAMPLES then return end
 
     local fbase = best_idx * 2
     local uyaw = first_controls_ptr[fbase + 0]
     local upitch = first_controls_ptr[fbase + 1]
 
+    local dxg = gx - agent_ptr[0].x
+    local dyg = gy - agent_ptr[0].y
+    local dzg = gz - agent_ptr[0].z
+    local dg = math.sqrt(dxg * dxg + dyg * dyg + dzg * dzg)
+
     local yaw = agent_ptr[0].yaw + uyaw * DT
     local pitch = clamp(agent_ptr[0].pitch + upitch * DT, -0.95, 0.95)
     local cp = math.cos(pitch)
+    local speed_scale = clamp((dg - GOAL_REACHED_RADIUS) / (GOAL_SLOW_RADIUS - GOAL_REACHED_RADIUS), 0.65, 1.0)
+    local step_speed = SPEED * speed_scale
 
-    agent_ptr[0].x = agent_ptr[0].x + cp * math.cos(yaw) * SPEED * DT
-    agent_ptr[0].y = agent_ptr[0].y + math.sin(pitch) * SPEED * DT
-    agent_ptr[0].z = agent_ptr[0].z + cp * math.sin(yaw) * SPEED * DT
+    agent_ptr[0].x = agent_ptr[0].x + cp * math.cos(yaw) * step_speed * DT
+    agent_ptr[0].y = agent_ptr[0].y + math.sin(pitch) * step_speed * DT
+    agent_ptr[0].z = agent_ptr[0].z + cp * math.sin(yaw) * step_speed * DT
     agent_ptr[0].yaw = yaw
     agent_ptr[0].pitch = pitch
 
@@ -174,6 +191,17 @@ local function apply_control_and_shift(best_idx)
         end
         set_draw_point(agent_trail_ptr, HORIZON - 1, agent_ptr[0].x, agent_ptr[0].y, agent_ptr[0].z, 5.4, 0.2, 1.0, 0.35, 0.9)
         trail_count = HORIZON
+    end
+
+    local dxf = agent_ptr[0].x - gx
+    local dyf = agent_ptr[0].y - gy
+    local dzf = agent_ptr[0].z - gz
+    local d2 = dxf * dxf + dyf * dyf + dzf * dzf
+    if GOAL_HOLD_FRAMES > 0 and d2 < GOAL_REACHED_RADIUS * GOAL_REACHED_RADIUS then
+        agent_ptr[0].x = gx
+        agent_ptr[0].y = gy
+        agent_ptr[0].z = gz
+        goal_hold_frames_left = GOAL_HOLD_FRAMES
     end
 end
 
@@ -213,6 +241,10 @@ function M.init()
             float obs2_x, obs2_y, obs2_z, obs2_r;
             float obs3_x, obs3_y, obs3_z, obs3_r;
             float obs4_x, obs4_y, obs4_z, obs4_r;
+            float obs5_x, obs5_y, obs5_z, obs5_r;
+            float obs6_x, obs6_y, obs6_z, obs6_r;
+            float obs7_x, obs7_y, obs7_z, obs7_r;
+            float obs8_x, obs8_y, obs8_z, obs8_r;
         } MppiPC;
     ]]
 
@@ -333,6 +365,13 @@ function M.update()
 
         local gx, gy, gz, obs = update_markers(M.current_time)
 
+        if goal_hold_frames_left > 0 then
+            goal_hold_frames_left = goal_hold_frames_left - 1
+            if goal_hold_frames_left == 0 then
+                reset_agent()
+            end
+        end
+
         vk.vkWaitForFences(device, 1, ffi.new("VkFence[1]", { frame_fence }), vk.VK_TRUE, 0xFFFFFFFFFFFFFFFFULL)
         vk.vkResetFences(device, 1, ffi.new("VkFence[1]", { frame_fence }))
 
@@ -352,6 +391,10 @@ function M.update()
             obs2_x = obs[2][1], obs2_y = obs[2][2], obs2_z = obs[2][3], obs2_r = obs[2][4],
             obs3_x = obs[3][1], obs3_y = obs[3][2], obs3_z = obs[3][3], obs3_r = obs[3][4],
             obs4_x = obs[4][1], obs4_y = obs[4][2], obs4_z = obs[4][3], obs4_r = obs[4][4],
+            obs5_x = obs[5][1], obs5_y = obs[5][2], obs5_z = obs[5][3], obs5_r = obs[5][4],
+            obs6_x = obs[6][1], obs6_y = obs[6][2], obs6_z = obs[6][3], obs6_r = obs[6][4],
+            obs7_x = obs[7][1], obs7_y = obs[7][2], obs7_z = obs[7][3], obs7_r = obs[7][4],
+            obs8_x = obs[8][1], obs8_y = obs[8][2], obs8_z = obs[8][3], obs8_r = obs[8][4],
         })
 
         vk.vkResetCommandBuffer(planning_cb, 0)
@@ -373,15 +416,14 @@ function M.update()
 
         local best_idx = tonumber(best_ptr[1])
         update_best_path_from_rollout(best_idx)
-        apply_control_and_shift(best_idx)
+        if goal_hold_frames_left == 0 then
+            apply_control_and_shift(best_idx, gx, gy, gz)
+        end
         iter = iter + 1
 
         local dx = agent_ptr[0].x - gx
         local dy = agent_ptr[0].y - gy
         local dz = agent_ptr[0].z - gz
-        if (dx * dx + dy * dy + dz * dz) < 1.3 * 1.3 then
-            reset_agent()
-        end
 
         if math.abs(agent_ptr[0].x) > 12.0 or math.abs(agent_ptr[0].y) > 6.0 or math.abs(agent_ptr[0].z) > 12.0 then
             reset_agent()
