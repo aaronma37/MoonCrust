@@ -1,0 +1,163 @@
+#version 450
+#extension GL_EXT_nonuniform_qualifier : require
+
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0) buffer AllBuffers {
+    uint data[];
+} all_buffers[];
+
+layout(push_constant) uniform PushConstants {
+    uint max_nodes;
+    uint max_frontier;
+    uint samples_per_frontier;
+    uint curr_count;
+    float step_dist;
+    float max_yaw_delta;
+    float max_pitch_delta;
+    float sim_t;
+    float goal_x, goal_y, goal_z, goal_r;
+    uint obs_count;
+    uint iter;
+    uint pad0;
+    uint pad1;
+} pc;
+
+uint lcg(inout uint state) {
+    state = 1664525u * state + 1013904223u;
+    return state;
+}
+
+float frand_signed(inout uint state) {
+    uint v = lcg(state);
+    float f = float(v & 0x00FFFFFFu) / float(0x01000000u);
+    return f * 2.0 - 1.0;
+}
+
+bool inside_sphere(vec3 p, vec4 s) {
+    return distance(p, s.xyz) < s.w;
+}
+
+float hash11(float x) {
+    return fract(sin(x * 127.1 + 311.7) * 43758.5453123);
+}
+
+vec3 obstacle_pos(uint i, float t, vec3 start, vec3 goal) {
+    vec3 dir = normalize(goal - start);
+    vec3 up = vec3(0.0, 1.0, 0.0);
+    vec3 u = normalize(cross(dir, up));
+    vec3 v = normalize(cross(dir, u));
+
+    float lane = 0.08 + 0.84 * hash11(float(i) + 1.0);
+    float phase_a = 1.37 * float(i) + 0.7;
+    float phase_b = 2.11 * float(i) + 1.9;
+    float w1 = 0.35 + 0.07 * float(i);
+    float w2 = 0.47 + 0.05 * float(i);
+    float along_jitter = 0.12 * sin(t * (0.28 + 0.04 * float(i)) + phase_b);
+
+    float along = clamp(lane + along_jitter, 0.08, 0.92);
+    float path_len = length(goal - start);
+    vec3 center = start + dir * (path_len * along);
+    float off_u = sin(t * w1 + phase_a) * (1.1 + 0.2 * float(i % 2u));
+    float off_v = cos(t * w2 + phase_b) * (1.0 + 0.15 * float((i + 1u) % 2u));
+    return center + u * off_u + v * off_v;
+}
+
+float obstacle_radius(uint i) {
+    return 0.58 + 0.06 * float(i % 6u);
+}
+
+float wrap_pi(float a) {
+    const float PI = 3.14159265359;
+    const float TWO_PI = 6.28318530718;
+    while (a > PI) a -= TWO_PI;
+    while (a < -PI) a += TWO_PI;
+    return a;
+}
+
+void main() {
+    uint gid = gl_GlobalInvocationID.x;
+    uint total = pc.curr_count * pc.samples_per_frontier;
+    if (gid >= total || pc.curr_count == 0u) {
+        return;
+    }
+
+    uint fidx = gid / pc.samples_per_frontier;
+    uint sidx = gid % pc.samples_per_frontier;
+
+    uint parent_idx = all_buffers[1].data[fidx];
+    uint pbase = parent_idx * 8u;
+
+    float px = uintBitsToFloat(all_buffers[0].data[pbase + 0]);
+    float py = uintBitsToFloat(all_buffers[0].data[pbase + 1]);
+    float pz = uintBitsToFloat(all_buffers[0].data[pbase + 2]);
+    float heading = uintBitsToFloat(all_buffers[0].data[pbase + 3]);
+    float pitch = uintBitsToFloat(all_buffers[0].data[pbase + 4]);
+    float pcost = uintBitsToFloat(all_buffers[0].data[pbase + 5]);
+
+    uint seed = parent_idx * 73856093u + sidx * 19349663u + pc.iter * 83492791u;
+    float dyaw = frand_signed(seed) * pc.max_yaw_delta;
+    float dpitch = frand_signed(seed) * pc.max_pitch_delta;
+
+    vec3 goal = vec3(pc.goal_x, pc.goal_y, pc.goal_z);
+    vec3 to_goal = goal - vec3(px, py, pz);
+    float horiz = max(length(to_goal.xz), 0.0001);
+    float desired_heading = atan(to_goal.z, to_goal.x);
+    float desired_pitch = atan(to_goal.y, horiz);
+
+    float heading_err = wrap_pi(desired_heading - heading);
+    float pitch_err = desired_pitch - pitch;
+
+    const float GOAL_BIAS = 0.65;
+    float steer_yaw = clamp(heading_err, -pc.max_yaw_delta, pc.max_yaw_delta);
+    float steer_pitch = clamp(pitch_err, -pc.max_pitch_delta, pc.max_pitch_delta);
+
+    float nheading = heading + GOAL_BIAS * steer_yaw + (1.0 - GOAL_BIAS) * dyaw;
+    float npitch = clamp(pitch + GOAL_BIAS * steer_pitch + (1.0 - GOAL_BIAS) * dpitch, -1.2, 1.2);
+
+    float cp = cos(npitch);
+    vec3 dir = vec3(cp * cos(nheading), sin(npitch), cp * sin(nheading));
+    float goal_d = distance(vec3(px, py, pz), goal);
+    float far_factor = clamp((goal_d - 1.5) / 10.0, 0.0, 1.0);
+    float step_dist = pc.step_dist * (1.0 + 1.4 * far_factor);
+    vec3 p0 = vec3(px, py, pz);
+    vec3 pos = p0 + dir * step_dist;
+
+    if (abs(pos.x) > 10.5 || abs(pos.y) > 5.5 || abs(pos.z) > 10.5) {
+        return;
+    }
+
+    vec3 start = vec3(-8.5, -2.0, -8.5);
+    vec3 p1 = p0 + dir * (step_dist * 0.33);
+    vec3 p2 = p0 + dir * (step_dist * 0.66);
+    for (uint oi = 0u; oi < pc.obs_count; oi++) {
+        vec4 obs = vec4(obstacle_pos(oi, pc.sim_t, start, goal), obstacle_radius(oi));
+        if (inside_sphere(p1, obs) || inside_sphere(p2, obs) || inside_sphere(pos, obs)) {
+            return;
+        }
+    }
+
+    uint new_idx = atomicAdd(all_buffers[3].data[0], 1u);
+    if (new_idx >= pc.max_nodes) {
+        return;
+    }
+
+    uint nbase = new_idx * 8u;
+    all_buffers[0].data[nbase + 0] = floatBitsToUint(pos.x);
+    all_buffers[0].data[nbase + 1] = floatBitsToUint(pos.y);
+    all_buffers[0].data[nbase + 2] = floatBitsToUint(pos.z);
+    all_buffers[0].data[nbase + 3] = floatBitsToUint(nheading);
+    all_buffers[0].data[nbase + 4] = floatBitsToUint(npitch);
+    all_buffers[0].data[nbase + 5] = floatBitsToUint(pcost + step_dist);
+    all_buffers[0].data[nbase + 6] = parent_idx;
+    all_buffers[0].data[nbase + 7] = 1u;
+
+    uint next_idx = atomicAdd(all_buffers[3].data[2], 1u);
+    if (next_idx < pc.max_frontier) {
+        all_buffers[2].data[next_idx] = new_idx;
+    }
+
+    if (distance(pos, goal) < pc.goal_r) {
+        atomicMin(all_buffers[3].data[3], new_idx);
+    }
+}

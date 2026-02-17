@@ -17,6 +17,11 @@ local examples = {
     ["11"] = "examples.11_grass_mesh_shader.main",
     ["12"] = "examples.12_path_tracer.main",
     ["13"] = "examples.13_graph_visualizer.main",
+    ["14"] = "examples.14_moo_graph_search_reward3d.main",
+    ["15"] = "examples.15_wavefront_rrt_dubins3d.main",
+    ["16"] = "examples.16_hybrid_astar.main",
+    ["17"] = "examples.17_mppi_gpu.main",
+    ["18"] = "examples.18_voronoi_sdf_graph.main",
 }
 
 -- Default to the flagship if no arg provided
