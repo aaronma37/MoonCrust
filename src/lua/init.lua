@@ -22,6 +22,7 @@ local examples = {
     ["16"] = "examples.16_hybrid_astar.main",
     ["17"] = "examples.17_mppi_gpu.main",
     ["18"] = "examples.18_voronoi_sdf_graph.main",
+    ["19"] = "examples.19_octree_astar.main",
 }
 
 -- Default to the flagship if no arg provided
