@@ -1,0 +1,33 @@
+#version 450
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(set = 1, binding = 3, rgba16f) uniform readonly image2D g_worldpos;
+layout(set = 1, binding = 17, rgba16f) uniform readonly image2D img_gi_raw;
+layout(set = 1, binding = 18, rgba16f) uniform image2D img_gi_blur;
+
+void main() {
+    ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(img_gi_blur);
+    if (pos.x >= size.x || pos.y >= size.y) return;
+
+    vec3 centerWorldPos = imageLoad(g_worldpos, pos * 2).xyz;
+    vec3 result = vec3(0.0);
+    float weightSum = 0.0;
+
+    // Cross-bilateral blur (larger kernel for GI)
+    for (int x = -3; x <= 3; ++x) {
+        for (int y = -3; y <= 3; ++y) {
+            ivec2 samplePos = clamp(pos + ivec2(x, y), ivec2(0), size - 1);
+            vec3 sampleWorldPos = imageLoad(g_worldpos, samplePos * 2).xyz;
+            
+            float dist = length(centerWorldPos - sampleWorldPos);
+            float weight = exp(-dist * dist * 1.5); 
+            
+            result += imageLoad(img_gi_raw, samplePos).rgb * weight;
+            weightSum += weight;
+        }
+    }
+    
+    imageStore(img_gi_blur, pos, vec4(result / (weightSum + 0.0001), 1.0));
+}

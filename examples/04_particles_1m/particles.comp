@@ -1,0 +1,29 @@
+#version 450
+#extension GL_EXT_nonuniform_qualifier : require
+
+struct Particle {
+    vec2 pos;
+    vec2 vel;
+};
+
+layout(set = 0, binding = 0) buffer ParticleBuffer {
+    Particle particles[];
+} all_buffers[];
+
+layout(push_constant) uniform PushConstants {
+    float dt;
+} pc;
+
+layout (local_size_x = 256) in;
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= all_buffers[0].particles.length()) return;
+
+    // Simple Euler integration
+    all_buffers[0].particles[idx].pos += all_buffers[0].particles[idx].vel * pc.dt;
+
+    // Boundary check (bounce)
+    if (all_buffers[0].particles[idx].pos.x < -1.0 || all_buffers[0].particles[idx].pos.x > 1.0) all_buffers[0].particles[idx].vel.x *= -1.0;
+    if (all_buffers[0].particles[idx].pos.y < -1.0 || all_buffers[0].particles[idx].pos.y > 1.0) all_buffers[0].particles[idx].vel.y *= -1.0;
+}

@@ -1,0 +1,59 @@
+#version 450
+#extension GL_EXT_nonuniform_qualifier : enable
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(push_constant) uniform PushConstants {
+    uint world_w, world_h; float time; uint frame_count;
+    float mouse_x, mouse_y; uint brush_material, brush_size;
+    uint in_buf_idx, out_buf_idx; float cam_x, cam_y;
+    uint screen_w, screen_h; uint light_img_idx, out_img_idx;
+    float zoom;
+} pc;
+
+struct Pixel { uint data0; uint data1; };
+layout(set = 0, binding = 0) buffer WorldBuffers { Pixel cells[]; } all_buffers[];
+layout(set = 0, binding = 2, rgba32f) uniform image2D all_storage_images[];
+
+#define GET_ID(p) ((p.data0 >> 24) & 0xFFu)
+
+void main() {
+    ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
+    if (pos.x >= pc.screen_w || pos.y >= pc.screen_h) return;
+
+    // Apply Zoom to Raymarch Origin
+    ivec2 world_pos = ivec2(int(pc.cam_x) + int(float(pos.x) * pc.zoom), 
+                            int(pc.cam_y) + int(float(pos.y) * pc.zoom));
+    
+    vec2 sun_dir = normalize(vec2(cos(pc.time * 0.1), -1.5)); 
+    float sun_light = 1.0;
+    vec2 curr = vec2(world_pos);
+    for (int i = 0; i < 40; i++) {
+        curr += sun_dir * (2.0 * pc.zoom); // Step size scaled by zoom
+        ivec2 sp = ivec2(curr);
+        if (sp.x < 0 || sp.x >= pc.world_w || sp.y < 0 || sp.y >= pc.world_h) break;
+        uint nid = GET_ID(all_buffers[pc.in_buf_idx].cells[sp.y * pc.world_w + sp.x]);
+        if (nid != 0 && nid != 4) { sun_light = 0.3; break; }
+    }
+
+    ivec2 mouse_screen = ivec2(pc.mouse_x * pc.screen_w, pc.mouse_y * pc.screen_h);
+    ivec2 mouse_world = ivec2(int(pc.cam_x) + int(float(mouse_screen.x) * pc.zoom), 
+                              int(pc.cam_y) + int(float(mouse_screen.y) * pc.zoom));
+    float dist = distance(vec2(world_pos), vec2(mouse_world));
+    float point_light = 0.0;
+    float light_radius = 120.0;
+    if (dist < light_radius) {
+        vec2 p_dir = normalize(vec2(mouse_world) - vec2(world_pos));
+        point_light = clamp(1.0 - (dist / light_radius), 0.0, 1.0);
+        curr = vec2(world_pos);
+        for (int i = 0; i < 30; i++) {
+            curr += p_dir * (dist / 30.0);
+            if (distance(curr, vec2(mouse_world)) < 2.0 * pc.zoom) break;
+            ivec2 sp = ivec2(curr);
+            if (sp.x < 0 || sp.x >= pc.world_w || sp.y < 0 || sp.y >= pc.world_h) break;
+            uint nid = GET_ID(all_buffers[pc.in_buf_idx].cells[sp.y * pc.world_w + sp.x]);
+            if (nid != 0 && nid != 4) { point_light = 0.0; break; }
+        }
+    }
+
+    imageStore(all_storage_images[pc.light_img_idx], pos, vec4(sun_light, point_light, 0, 1));
+}

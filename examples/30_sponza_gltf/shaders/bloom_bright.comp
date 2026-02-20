@@ -1,0 +1,23 @@
+#version 450
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(set = 1, binding = 4, rgba16f) uniform readonly image2D img_hdr;
+layout(set = 1, binding = 10, rgba16f) uniform image2D img_bright;
+
+void main() {
+    ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(img_bright);
+    if (pos.x >= size.x || pos.y >= size.y) return;
+
+    // Sample from full-res HDR at half-res coords
+    vec3 color = imageLoad(img_hdr, pos * 2).rgb;
+    
+    // Luminance threshold
+    float brightness = dot(color, vec3(0.2126, 0.7152, 0.0722));
+    if (brightness > 1.0) {
+        imageStore(img_bright, pos, vec4(color, 1.0));
+    } else {
+        imageStore(img_bright, pos, vec4(0.0, 0.0, 0.0, 1.0));
+    }
+}

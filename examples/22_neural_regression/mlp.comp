@@ -1,0 +1,107 @@
+#version 450
+#extension GL_EXT_nonuniform_qualifier : require
+#extension GL_EXT_shader_atomic_float : require
+
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0) buffer AllBuffers {
+    float data[];
+} all_buffers[];
+
+layout(push_constant) uniform PushConstants {
+    uint weightBuf; 
+    uint targetImg; 
+    float lr;       
+    float time;
+    vec2 resolution;
+} pc;
+
+float hash(vec2 p) {
+    return fract(sin(dot(p, vec2(12.9898 + pc.time * 0.01, 78.233))) * 43758.5453);
+}
+
+float target_function(vec2 uv) {
+    float d = length(uv - 0.5) * 4.0;
+    float rings = sin(d * 12.0 - pc.time * 2.0);
+    float box = max(abs(uv.x - 0.5), abs(uv.y - 0.5)) * 2.0;
+    return mix(smoothstep(-0.2, 0.2, rings), step(0.6, box), 0.5);
+}
+
+vec3 target_color(vec2 uv) {
+    float v = target_function(uv);
+    return mix(vec3(0.05, 0.1, 0.2), vec3(1.0, 0.7, 0.1), v);
+}
+
+void main() {
+    uint sample_idx = gl_GlobalInvocationID.x;
+    
+    // 1. Stochastic Sample
+    float seed = float(sample_idx) * 0.1337 + pc.time;
+    vec2 x = vec2(hash(vec2(seed, 1.1)), hash(vec2(seed, 2.2)));
+    vec3 target = target_color(x);
+
+    // 2. LOAD WEIGHTS (Hidden=32)
+    // W1: 2x32 (64), B1: 32, W2: 32x3 (96), B2: 3. Total: 195
+    float local_W1[64];
+    float local_B1[32];
+    float local_W2[96];
+    float local_B2[3];
+
+    for(int i=0; i<64; i++) local_W1[i] = all_buffers[pc.weightBuf].data[i];
+    for(int i=0; i<32; i++) local_B1[i] = all_buffers[pc.weightBuf].data[64 + i];
+    for(int i=0; i<96; i++) local_W2[i] = all_buffers[pc.weightBuf].data[64 + 32 + i];
+    for(int i=0; i<3; i++)  local_B2[i] = all_buffers[pc.weightBuf].data[64 + 32 + 96 + i];
+
+    // 3. FORWARD PASS (Tanh Hidden)
+    float h1[32];
+    for(int i=0; i<32; i++) {
+        float sum = local_B1[i];
+        sum += x.x * local_W1[i*2 + 0];
+        sum += x.y * local_W1[i*2 + 1];
+        h1[i] = tanh(sum); 
+    }
+    
+    vec3 out_y = vec3(0.0);
+    for(int i=0; i<3; i++) {
+        out_y[i] = local_B2[i];
+        for(int j=0; j<32; j++) {
+            out_y[i] += h1[j] * local_W2[i*32 + j];
+        }
+    }
+    out_y = 1.0 / (1.0 + exp(-out_y)); // Sigmoid Output
+
+    // 4. BACKPROPAGATION
+    vec3 dLoss_dy = out_y - target;
+    vec3 dy_dz2 = out_y * (1.0 - out_y);
+    vec3 delta2 = dLoss_dy * dy_dz2;
+
+    // Gradient W2 and B2
+    for(int i=0; i<3; i++) {
+        atomicAdd(all_buffers[pc.weightBuf].data[64 + 32 + 96 + i], -delta2[i] * pc.lr);
+        for(int j=0; j<32; j++) {
+            float gradW2 = delta2[i] * h1[j];
+            atomicAdd(all_buffers[pc.weightBuf].data[64 + 32 + i*32 + j], -gradW2 * pc.lr);
+        }
+    }
+
+    // Gradient for Hidden Layer (Tanh Derivative: 1 - tanh^2)
+    for(int j=0; j<32; j++) {
+        float dLoss_dh1 = 0.0;
+        for(int i=0; i<3; i++) {
+            dLoss_dh1 += delta2[i] * local_W2[i*32 + j];
+        }
+        float delta1 = dLoss_dh1 * (1.0 - h1[j] * h1[j]);
+        
+        atomicAdd(all_buffers[pc.weightBuf].data[64 + j], -delta1 * pc.lr); // B1
+        atomicAdd(all_buffers[pc.weightBuf].data[j*2 + 0], -delta1 * x.x * pc.lr); // W1.x
+        atomicAdd(all_buffers[pc.weightBuf].data[j*2 + 1], -delta1 * x.y * pc.lr); // W1.y
+    }
+    
+    // Weight Clipping: Prevent Explosion
+    if (sample_idx < 195) {
+        float val = all_buffers[pc.weightBuf].data[sample_idx];
+        if (abs(val) > 4.0) {
+            all_buffers[pc.weightBuf].data[sample_idx] = clamp(val, -4.0, 4.0);
+        }
+    }
+}

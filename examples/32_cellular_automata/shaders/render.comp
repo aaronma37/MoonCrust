@@ -1,0 +1,99 @@
+#version 450
+#extension GL_EXT_nonuniform_qualifier : enable
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(push_constant) uniform PushConstants {
+    uint world_w, world_h; float time; uint frame_count;
+    float mouse_x, mouse_y; uint brush_material, brush_size;
+    uint in_buf_idx, out_buf_idx; float cam_x, cam_y;
+    uint screen_w, screen_h; uint light_img_idx, out_img_idx;
+} pc;
+
+struct Pixel { uint data0; uint data1; };
+layout(set = 0, binding = 0) buffer WorldBuffers { Pixel cells[]; } all_buffers[];
+layout(set = 0, binding = 2, rgba32f) uniform image2D all_storage_images[];
+
+#define GET_ID(p) ((p.data0 >> 24) & 0xFFu)
+#define GET_FLAGS(p) (p.data1 & 0x0Fu)
+
+const uint font5x7[16*5] = uint[](
+    0x3E, 0x41, 0x41, 0x41, 0x3E, 0x00, 0x42, 0x7F, 0x40, 0x00, 
+    0x42, 0x61, 0x51, 0x49, 0x46, 0x21, 0x41, 0x45, 0x4B, 0x31, 
+    0x18, 0x14, 0x12, 0x7F, 0x10, 0x27, 0x45, 0x45, 0x45, 0x39, 
+    0x3C, 0x4A, 0x49, 0x49, 0x30, 0x01, 0x71, 0x09, 0x05, 0x03, 
+    0x36, 0x49, 0x49, 0x49, 0x36, 0x06, 0x49, 0x49, 0x29, 0x1E, 
+    0x7F, 0x02, 0x0C, 0x02, 0x7F, 0x7E, 0x11, 0x11, 0x11, 0x7E, 
+    0x01, 0x01, 0x7F, 0x01, 0x01, 0x00, 0x00, 0x24, 0x00, 0x00, 
+    0x7F, 0x09, 0x09, 0x01, 0x01, 0x3E, 0x41, 0x41, 0x22, 0x14
+);
+
+bool draw_char(uint char_idx, ivec2 pos, ivec2 start) {
+    ivec2 rel = pos - start;
+    if (rel.x < 0 || rel.x >= 5 || rel.y < 0 || rel.y >= 7) return false;
+    uint glyph_col = font5x7[char_idx * 5 + uint(rel.x)];
+    return ((glyph_col >> (rel.y)) & 1u) == 1u;
+}
+
+vec3 get_palette(uint id, float height_norm, uint flags) {
+    if (id == 0) return mix(vec3(0.05, 0.05, 0.15), vec3(0.2, 0.4, 0.6), clamp(height_norm * 2.5, 0.0, 1.0));
+    if (id == 1) return vec3(0.85, 0.75, 0.50); 
+    if (id == 2) return vec3(0.15, 0.45, 0.95); 
+    if (id == 3) return vec3(1.00, 0.40, 0.10); 
+    if (id == 6) return vec3(0.35, 0.35, 0.38); 
+    if (id == 9) return vec3(0.30, 0.85, 0.20); 
+    if (id == 10) {
+        // VISUAL FEEDBACK: Tint wood if hydrated (Bit 2)
+        vec3 base_wood = vec3(0.45, 0.30, 0.15);
+        if ((flags & 4u) != 0) return mix(base_wood, vec3(0.2, 0.6, 0.8), 0.3);
+        return base_wood;
+    }
+    if (id == 11) return vec3(0.15, 0.65, 0.10); 
+    if (id == 12) return vec3(1.00, 1.00, 1.00); 
+    if (id == 13) return vec3(0.10, 0.50, 0.15); 
+    if (id == 14) return vec3(0.45, 0.25, 0.15); // Trunk
+    if (id == 15) return vec3(1.00, 0.20, 0.20);
+    return vec3(0.0);
+}
+
+void main() {
+    ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
+    if (pos.x >= pc.screen_w || pos.y >= pc.screen_h) return;
+
+    ivec2 world_pos = ivec2(int(pc.cam_x) + pos.x, int(pc.cam_y) + pos.y);
+    uint idx = clamp(world_pos.y, 0, int(pc.world_h-1)) * pc.world_w + clamp(world_pos.x, 0, int(pc.world_w-1));
+    Pixel p = all_buffers[pc.in_buf_idx].cells[idx];
+    uint id = (p.data0 >> 24) & 0xFFu;
+    uint flags = GET_FLAGS(p);
+
+    vec3 color = get_palette(id, float(world_pos.y) / float(pc.world_h), flags);
+    if (id == 0 && (flags & 2u) != 0) color = vec3(0.15, 0.15, 0.18);
+
+    vec4 light_data = imageLoad(all_storage_images[pc.light_img_idx], pos);
+    float brightness = light_data.r + light_data.g * 1.5;
+    int bx = pos.x % 4; int by = pos.y % 4;
+    const float bayer[16] = float[](0.0/16.0, 8.0/16.0, 2.0/16.0, 10.0/16.0, 12.0/16.0, 4.0/16.0, 14.0/16.0, 6.0/16.0, 3.0/16.0, 11.0/16.0, 1.0/16.0, 9.0/16.0, 15.0/16.0, 7.0/16.0, 13.0/16.0, 5.0/16.0);
+    if (brightness < bayer[by * 4 + bx] + 0.3) color *= 0.5;
+    if (light_data.g > bayer[by * 4 + bx]) color = mix(color, vec3(0.4, 0.6, 1.0), light_data.g * 0.4);
+
+    ivec2 mouse_screen = ivec2(pc.mouse_x * pc.screen_w, pc.mouse_y * pc.screen_h);
+    uint hover_id = GET_ID(all_buffers[pc.in_buf_idx].cells[clamp(int(pc.cam_y) + mouse_screen.y, 0, int(pc.world_h-1)) * pc.world_w + clamp(int(pc.cam_x) + mouse_screen.x, 0, int(pc.world_w-1))]);
+
+    bool is_text = false;
+    ivec2 hud_p = ivec2(10, 10);
+    if (pos.x >= hud_p.x-4 && pos.x <= hud_p.x+50 && pos.y >= hud_p.y-4 && pos.y <= hud_p.y+12) {
+        color = mix(color, vec3(0.0, 0.0, 0.0), 0.8);
+    }
+    is_text = is_text || draw_char(10, pos, hud_p + ivec2(0, 0));
+    is_text = is_text || draw_char(11, pos, hud_p + ivec2(6, 0));
+    is_text = is_text || draw_char(12, pos, hud_p + ivec2(12, 0));
+    is_text = is_text || draw_char(13, pos, hud_p + ivec2(18, 0));
+    is_text = is_text || draw_char((hover_id/10)%10, pos, hud_p + ivec2(26, 0));
+    is_text = is_text || draw_char(hover_id%10, pos, hud_p + ivec2(32, 0));
+
+    if (abs(pos.x - mouse_screen.x) < 3 && abs(pos.y - mouse_screen.y) < 3) {
+        if (abs(pos.x - mouse_screen.x) > 0 || abs(pos.y - mouse_screen.y) > 0) color = vec3(1.0);
+    }
+    if (is_text) color = vec3(1.0, 1.0, 0.5);
+
+    imageStore(all_storage_images[pc.out_img_idx], pos, vec4(color, 1.0));
+}

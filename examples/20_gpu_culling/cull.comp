@@ -1,0 +1,58 @@
+#version 450
+#extension GL_EXT_nonuniform_qualifier : require
+
+layout(local_size_x = 256) in;
+
+struct Instance {
+    float x, y, z, scale;
+    float r, g, b, radius;
+};
+
+struct DrawCommand {
+    uint vertexCount;
+    uint instanceCount;
+    uint firstVertex;
+    uint firstInstance;
+};
+
+layout(set = 0, binding = 0) buffer AllBuffers {
+    uint data[];
+} all_buffers[];
+
+layout(push_constant) uniform PushConstants {
+    mat4 viewProj;
+    uint instanceCount;
+    uint instanceBuf;
+    uint drawBuf;
+    uint culledBuf;
+} pc;
+
+bool is_visible(vec3 pos, float radius) {
+    vec4 clip = pc.viewProj * vec4(pos, 1.0);
+    float w = clip.w + radius;
+    return clip.x >= -w && clip.x <= w &&
+           clip.y >= -w && clip.y <= w &&
+           clip.z >= 0.0 && clip.z <= w;
+}
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= pc.instanceCount) return;
+
+    // Load instance data
+    uint i_base = (pc.instanceBuf * 0) + idx * 8; // nonuniform indexing placeholder
+    // Note: In MoonCrust we use global all_buffers[id].data
+    // Let's use the actual buffer IDs from push constants
+    
+    vec3 pos = vec3(
+        uintBitsToFloat(all_buffers[pc.instanceBuf].data[idx * 8 + 0]),
+        uintBitsToFloat(all_buffers[pc.instanceBuf].data[idx * 8 + 1]),
+        uintBitsToFloat(all_buffers[pc.instanceBuf].data[idx * 8 + 2])
+    );
+    float radius = uintBitsToFloat(all_buffers[pc.instanceBuf].data[idx * 8 + 7]);
+
+    if (is_visible(pos, radius)) {
+        uint culled_idx = atomicAdd(all_buffers[pc.drawBuf].data[1], 1);
+        all_buffers[pc.culledBuf].data[culled_idx] = idx;
+    }
+}

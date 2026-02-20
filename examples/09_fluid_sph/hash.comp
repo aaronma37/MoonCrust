@@ -1,0 +1,62 @@
+#version 450
+#extension GL_EXT_nonuniform_qualifier : require
+
+struct Particle {
+    vec3 pos;
+    float padding1;
+    vec3 vel;
+    float padding2;
+};
+
+struct Entry {
+    uint key;
+    uint value;
+};
+
+layout(set = 0, binding = 0) buffer ParticleBuffer {
+    float data[]; // Raw float access
+} all_buffers[];
+
+layout(push_constant) uniform PushConstants {
+    uint p_buf_id; // Particles
+    uint s_buf_id; // Sort Buffer
+    uint count;
+    float grid_size;
+} pc;
+
+layout (local_size_x = 256) in;
+
+// Hash 3D coord to 1D index
+uint hash(ivec3 gridPos) {
+    // Spatial Hashing (simple Prime numbers)
+    return (uint(gridPos.x) * 73856093 ^ uint(gridPos.y) * 19349663 ^ uint(gridPos.z) * 83492791);
+}
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= pc.count) return;
+
+    // Read Position
+    uint p_offset = idx * 8; // 8 floats per particle
+    vec3 pos = vec3(all_buffers[pc.p_buf_id].data[p_offset+0],
+                    all_buffers[pc.p_buf_id].data[p_offset+1],
+                    all_buffers[pc.p_buf_id].data[p_offset+2]);
+
+    // Calculate Grid Cell
+    ivec3 gridPos = ivec3(floor(pos / pc.grid_size));
+    uint cellID = hash(gridPos);
+
+    // Write Sort Entry
+    // Note: Buffer 0 is Float[], but SortBuffer is Struct Entry { uint, uint }
+    // We cast via buffer binding aliasing in Lua, but here we need to write to the 'Sort' binding.
+    // Let's assume s_buf_id points to a uint array.
+    
+    // Sort Buffer Layout: [Key, Value, Key, Value...]
+    // Idx i -> Key at 2*i, Value at 2*i+1
+    
+    // Wait, GLSL is strict. I should define a separate struct buffer for Sort or cast.
+    // Since we use bindless "all_buffers", I can just assume 'data' is floats and use floatBitsToUint.
+    
+    all_buffers[pc.s_buf_id].data[idx * 2 + 0] = uintBitsToFloat(cellID);
+    all_buffers[pc.s_buf_id].data[idx * 2 + 1] = uintBitsToFloat(idx);
+}

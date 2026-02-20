@@ -1,0 +1,120 @@
+#version 450
+#extension GL_EXT_nonuniform_qualifier : require
+
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0) buffer AllBuffers {
+    uint data[];
+} all_buffers[];
+
+layout(push_constant) uniform PushConstants {
+    uint curr_count;
+    uint nx;
+    uint ny;
+    uint nz;
+    uint nh;
+    uint np;
+    uint max_frontier;
+    uint goal_x;
+    uint goal_y;
+    uint goal_z;
+    uint iter;
+} pc;
+
+int wrap_i(int v, int modn) {
+    int r = v % modn;
+    if (r < 0) r += modn;
+    return r;
+}
+
+uint encode_state(uint x, uint y, uint z, uint h, uint p, uint nx, uint ny, uint nz, uint nh, uint np) {
+    return ((((z * ny + y) * nx + x) * nh + h) * np + p);
+}
+
+void decode_state(uint s, out uint x, out uint y, out uint z, out uint h, out uint p, uint nx, uint ny, uint nz, uint nh, uint np) {
+    p = s % np;
+    s /= np;
+    h = s % nh;
+    s /= nh;
+    x = s % nx;
+    s /= nx;
+    y = s % ny;
+    z = s / ny;
+}
+
+uint occ_index(uint x, uint y, uint z, uint nx, uint ny) {
+    return (z * ny + y) * nx + x;
+}
+
+void main() {
+    uint gid = gl_GlobalInvocationID.x;
+    if (gid >= pc.curr_count || pc.curr_count == 0u) {
+        return;
+    }
+
+    uint state = all_buffers[2].data[gid];
+    uint x, y, z, h, p;
+    decode_state(state, x, y, z, h, p, pc.nx, pc.ny, pc.nz, pc.nh, pc.np);
+
+    uint curr_cost = all_buffers[0].data[state];
+    if (curr_cost >= 0x3FFFFFFFu) {
+        return;
+    }
+
+    const int dh_arr[5] = int[5](-2, -1, 0, 1, 2);
+    const int dp_arr[3] = int[3](-1, 0, 1);
+
+    for (int ip = 0; ip < 3; ip++) {
+        int dp = dp_arr[ip];
+        int np_i = int(p) + dp;
+        if (np_i < 0 || np_i >= int(pc.np)) {
+            continue;
+        }
+
+        for (int ih = 0; ih < 5; ih++) {
+            int dh = dh_arr[ih];
+            uint nh_u = uint(wrap_i(int(h) + dh, int(pc.nh)));
+
+            float yaw = (float(nh_u) / float(pc.nh)) * 6.28318530718;
+            float pitch = ((float(np_i) / float(max(int(pc.np) - 1, 1))) - 0.5) * 1.0;
+            float cp = cos(pitch);
+            int dx = int(round(cos(yaw) * cp * 1.6));
+            int dz = int(round(sin(yaw) * cp * 1.6));
+            int dy = int(round(sin(pitch) * 1.4));
+
+            int nx_i = int(x) + dx;
+            int ny_i = int(y) + dy;
+            int nz_i = int(z) + dz;
+            if (nx_i < 0 || ny_i < 0 || nz_i < 0 || nx_i >= int(pc.nx) || ny_i >= int(pc.ny) || nz_i >= int(pc.nz)) {
+                continue;
+            }
+
+            uint occ = all_buffers[4].data[occ_index(uint(nx_i), uint(ny_i), uint(nz_i), pc.nx, pc.ny)];
+            if (occ != 0u) {
+                continue;
+            }
+
+            uint nstate = encode_state(uint(nx_i), uint(ny_i), uint(nz_i), nh_u, uint(np_i), pc.nx, pc.ny, pc.nz, pc.nh, pc.np);
+            uint steer_pen = uint(abs(dh)) * 7u + uint(abs(dp)) * 9u;
+            uint new_cost = curr_cost + 12u + steer_pen;
+
+            uint old_cost = atomicMin(all_buffers[0].data[nstate], new_cost);
+            if (new_cost < old_cost) {
+                all_buffers[1].data[nstate] = state;
+                uint slot = atomicAdd(all_buffers[5].data[1], 1u);
+                if (slot < pc.max_frontier) {
+                    all_buffers[3].data[slot] = nstate;
+                }
+
+                if (uint(nx_i) == pc.goal_x && uint(ny_i) == pc.goal_y && uint(nz_i) == pc.goal_z) {
+                    uint prev_best = atomicMin(all_buffers[5].data[3], new_cost);
+                    if (new_cost <= prev_best) {
+                        all_buffers[5].data[2] = nstate;
+                    }
+                }
+            }
+        }
+    }
+
+    atomicAdd(all_buffers[5].data[4], 1u);
+}

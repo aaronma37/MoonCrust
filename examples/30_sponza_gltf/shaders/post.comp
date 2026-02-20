@@ -1,0 +1,28 @@
+#version 450
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(set = 1, binding = 4, rgba16f) uniform image2D img_hdr;
+layout(set = 1, binding = 14) uniform sampler2D tex_volumetric; // Use sampler for linear upscaling
+
+void main() {
+    ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(img_hdr);
+    if (pos.x >= size.x || pos.y >= size.y) return;
+    
+    vec3 color = imageLoad(img_hdr, pos).rgb;
+    
+    // Smooth Volumetric Sampling
+    vec2 uv = (vec2(pos) + 0.5) / vec2(size);
+    vec3 scattering = texture(tex_volumetric, uv).rgb;
+    color += scattering;
+
+    // 1. Tonemapping
+    vec3 x = color * 0.6;
+    vec3 tonemapped = (x*(2.51*x+0.03))/(x*(2.43*x+0.59)+0.14);
+    
+    // 2. Gamma Correction
+    vec3 gammaCorrected = pow(tonemapped, vec3(1.0 / 2.2));
+    
+    imageStore(img_hdr, pos, vec4(gammaCorrected, 1.0));
+}

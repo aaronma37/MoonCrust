@@ -1,0 +1,71 @@
+#version 450
+#extension GL_EXT_mesh_shader : require
+
+layout(local_size_x = 32) in;
+layout(triangles, max_vertices = 64, max_primitives = 64) out;
+
+layout(push_constant) uniform PushConstants {
+    mat4 mvp;
+    float time;
+} pc;
+
+layout(location = 0) out vec3 vNormal[];
+layout(location = 1) out vec3 vColor[];
+layout(location = 2) out vec3 vWorldPos[];
+
+void main() {
+    uint gid = gl_WorkGroupID.x;
+    uint tid = gl_LocalInvocationID.x;
+
+    // Hall parameters
+    float z_start = float(gid) * 4.0 - 20.0;
+    float z_end = z_start + 4.0;
+    
+    SetMeshOutputsEXT(64, 62);
+
+    // Generate two vertices per thread (one front, one back)
+    // We'll map tid 0-31 to a path around the hall:
+    // 0-8: Floor, 8-16: Left Wall, 16-24: Arch, 24-31: Right Wall
+    float t = float(tid) / 31.0;
+    vec3 p;
+    vec3 n;
+
+    if (tid < 8) { // Floor
+        float ft = float(tid) / 7.0;
+        p = vec3(mix(-10.0, 10.0, ft), 0.0, z_start);
+        n = vec3(0, 1, 0);
+    } else if (tid < 16) { // Left Wall
+        float wt = float(tid - 8) / 7.0;
+        p = vec3(-10.0, mix(0.0, 8.0, wt), z_start);
+        n = vec3(1, 0, 0);
+    } else if (tid < 24) { // Arch (Simplified Curve)
+        float at = float(tid - 16) / 7.0;
+        float ang = at * 3.14159;
+        p = vec3(cos(ang) * 10.0, 8.0 + sin(ang) * 5.0, z_start);
+        n = vec3(-cos(ang), -sin(ang), 0);
+    } else { // Right Wall
+        float wt = float(tid - 24) / 7.0;
+        p = vec3(10.0, mix(8.0, 0.0, wt), z_start);
+        n = vec3(-1, 0, 0);
+    }
+
+    // Vertices 0-31 are "Front"
+    gl_MeshVerticesEXT[tid].gl_Position = pc.mvp * vec4(p, 1.0);
+    vNormal[tid] = n;
+    vColor[tid] = vec3(0.7, 0.7, 0.75);
+    vWorldPos[tid] = p;
+
+    // Vertices 32-63 are "Back"
+    gl_MeshVerticesEXT[tid + 32].gl_Position = pc.mvp * vec4(p.xy, z_end, 1.0);
+    vNormal[tid + 32] = n;
+    vColor[tid + 32] = vec3(0.7, 0.7, 0.75);
+    vWorldPos[tid + 32] = vec3(p.xy, z_end);
+
+    // Indices (Quad strip)
+    if (tid < 31) {
+        uint i = tid;
+        // Two triangles for the quad connecting front and back vertices
+        gl_PrimitiveTriangleIndicesEXT[i * 2] = uvec3(i, i + 32, i + 1);
+        gl_PrimitiveTriangleIndicesEXT[i * 2 + 1] = uvec3(i + 1, i + 32, i + 33);
+    }
+}

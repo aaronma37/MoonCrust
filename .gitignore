@@ -1,0 +1,26 @@
+# Build artifacts
+build/
+bin/
+obj/
+
+# Only ignore the raw XML, keep the generated Lua FFI
+tools/vk.xml
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# CMake leftovers
+CMakeUserPresets.json
+compile_commands.json
+
+# Tool specific
+vinfo.txt

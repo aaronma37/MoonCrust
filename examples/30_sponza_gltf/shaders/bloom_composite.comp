@@ -1,0 +1,22 @@
+#version 450
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(set = 1, binding = 4, rgba16f) uniform image2D img_hdr;
+layout(set = 1, binding = 11, rgba16f) uniform readonly image2D img_blur;
+
+void main() {
+    ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(img_hdr);
+    if (pos.x >= size.x || pos.y >= size.y) return;
+
+    vec3 hdrColor = imageLoad(img_hdr, pos).rgb;
+    
+    // Sample bloom from half-res
+    vec3 bloomColor = imageLoad(img_blur, pos / 2).rgb;
+    
+    // Simple additive blend
+    vec3 result = hdrColor + bloomColor * 0.4; // 0.4 intensity factor
+    
+    imageStore(img_hdr, pos, vec4(result, 1.0));
+}

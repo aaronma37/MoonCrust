@@ -1,0 +1,46 @@
+#version 450
+#extension GL_EXT_nonuniform_qualifier : require
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 8) in;
+
+layout(set = 0, binding = 0) buffer VoxelWorld {
+    float voxels[];
+} world;
+
+layout(push_constant) uniform PushConstants {
+    uint out_img;
+    uint world_buf_id;
+    float time;
+} pc;
+
+float hash(vec3 p) {
+    p  = fract(p * 0.1031);
+    p += dot(p, p.zyx + 31.32);
+    return fract((p.x + p.y) * p.z);
+}
+
+float noise(vec3 p) {
+    vec3 i = floor(p);
+    vec3 f = fract(p);
+    f = f*f*(3.0-2.0*f);
+    return mix(mix(mix(hash(i+vec3(0,0,0)), hash(i+vec3(1,0,0)), f.x),
+                   mix(hash(i+vec3(0,1,0)), hash(i+vec3(1,1,0)), f.x), f.y),
+               mix(mix(hash(i+vec3(0,0,1)), hash(i+vec3(1,0,1)), f.x),
+                   mix(hash(i+vec3(0,1,1)), hash(i+vec3(1,1,1)), f.x), f.y), f.z);
+}
+
+void main() {
+    uvec3 pos = gl_GlobalInvocationID.xyz;
+    if (pos.x >= 128 || pos.y >= 64 || pos.z >= 128) return;
+
+    vec3 p = vec3(pos) * 0.04;
+    float h = noise(p) * 0.5 + noise(p * 2.1) * 0.25;
+    
+    // Terrain height
+    float surface = h * 64.0;
+    float density = (float(pos.y) < surface) ? 1.0 : 0.0;
+
+    // Flat indexing: x + y*W + z*W*H
+    uint idx = pos.x + (pos.y * 128) + (pos.z * 128 * 64);
+    world.voxels[idx] = density;
+}

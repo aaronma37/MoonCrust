@@ -1,0 +1,87 @@
+#version 450
+#extension GL_EXT_nonuniform_qualifier : require
+
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0) buffer AudioBuffer { float samples[]; } audio_out;
+layout(set = 0, binding = 1) buffer Waveguide { float data[]; } waveguide;
+
+layout(push_constant) uniform PushConstants {
+    float time, morph, lfo_freq, lfo_depth, noise_mix, grain_mix, res_freq, res_feedback, formant_f, grit, sample_rate;
+    uint sample_offset, count;
+    float freq;
+} pc;
+
+uint hash_u(uint x) {
+    x = ((x >> 16) ^ x) * 0x45d9f3b;
+    x = ((x >> 16) ^ x) * 0x45d9f3b;
+    x = (x >> 16) ^ x;
+    return x;
+}
+
+// 1. Fractal Gravel Source (Biological Vibration)
+float gravel_source(float t, float fundamental) {
+    float phase = t * fundamental;
+    // Layered square-ish waves with jitter
+    float s = 0.0;
+    s += (fract(phase) < 0.5 ? 1.0 : -1.0) * 1.0;
+    s += (fract(phase * 2.01 + hash_u(uint(t*10.0))/4e9) < 0.5 ? 0.5 : -0.5);
+    s += (fract(phase * 0.505) < 0.5 ? 0.8 : -0.8);
+    return s * 0.4;
+}
+
+// 2. 12-Stage reflection coefficients
+float get_reflection(int stage, float morph) {
+    float areas[12];
+    for(int i=0; i<12; i++) {
+        float t = float(i) / 11.0;
+        // Profile: Lungs(0.8) -> Throat(0.1) -> Mouth(2.0)
+        areas[i] = mix(0.8, 0.1, smoothstep(0.0, 0.3, t)) + mix(0.0, 2.0, smoothstep(0.3, 1.0, t) * morph);
+    }
+    return (areas[min(stage+1, 11)] - areas[stage]) / (areas[min(stage+1, 11)] + areas[stage] + 1e-6);
+}
+
+void main() {
+    uint gid = gl_GlobalInvocationID.x;
+    if (gid >= pc.count) return;
+
+    float dt = 1.0 / pc.sample_rate;
+    float t = pc.time + float(gid) * dt;
+    
+    // 1. Excitation
+    float source = gravel_source(t, pc.freq);
+    float noise = (hash_u(uint(t * 10000.0)) / 4294967295.0 * 2.0 - 1.0) * pc.noise_mix;
+    float excitation = mix(source, noise * abs(source), 0.5);
+
+    // 2. Anatomy: 12-Stage KL Lattice
+    uint base_idx = (gid + pc.sample_offset) % 1024;
+    float forward = excitation;
+    float backward = 0.0;
+    
+    for (int i = 0; i < 12; i++) {
+        float r = get_reflection(i, pc.morph);
+        uint tap_idx = (base_idx + 65536 - (i * 18)) % 65536;
+        float prev_b = waveguide.data[(tap_idx + 32768) % 65536];
+
+        float next_f = (1.0 - r) * forward + r * prev_b;
+        float next_b = -r * forward + (1.0 + r) * prev_b;
+        forward = next_f;
+        backward = next_b;
+        
+        waveguide.data[tap_idx] = forward;
+        waveguide.data[(tap_idx + 32768) % 65536] = backward;
+    }
+    float signal = forward;
+
+    // 3. Nonlinear Compression
+    signal = tanh(signal * (1.0 + pc.grit * 10.0));
+
+    // 4. Reverb
+    uint rev_idx = (gid + pc.sample_offset) % 65536;
+    float wet = waveguide.data[(rev_idx + 65536 - 5000) % 65536] * 0.5 + waveguide.data[(rev_idx + 65536 - 8000) % 65536] * 0.3;
+    waveguide.data[rev_idx] = (signal + wet) * pc.res_feedback * 0.95;
+    
+    signal = mix(signal, wet, pc.res_feedback * 0.6);
+
+    audio_out.samples[pc.sample_offset + gid] = clamp(signal * 0.7, -1.0, 1.0);
+}

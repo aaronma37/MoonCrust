@@ -1,0 +1,87 @@
+#version 450
+#extension GL_EXT_nonuniform_qualifier : require
+
+layout(set = 0, binding = 0) buffer AllBuffers {
+    float data[];
+} all_buffers[];
+
+layout(push_constant) uniform PushConstants {
+    uint p_buf_id;
+    uint s_buf_id;
+    uint count;
+    float dt;
+    float grid_size;
+} pc;
+
+layout (local_size_x = 256) in;
+
+// SPH Gradient Kernels
+vec3 spiky_grad(vec3 r, float r2, float h) {
+    float dist = length(r);
+    if (dist <= 0.0 || r2 > h * h) return vec3(0.0);
+    float diff = h - dist;
+    float c = -45.0 / (3.14159 * pow(h, 6.0));
+    return c * diff * diff * (r / dist);
+}
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= pc.count) return;
+
+    // Resolve Sorted ID -> Real Particle
+    uint my_pid = floatBitsToUint(all_buffers[pc.s_buf_id].data[idx * 2 + 1]);
+    uint p_off = my_pid * 8;
+
+    vec3 pos = vec3(all_buffers[pc.p_buf_id].data[p_off+0], all_buffers[pc.p_buf_id].data[p_off+1], all_buffers[pc.p_buf_id].data[p_off+2]);
+    vec3 vel = vec3(all_buffers[pc.p_buf_id].data[p_off+4], all_buffers[pc.p_buf_id].data[p_off+5], all_buffers[pc.p_buf_id].data[p_off+6]);
+    float dens = all_buffers[pc.p_buf_id].data[p_off+7];
+
+    vec3 force = vec3(0.0, 2.0, 0.0) * -1.0; // Gravity DOWN (Negative Y)
+    
+    // Pressure Constants
+    float rest_dens = 1000.0; // Water
+    float stiffness = 200.0;
+    float pressure = stiffness * (dens - rest_dens);
+    float h = pc.grid_size;
+
+    // Neighbor Scan
+    int scan = 64;
+    for (int i = -scan; i <= scan; i++) {
+        int n_idx = int(idx) + i;
+        if (n_idx < 0 || n_idx >= int(pc.count) || n_idx == int(idx)) continue;
+        
+        uint n_pid = floatBitsToUint(all_buffers[pc.s_buf_id].data[n_idx * 2 + 1]);
+        uint n_off = n_pid * 8;
+        
+        vec3 n_pos = vec3(all_buffers[pc.p_buf_id].data[n_off+0], all_buffers[pc.p_buf_id].data[n_off+1], all_buffers[pc.p_buf_id].data[n_off+2]);
+        float n_dens = all_buffers[pc.p_buf_id].data[n_off+7];
+        
+        vec3 dir = pos - n_pos;
+        float r2 = dot(dir, dir);
+        
+        if (r2 < h*h) {
+            float n_pres = stiffness * (n_dens - rest_dens);
+            vec3 p_force = -normalize(dir) * ((pressure + n_pres) / (2.0 * n_dens)) * length(spiky_grad(dir, r2, h));
+            force += p_force;
+        }
+    }
+
+    // Integration
+    vel += force * pc.dt;
+    
+    // Bounds (Box)
+    float box = 3.0;
+    if (pos.y < -box) { pos.y = -box; vel.y *= -0.5; }
+    if (pos.x < -box) { pos.x = -box; vel.x *= -0.5; }
+    if (pos.x >  box) { pos.x =  box; vel.x *= -0.5; }
+    
+    pos += vel * pc.dt;
+
+    // Write Back
+    all_buffers[pc.p_buf_id].data[p_off+0] = pos.x;
+    all_buffers[pc.p_buf_id].data[p_off+1] = pos.y;
+    all_buffers[pc.p_buf_id].data[p_off+2] = pos.z;
+    all_buffers[pc.p_buf_id].data[p_off+4] = vel.x;
+    all_buffers[pc.p_buf_id].data[p_off+5] = vel.y;
+    all_buffers[pc.p_buf_id].data[p_off+6] = vel.z;
+}

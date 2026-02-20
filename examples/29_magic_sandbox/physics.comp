@@ -1,0 +1,117 @@
+#version 450
+#extension GL_EXT_nonuniform_qualifier : enable
+layout(local_size_x = 16, local_size_y = 16) in;
+
+struct Pixel { uint data0; uint data1; };
+layout(set = 0, binding = 0) buffer WorldBuffers { Pixel cells[]; } all_buffers[];
+
+layout(push_constant) uniform PushConstants {
+    uint world_w, world_h;
+    float time;
+    uint frame_count;
+    float mouse_x, mouse_y;
+    uint brush_material, brush_size;
+    uint in_buf_idx, out_buf_idx;
+    float cam_x, cam_y;
+    uint screen_w, screen_h;
+    uint light_img_idx, out_img_idx;
+} pc;
+
+#define GET_ID(p) ((p.data0 >> 24) & 0xFFu)
+#define GET_DENSITY(p) ((p.data1 >> 24) & 0xFFu)
+#define GET_LIFE(p) ((p.data1 >> 16) & 0xFFu)
+#define GET_FLAGS(p) (p.data1 & 0x0Fu)
+
+uint pack_data0(uint id, uint temp, int vx, int vy) { return (id << 24) | (temp << 16) | ((uint(vx) & 0xFFu) << 8) | (uint(vy) & 0xFFu); }
+uint pack_data1(uint density, uint life, uint trigger, uint payload, uint flags) { return (density << 24) | (life << 16) | (trigger << 12) | (payload << 4) | flags; }
+uint get_idx(ivec2 p) { return clamp(p.y, 0, int(pc.world_h-1)) * pc.world_w + clamp(p.x, 0, int(pc.world_w-1)); }
+
+float rand(vec2 co) { return fract(sin(dot(co, vec2(12.9898, 78.233))) * 43758.5453); }
+
+void main() {
+    ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
+    if (pos.x >= pc.world_w || pos.y >= pc.world_h) return;
+
+    // Simulation Window
+    int margin = 64;
+    if (pos.x < int(pc.cam_x) - margin || pos.x > int(pc.cam_x) + int(pc.screen_w) + margin ||
+        pos.y < int(pc.cam_y) - margin || pos.y > int(pc.cam_y) + int(pc.screen_h) + margin) {
+        all_buffers[pc.out_buf_idx].cells[pos.y * pc.world_w + pos.x] = all_buffers[pc.in_buf_idx].cells[pos.y * pc.world_w + pos.x];
+        return;
+    }
+
+    uint idx = pos.y * pc.world_w + pos.x;
+    Pixel self = all_buffers[pc.in_buf_idx].cells[idx];
+    uint id = GET_ID(self);
+    uint density = GET_DENSITY(self);
+    uint flags = GET_FLAGS(self);
+    Pixel next = self;
+    float r = rand(vec2(pos) + pc.time);
+
+    // 1. BEHAVIOR: GRAVITY & LIQUIDS (The "I want to move" part)
+    if (id != 0 && (flags & 1u) == 0) {
+        ivec2 below = pos + ivec2(0, 1);
+        Pixel b_pix = all_buffers[pc.in_buf_idx].cells[get_idx(below)];
+        uint bid = GET_ID(b_pix);
+        
+        // If we are a liquid/sand and can fall
+        if (bid == 0 || GET_DENSITY(b_pix) < density) {
+            next = b_pix; // Give up our spot to the lighter element
+        } else if (id == 2) { // Water horizontal leveling
+            int dir = (r > 0.5) ? 1 : -1;
+            ivec2 side = pos + ivec2(dir, 0);
+            if (GET_ID(all_buffers[pc.in_buf_idx].cells[get_idx(side)]) == 0) next = all_buffers[pc.in_buf_idx].cells[get_idx(side)];
+        }
+    }
+
+    // 2. DISPLACEMENT: (The "Something is moving into me" part)
+    if (GET_ID(next) == 0) {
+        // Check 5 positions above us (Above, Diag-L, Diag-R, Side-L, Side-R)
+        ivec2 checks[5] = {ivec2(0,-1), ivec2(-1,-1), ivec2(1,-1), ivec2(-1,0), ivec2(1,0)};
+        for(int i=0; i<5; i++) {
+            Pixel n = all_buffers[pc.in_buf_idx].cells[get_idx(pos + checks[i])];
+            uint nid = GET_ID(n);
+            if (nid != 0 && (GET_FLAGS(n) & 1u) == 0) {
+                // If it's directly above, it always wins
+                if (i == 0) { next = n; break; }
+                // For diagonals and sides, add some jitter to prevent cloning
+                if (r > 0.8) { next = n; break; }
+            }
+        }
+    }
+
+    // 3. SPECIAL BEHAVIORS (Growth, Fire, etc.)
+    if (id == 12) { // Tree Tip
+        if (GET_LIFE(self) > 0) {
+            next.data0 = pack_data0(10, 128, 0, 0); // Leave wood behind
+            next.data1 = pack_data1(200, 0, 0, 0, 1);
+        } else { next.data0 = pack_data0(11, 128, 0, 0); next.data1 = pack_data1(50, 0, 0, 0, 1); }
+    }
+    
+    // Seed pull
+    if (GET_ID(next) == 0) {
+        for(int dx=-1; dx<=1; dx++) {
+            for(int dy=-1; dy<=1; dy++) {
+                Pixel n = all_buffers[pc.in_buf_idx].cells[get_idx(pos + ivec2(dx,dy))];
+                if (GET_ID(n) == 12 && GET_LIFE(n) > 0 && r > 0.9) {
+                    next.data0 = pack_data0(12, 128, 0, 0);
+                    next.data1 = pack_data1(150, GET_LIFE(n) - 1, 0, 0, 0);
+                }
+            }
+        }
+    }
+
+    // 4. BRUSH (Always overrides)
+    if (pc.brush_material != 0) {
+        vec2 world_mouse = vec2(pc.cam_x + pc.mouse_x * pc.screen_w, pc.cam_y + pc.mouse_y * pc.screen_h);
+        if (distance(vec2(pos), world_mouse) < float(pc.brush_size)) {
+            if (pc.brush_material == 1) { next.data0 = pack_data0(1, 128, 0, 0); next.data1 = pack_data1(200, 0, 0, 0, 0); }
+            else if (pc.brush_material == 2) { next.data0 = pack_data0(2, 128, 0, 0); next.data1 = pack_data1(100, 0, 0, 0, 0); }
+            else if (pc.brush_material == 3) { next.data0 = pack_data0(3, 255, 0, 0); next.data1 = pack_data1(10, 30, 0, 0, 0); }
+            else if (pc.brush_material == 6) { next.data0 = pack_data0(6, 128, 0, 0); next.data1 = pack_data1(255, 0, 0, 0, 1); }
+            else if (pc.brush_material == 7) { next.data0 = pack_data0(12, 128, 0, 0); next.data1 = pack_data1(150, 60, 0, 0, 0); }
+        }
+    }
+
+    all_buffers[pc.out_buf_idx].cells[idx] = next;
+}

@@ -1,0 +1,124 @@
+#version 450
+#extension GL_EXT_nonuniform_qualifier : require
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) buffer AllBuffers {
+    uint data[];
+} all_buffers[];
+
+layout(push_constant) uniform AnnealPC {
+    float temp;
+    uint iter;
+    uint city_count;
+    uint chain_count;
+    uint steps;
+} pc;
+
+const uint BUF_CITY_DRAW = 0u;
+const uint BUF_TOUR_CURR = 3u;
+const uint BUF_LEN_CURR = 4u;
+const uint BUF_TOUR_BEST = 5u;
+const uint BUF_LEN_BEST = 6u;
+const uint BUF_RNG = 7u;
+
+float read_city_x(uint city_idx) {
+    uint base = city_idx * 8u;
+    return uintBitsToFloat(all_buffers[BUF_CITY_DRAW].data[base + 0u]);
+}
+
+float read_city_y(uint city_idx) {
+    uint base = city_idx * 8u;
+    return uintBitsToFloat(all_buffers[BUF_CITY_DRAW].data[base + 1u]);
+}
+
+float dist_city(uint a_idx, uint b_idx) {
+    float dx = read_city_x(a_idx) - read_city_x(b_idx);
+    float dy = read_city_y(a_idx) - read_city_y(b_idx);
+    return sqrt(dx * dx + dy * dy);
+}
+
+uint hash_step(uint x) {
+    x ^= x >> 16u;
+    x *= 0x7feb352du;
+    x ^= x >> 15u;
+    x *= 0x846ca68bu;
+    x ^= x >> 16u;
+    return x;
+}
+
+float rand01(inout uint state) {
+    state = hash_step(state + 0x9e3779b9u);
+    return float(state & 0x00ffffffu) * (1.0 / 16777216.0);
+}
+
+void reverse_range(uint base, uint i, uint j) {
+    while (i < j) {
+        uint ia = base + i;
+        uint ib = base + j;
+        uint tmp = all_buffers[BUF_TOUR_CURR].data[ia];
+        all_buffers[BUF_TOUR_CURR].data[ia] = all_buffers[BUF_TOUR_CURR].data[ib];
+        all_buffers[BUF_TOUR_CURR].data[ib] = tmp;
+        i++;
+        j--;
+    }
+}
+
+float two_opt_delta(uint base, uint n, uint i, uint j) {
+    uint a = all_buffers[BUF_TOUR_CURR].data[base + ((i + n - 1u) % n)];
+    uint b = all_buffers[BUF_TOUR_CURR].data[base + i];
+    uint c = all_buffers[BUF_TOUR_CURR].data[base + j];
+    uint d = all_buffers[BUF_TOUR_CURR].data[base + ((j + 1u) % n)];
+    return dist_city(a, c) + dist_city(b, d) - dist_city(a, b) - dist_city(c, d);
+}
+
+void copy_current_to_best(uint base, uint n) {
+    for (uint i = 0u; i < n; ++i) {
+        all_buffers[BUF_TOUR_BEST].data[base + i] = all_buffers[BUF_TOUR_CURR].data[base + i];
+    }
+}
+
+void main() {
+    uint chain = gl_GlobalInvocationID.x;
+    if (chain >= pc.chain_count) {
+        return;
+    }
+    uint n = pc.city_count;
+    if (n < 4u) {
+        return;
+    }
+
+    uint base = chain * n;
+    uint rng = all_buffers[BUF_RNG].data[chain] ^ (pc.iter + chain * 747796405u);
+    float len = uintBitsToFloat(all_buffers[BUF_LEN_CURR].data[chain]);
+    float best_len = uintBitsToFloat(all_buffers[BUF_LEN_BEST].data[chain]);
+
+    float temp = max(pc.temp, 0.000001);
+    for (uint step = 0u; step < pc.steps; ++step) {
+        uint i = 1u + uint(rand01(rng) * float(n - 1u));
+        uint j = 1u + uint(rand01(rng) * float(n - 1u));
+        if (i == j) {
+            continue;
+        }
+        if (i > j) {
+            uint t = i;
+            i = j;
+            j = t;
+        }
+
+        float delta = two_opt_delta(base, n, i, j);
+        bool accept = (delta < 0.0) || (rand01(rng) < exp(-delta / temp));
+        if (accept) {
+            reverse_range(base, i, j);
+            len += delta;
+            if (len < best_len) {
+                best_len = len;
+                copy_current_to_best(base, n);
+            }
+        }
+    }
+
+    all_buffers[BUF_LEN_CURR].data[chain] = floatBitsToUint(len);
+    all_buffers[BUF_LEN_BEST].data[chain] = floatBitsToUint(best_len);
+    all_buffers[BUF_RNG].data[chain] = rng;
+}

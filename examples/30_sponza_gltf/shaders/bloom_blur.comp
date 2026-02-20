@@ -1,0 +1,23 @@
+#version 450
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(set = 1, binding = 10, rgba16f) uniform readonly image2D img_bright;
+layout(set = 1, binding = 11, rgba16f) uniform image2D img_blur;
+
+void main() {
+    ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(img_blur);
+    if (pos.x >= size.x || pos.y >= size.y) return;
+
+    // Simple 9-tap Gaussian approximation (box blur for speed in this test)
+    vec3 result = vec3(0.0);
+    for (int x = -2; x <= 2; ++x) {
+        for (int y = -2; y <= 2; ++y) {
+            ivec2 samplePos = clamp(pos + ivec2(x, y), ivec2(0), size - 1);
+            result += imageLoad(img_bright, samplePos).rgb;
+        }
+    }
+    
+    imageStore(img_blur, pos, vec4(result / 25.0, 1.0));
+}

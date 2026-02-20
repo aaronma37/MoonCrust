@@ -1,0 +1,168 @@
+#version 450
+#extension GL_EXT_nonuniform_qualifier : require
+#extension GL_GOOGLE_include_directive : require
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 1, binding = 0) buffer Vertices {
+    vec4 pos[];
+} vertices;
+
+layout(set = 1, binding = 1) buffer Indices {
+    uint idx[]; // 3 per triangle
+} indices;
+
+layout(push_constant) uniform AnnealPC {
+    float temp;
+    uint iter;
+    uint vertex_count;
+    uint triangle_count;
+    uint steps;
+    float learning_rate;
+} pc;
+
+#include "cost.glsl"
+
+uint hash_step(uint x) {
+    x ^= x >> 16u;
+    x *= 0x7feb352du;
+    x ^= x >> 15u;
+    x *= 0x846ca68bu;
+    x ^= x >> 16u;
+    return x;
+}
+
+float rand01(inout uint state) {
+    state = hash_step(state + 0x9e3779b9u);
+    return float(state & 0x00ffffffu) * (1.0 / 16777216.0);
+}
+
+// ------------------------------------------------------------------
+// KERNEL 1: Vertex Position Optimization (The "Surface Hugger")
+// ------------------------------------------------------------------
+void optimize_vertices() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= pc.vertex_count) return;
+
+    uint rng = (pc.iter * 747796405u) ^ i;
+    vec3 p = vertices.pos[i].xyz;
+    float temp = max(pc.temp, 0.0001);
+    
+    float current_cost = abs(compute_shape_cost(p)) * 5.0;
+    
+    // RADIAL REPULSION: Prevent clumping
+    for (int k = 0; k < 6; k++) {
+        uint other_idx = uint(rand01(rng) * float(pc.vertex_count));
+        if (other_idx == i) continue;
+        vec3 other_p = vertices.pos[other_idx].xyz;
+        float d = length(p - other_p);
+        current_cost += (0.01 * temp) / (d * d + 0.001); 
+    }
+
+    float step_size = pc.learning_rate * (0.1 + temp * 2.0);
+
+    for (uint s = 0; s < pc.steps; ++s) {
+        vec3 delta = (vec3(rand01(rng), rand01(rng), rand01(rng)) * 2.0 - 1.0) * step_size;
+        vec3 new_p = p + delta;
+        
+        float new_cost = abs(compute_shape_cost(new_p)) * 5.0;
+        for (int k = 0; k < 2; k++) {
+            uint other_idx = uint(rand01(rng) * float(pc.vertex_count));
+            if (other_idx == i) continue;
+            new_cost += (0.01 * temp) / (length(new_p - vertices.pos[other_idx].xyz) + 0.001);
+        }
+        
+        if ((new_cost < current_cost) || (rand01(rng) < exp(-(new_cost - current_cost) / temp))) {
+            p = new_p;
+            current_cost = new_cost;
+        }
+    }
+    vertices.pos[i].xyz = p;
+}
+
+// ------------------------------------------------------------------
+// KERNEL 2: Topology Optimization (The "Social Triangle")
+// ------------------------------------------------------------------
+void optimize_topology() {
+    uint tri = gl_GlobalInvocationID.x;
+    if (tri >= pc.triangle_count) return;
+
+    uint rng = (pc.iter * 987654321u) ^ tri;
+    uint i[3];
+    i[0] = indices.idx[tri * 3 + 0];
+    i[1] = indices.idx[tri * 3 + 1];
+    i[2] = indices.idx[tri * 3 + 2];
+
+    vec3 v[3];
+    v[0] = vertices.pos[i[0]].xyz;
+    v[1] = vertices.pos[i[1]].xyz;
+    v[2] = vertices.pos[i[2]].xyz;
+
+    vec3 center = (v[0] + v[1] + v[2]) * 0.333;
+    
+    // Triangle Quality Cost:
+    // 1. Center of mass on SDF
+    // 2. Short edges (Tightness)
+    // 3. Aspect Ratio (Avoid slivers)
+    float d12 = length(v[0]-v[1]);
+    float d23 = length(v[1]-v[2]);
+    float d31 = length(v[2]-v[0]);
+    float current_cost = (d12 + d23 + d31) * 0.5;
+    current_cost += abs(compute_shape_cost(center)) * 10.0;
+    
+    // Equilateral bias: penalize variance in edge lengths
+    float avg_len = (d12 + d23 + d31) / 3.0;
+    current_cost += (abs(d12 - avg_len) + abs(d23 - avg_len) + abs(d31 - avg_len)) * 5.0;
+
+    float temp = max(pc.temp, 0.0001);
+
+    for (uint s = 0; s < pc.steps; ++s) {
+        uint which = uint(rand01(rng) * 3.0);
+        
+        // STOCHASTIC LOCAL SEARCH: Find a vertex near the current center
+        uint best_cand = uint(rand01(rng) * float(pc.vertex_count));
+        float best_dist = length(vertices.pos[best_cand].xyz - center);
+        for(int k=0; k<6; k++) {
+            uint cand = uint(rand01(rng) * float(pc.vertex_count));
+            float d = length(vertices.pos[cand].xyz - center);
+            if(d < best_dist) { best_dist = d; best_cand = cand; }
+        }
+
+        uint new_idx = best_cand;
+        if (new_idx == i[which]) continue;
+
+        vec3 nv[3];
+        nv[0] = (which == 0) ? vertices.pos[new_idx].xyz : v[0];
+        nv[1] = (which == 1) ? vertices.pos[new_idx].xyz : v[1];
+        nv[2] = (which == 2) ? vertices.pos[new_idx].xyz : v[2];
+
+        vec3 ncenter = (nv[0] + nv[1] + nv[2]) * 0.333;
+        float nd12 = length(nv[0]-nv[1]);
+        float nd23 = length(nv[1]-nv[2]);
+        float nd31 = length(nv[2]-nv[0]);
+        
+        float new_cost = (nd12 + nd23 + nd31) * 0.5;
+        new_cost += abs(compute_shape_cost(ncenter)) * 10.0;
+        float navg = (nd12 + nd23 + nd31) / 3.0;
+        new_cost += (abs(nd12 - navg) + abs(nd23 - navg) + abs(nd31 - navg)) * 5.0;
+        
+        if ((new_cost < current_cost) || (rand01(rng) < exp(-(new_cost - current_cost) / (temp * 0.5)))) {
+            i[which] = new_idx;
+            v[which] = nv[which];
+            center = ncenter;
+            current_cost = new_cost;
+        }
+    }
+
+    indices.idx[tri * 3 + 0] = i[0];
+    indices.idx[tri * 3 + 1] = i[1];
+    indices.idx[tri * 3 + 2] = i[2];
+}
+
+void main() {
+    if (gl_WorkGroupID.z == 0) {
+        optimize_vertices();
+    } else {
+        optimize_topology();
+    }
+}

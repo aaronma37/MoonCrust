@@ -1,0 +1,104 @@
+#version 450
+#extension GL_EXT_nonuniform_qualifier : require
+
+layout(local_size_x = 16, local_size_y = 16) in;
+layout(set = 0, binding = 2, rgba32f) uniform image2D all_storage_images[];
+
+layout(push_constant) uniform PushConstants {
+    uint out_img;
+    uint frame_count;
+    float time;
+    uint pad;
+} pc;
+
+float sdBox(vec3 p, vec3 b) {
+    vec3 q = abs(p) - b;
+    return length(max(q, 0.0)) + min(max(q.x, max(q.y, q.z)), 0.0);
+}
+
+float map(vec3 p) {
+    float d = 1e9;
+    
+    // 1. Room
+    d = min(d, -sdBox(p, vec3(10.0, 6.0, 15.0)));
+    
+    // 2. Pillars
+    vec3 p_pillar = p;
+    p_pillar.x = abs(p_pillar.x) - 6.0;
+    p_pillar.z = mod(p_pillar.z + 4.0, 8.0) - 4.0;
+    d = min(d, sdBox(p_pillar, vec3(0.8, 6.0, 0.8)));
+    
+    // 3. Floating Cubes (Movement)
+    vec3 p_cube = p - vec3(0, 1.0 + sin(pc.time), 0);
+    d = min(d, sdBox(p_cube, vec3(1.5)));
+
+    return d;
+}
+
+vec3 calcNormal(vec3 p) {
+    vec2 e = vec2(0.001, 0);
+    return normalize(vec3(
+        map(p + e.xyy) - map(p - e.xyy),
+        map(p + e.yxy) - map(p - e.yxy),
+        map(p + e.yyx) - map(p - e.yyx)
+    ));
+}
+
+float shadow(vec3 ro, vec3 rd) {
+    float res = 1.0;
+    float t = 0.1;
+    for(int i=0; i<32; i++) {
+        float h = map(ro + rd * t);
+        res = min(res, 8.0 * h / t);
+        t += clamp(h, 0.02, 0.5);
+        if (res < 0.01 || t > 20.0) break;
+    }
+    return clamp(res, 0.0, 1.0);
+}
+
+void main() {
+    ivec2 pix = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(all_storage_images[pc.out_img]);
+    if (pix.x >= size.x || pix.y >= size.y) return;
+
+    vec2 uv = (vec2(pix) / vec2(size)) * 2.0 - 1.0;
+    uv.x *= float(size.x) / float(size.y);
+
+    float ang = pc.time * 0.2;
+    vec3 ro = vec3(cos(ang)*14.0, 2.0, sin(ang)*14.0);
+    vec3 target = vec3(0, 0, 0);
+    vec3 cw = normalize(target - ro);
+    vec3 cu = normalize(cross(cw, vec3(0, 1, 0)));
+    vec3 cv = normalize(cross(cu, cw));
+    vec3 rd = normalize(uv.x*cu + uv.y*cv + 1.5*cw);
+
+    // Raymarch
+    float t = 0.0;
+    for(int i=0; i<80; i++) {
+        float h = map(ro + rd * t);
+        if (h < 0.001) break;
+        t += h;
+        if (t > 50.0) { t = -1.0; break; }
+    }
+
+    vec3 col = vec3(0.02, 0.03, 0.05); // Background
+    if (t > 0.0) {
+        vec3 p = ro + rd * t;
+        vec3 n = calcNormal(p);
+        vec3 lp = vec3(2.0, 5.0, 3.0);
+        vec3 ld = normalize(lp - p);
+        
+        float dif = clamp(dot(n, ld), 0.0, 1.0);
+        float sha = shadow(p + n * 0.01, ld);
+        float amb = 0.5 + 0.5 * n.y;
+        
+        vec3 mat_col = vec3(0.7);
+        if (p.x > 9.8) mat_col = vec3(0.8, 0.2, 0.2);
+        if (p.x < -9.8) mat_col = vec3(0.2, 0.8, 0.2);
+        
+        col = mat_col * (dif * sha + amb * 0.2);
+        col = mix(col, vec3(0.05, 0.07, 0.1), 1.0 - exp(-0.001 * t * t)); // Fog
+    }
+
+    imageStore(all_storage_images[pc.out_img], pix, vec4(col, 1.0));
+}

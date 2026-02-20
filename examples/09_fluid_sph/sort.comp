@@ -1,0 +1,48 @@
+#version 450
+#extension GL_EXT_nonuniform_qualifier : require
+
+struct Entry {
+    uint key;   // Cell Index
+    uint value; // Particle Index
+};
+
+layout(set = 0, binding = 0) buffer SortBuffer {
+    Entry entries[];
+} all_buffers[];
+
+layout(push_constant) uniform PushConstants {
+    uint buf_id;
+    uint j;
+    uint k;
+} pc;
+
+layout (local_size_x = 256) in;
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    uint bid = pc.buf_id;
+    
+    uint j = pc.j;
+    uint k = pc.k;
+    
+    // Bitonic Comparison
+    uint ixj = i ^ j;
+    
+    if (ixj > i) {
+        if ((i & k) == 0) {
+            // Ascending
+            if (all_buffers[bid].entries[i].key > all_buffers[bid].entries[ixj].key) {
+                Entry temp = all_buffers[bid].entries[i];
+                all_buffers[bid].entries[i] = all_buffers[bid].entries[ixj];
+                all_buffers[bid].entries[ixj] = temp;
+            }
+        } else {
+            // Descending
+            if (all_buffers[bid].entries[i].key < all_buffers[bid].entries[ixj].key) {
+                Entry temp = all_buffers[bid].entries[i];
+                all_buffers[bid].entries[i] = all_buffers[bid].entries[ixj];
+                all_buffers[bid].entries[ixj] = temp;
+            }
+        }
+    }
+}

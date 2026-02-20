@@ -1,0 +1,98 @@
+#version 450
+#extension GL_EXT_nonuniform_qualifier : require
+
+struct Agent {
+    vec2 pos;
+    float angle;
+    float padding;
+};
+
+layout(set = 0, binding = 0) buffer AgentBuffer {
+    Agent agents[];
+} all_buffers[];
+
+// Binding 1: Sampler (Read - The "Nose")
+layout(set = 0, binding = 1) uniform sampler2D all_textures[];
+
+// Binding 2: Storage Image (Write - The "Body")
+layout(set = 0, binding = 2, rgba8) uniform image2D all_storage_images[];
+
+layout(push_constant) uniform PushConstants {
+    float dt;
+    float time;
+    uint  agent_buf_id;
+    uint  trail_tex_id;  // Read from here
+    uint  trail_img_id;  // Write to here
+    uint  width;
+    uint  height;
+} pc;
+
+layout (local_size_x = 256) in;
+
+// Hash function for random turns
+float hash(vec2 p) {
+    return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453);
+}
+
+float sense(Agent agent, float angle_offset) {
+    float sensor_dist = 10.0;
+    float sensor_angle = agent.angle + angle_offset;
+    vec2 sensor_dir = vec2(cos(sensor_angle), sin(sensor_angle));
+    vec2 sensor_pos = agent.pos + sensor_dir * sensor_dist;
+    
+    // Normalize to UV space [0, 1]
+    vec2 uv = sensor_pos / vec2(pc.width, pc.height);
+    
+    // Read trail map (Red channel)
+    return texture(all_textures[pc.trail_tex_id], uv).r;
+}
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    uint bid = pc.agent_buf_id;
+    
+    if (idx >= all_buffers[bid].agents.length()) return;
+
+    Agent agent = all_buffers[bid].agents[idx];
+
+    // 1. SENSE
+    float sensor_angle = 0.4; // Radians
+    float s_left   = sense(agent, sensor_angle);
+    float s_center = sense(agent, 0.0);
+    float s_right  = sense(agent, -sensor_angle);
+
+    float turn_speed = 5.0 * pc.dt;
+
+    if (s_center > s_left && s_center > s_right) {
+        // Keep straight
+    } else if (s_center < s_left && s_center < s_right) {
+        // Confused - random turn
+        agent.angle += (hash(agent.pos * pc.time) - 0.5) * 2.0 * turn_speed;
+    } else if (s_right > s_left) {
+        agent.angle -= turn_speed;
+    } else if (s_left > s_right) {
+        agent.angle += turn_speed;
+    }
+
+    // 2. MOVE
+    float speed = 60.0; // Pixels per second
+    vec2 dir = vec2(cos(agent.angle), sin(agent.angle));
+    agent.pos += dir * speed * pc.dt;
+
+    // Bounce off walls
+    if (agent.pos.x < 0.0 || agent.pos.x >= float(pc.width)) {
+        agent.pos.x = clamp(agent.pos.x, 0.0, float(pc.width)-1.0);
+        agent.angle = 3.14159 - agent.angle;
+    }
+    if (agent.pos.y < 0.0 || agent.pos.y >= float(pc.height)) {
+        agent.pos.y = clamp(agent.pos.y, 0.0, float(pc.height)-1.0);
+        agent.angle = -agent.angle;
+    }
+
+    // 3. DEPOSIT
+    // Write white pixel to storage image
+    imageStore(all_storage_images[pc.trail_img_id], ivec2(agent.pos), vec4(1.0, 1.0, 1.0, 1.0));
+
+    // Save state
+    all_buffers[bid].agents[idx] = agent;
+}

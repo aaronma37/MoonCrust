@@ -1,0 +1,48 @@
+#version 450
+#extension GL_EXT_nonuniform_qualifier : require
+
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0) buffer VertexBuffer {
+    float data[];
+} vertices[];
+
+layout(set = 0, binding = 0) buffer VoxelGrid {
+    uint color_mask[];
+} grids[];
+
+layout(push_constant) uniform PushConstants {
+    uint v_buf_id;
+    uint v_count;
+    uint g_buf_id;
+    uint grid_res;
+} pc;
+
+void main() {
+    uint vid = gl_GlobalInvocationID.x;
+    if (vid >= pc.v_count) return;
+
+    uint base = vid * 3 * 9;
+    
+    vec3 col = vec3(vertices[pc.v_buf_id].data[base + 6], 
+                    vertices[pc.v_buf_id].data[base + 7], 
+                    vertices[pc.v_buf_id].data[base + 8]);
+    
+    uint packed_col = (uint(col.r * 255.0) << 16) | (uint(col.g * 255.0) << 8) | uint(col.b * 255.0);
+
+    for (int i = 0; i < 3; i++) {
+        uint v_idx = base + i * 9;
+        vec3 p = vec3(vertices[pc.v_buf_id].data[v_idx + 0], 
+                      vertices[pc.v_buf_id].data[v_idx + 1], 
+                      vertices[pc.v_buf_id].data[v_idx + 2]);
+        
+        vec3 vox_p = (p + vec3(2000.0, 200.0, 1200.0)) / vec3(4000.0, 1600.0, 2400.0);
+        vox_p *= float(pc.grid_res);
+        
+        ivec3 v = ivec3(vox_p);
+        if (v.x >= 0 && v.x < pc.grid_res && v.y >= 0 && v.y < pc.grid_res && v.z >= 0 && v.z < pc.grid_res) {
+            uint g_idx = v.z * pc.grid_res * pc.grid_res + v.y * pc.grid_res + v.x;
+            grids[pc.g_buf_id].color_mask[g_idx] = packed_col | 0xFF000000;
+        }
+    }
+}

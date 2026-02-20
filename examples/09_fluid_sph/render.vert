@@ -1,0 +1,37 @@
+#version 450
+#extension GL_EXT_nonuniform_qualifier : require
+
+layout(set = 0, binding = 0) buffer AllBuffers {
+    float data[];
+} all_buffers[];
+
+layout(push_constant) uniform PushConstants {
+    float dt;
+    uint  p_buf_id;
+} pc;
+
+layout(location = 0) out vec3 vColor;
+
+void main() {
+    uint idx = gl_VertexIndex;
+    uint p_offset = idx * 8;
+    
+    vec3 world_pos = vec3(all_buffers[pc.p_buf_id].data[p_offset+0],
+                          all_buffers[pc.p_buf_id].data[p_offset+1],
+                          all_buffers[pc.p_buf_id].data[p_offset+2]);
+    
+    vec3 vel = vec3(all_buffers[pc.p_buf_id].data[p_offset+4],
+                    all_buffers[pc.p_buf_id].data[p_offset+5],
+                    all_buffers[pc.p_buf_id].data[p_offset+6]);
+
+    vec3 view_pos = world_pos + vec3(0.0, -1.0, 8.0);
+    float fov = 1.5;
+    gl_Position = vec4(view_pos.x * fov, view_pos.y * -fov, view_pos.z * 0.1, view_pos.z);
+    gl_PointSize = 2.0 / view_pos.z; 
+    
+    // Water Color based on speed
+    float speed = length(vel);
+    vec3 cDeep = vec3(0.0, 0.1, 0.4);
+    vec3 cFoam = vec3(0.8, 0.9, 1.0);
+    vColor = mix(cDeep, cFoam, clamp(speed * 0.5, 0.0, 1.0));
+}

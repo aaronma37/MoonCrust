@@ -1,0 +1,78 @@
+#version 450
+#extension GL_EXT_nonuniform_qualifier : require
+
+struct Particle {
+    vec3 pos;
+    float padding1;
+    vec3 vel;
+    float density; // Stored in padding2
+};
+
+struct Entry {
+    uint key;
+    uint value;
+};
+
+layout(set = 0, binding = 0) buffer AllBuffers {
+    float data[];
+} all_buffers[];
+
+layout(push_constant) uniform PushConstants {
+    uint p_buf_id; // Particles
+    uint s_buf_id; // Sorted Entries
+    uint count;
+    float grid_size;
+} pc;
+
+layout (local_size_x = 256) in;
+
+// SPH Kernels
+float poly6(float r2, float h2) {
+    if (r2 > h2) return 0.0;
+    float diff = h2 - r2;
+    return 315.0 / (64.0 * 3.14159 * pow(h2, 1.5)) * diff * diff * diff;
+}
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= pc.count) return;
+
+    // Get My Particle ID from the Sorted Buffer
+    // SortBuffer[idx] = { key, value } -> data[idx*2 + 1]
+    uint my_pid = floatBitsToUint(all_buffers[pc.s_buf_id].data[idx * 2 + 1]);
+    
+    uint p_offset = my_pid * 8;
+    vec3 pos = vec3(all_buffers[pc.p_buf_id].data[p_offset+0],
+                    all_buffers[pc.p_buf_id].data[p_offset+1],
+                    all_buffers[pc.p_buf_id].data[p_offset+2]);
+
+    float density = 0.0;
+    float mass = 1.0;
+    float h = pc.grid_size; // Smoothing radius
+    float h2 = h * h;
+
+    // Neighbor Search (Naive for now: linear scan of sorted list around self)
+    // Optimization: Since we are sorted by Grid ID, neighbors are mostly contiguous.
+    // We scan +/- 128 particles in the sorted list.
+    int scan_radius = 64;
+    
+    for (int i = -scan_radius; i <= scan_radius; i++) {
+        int neighbor_idx = int(idx) + i;
+        if (neighbor_idx < 0 || neighbor_idx >= int(pc.count)) continue;
+        
+        uint n_pid = floatBitsToUint(all_buffers[pc.s_buf_id].data[neighbor_idx * 2 + 1]);
+        uint n_offset = n_pid * 8;
+        
+        vec3 n_pos = vec3(all_buffers[pc.p_buf_id].data[n_offset+0],
+                          all_buffers[pc.p_buf_id].data[n_offset+1],
+                          all_buffers[pc.p_buf_id].data[n_offset+2]);
+                          
+        vec3 dir = pos - n_pos;
+        float r2 = dot(dir, dir);
+        
+        density += mass * poly6(r2, h2);
+    }
+    
+    // Store density in padding2 (offset + 7)
+    all_buffers[pc.p_buf_id].data[p_offset+7] = density;
+}

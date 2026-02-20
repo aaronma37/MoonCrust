@@ -1,0 +1,104 @@
+#version 450
+#extension GL_EXT_nonuniform_qualifier : require
+
+layout(local_size_x = 16, local_size_y = 16) in;
+layout(set = 0, binding = 2, rgba32f) uniform image2D all_storage_images[];
+
+layout(set = 0, binding = 0) buffer VoxelWorld {
+    float voxels[];
+} world[];
+
+layout(push_constant) uniform PushConstants {
+    uint out_img;
+    uint world_buf_id;
+    float time;
+    uint grid_res;
+    vec3 cam_pos;
+    float cam_yaw;
+} pc;
+
+void main() {
+    ivec2 pix = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(all_storage_images[pc.out_img]);
+    if (pix.x >= size.x || pix.y >= size.y) return;
+
+    vec2 uv = (vec2(pix) / vec2(size)) * 2.0 - 1.0;
+    uv.x *= float(size.x) / float(size.y);
+
+    // 1. Perspective Setup
+    vec3 ro = pc.cam_pos;
+    vec3 rd = normalize(vec3(uv.x, uv.y, 1.2));
+    
+    // Rotate View
+    float s = sin(pc.cam_yaw), c = cos(pc.cam_yaw);
+    rd.xz = mat2(c, -s, s, c) * rd.xz;
+
+    // 2. DDA INITIALIZATION
+    vec3 map_pos = floor(ro);
+    vec3 delta_dist = abs(vec3(1.0) / rd);
+    vec3 ray_step = sign(rd);
+    vec3 side_dist = (ray_step * (map_pos - ro) + (ray_step * 0.5) + 0.5) * delta_dist;
+
+    bool hit = false;
+    vec3 norm = vec3(0);
+    
+    // 3. DDA LOOP (Max 192 steps)
+    for (int i = 0; i < 192; i++) {
+        // Only sample if inside the 128x64x128 buffer bounds
+        if (map_pos.x >= 0 && map_pos.x < 128 && map_pos.y >= 0 && map_pos.y < 64 && map_pos.z >= 0 && map_pos.z < 128) {
+            uint idx = uint(map_pos.x) + (uint(map_pos.y) * 128) + (uint(map_pos.z) * 128 * 64);
+            float voxel = world[pc.world_buf_id].voxels[idx];
+            
+            if (voxel > 0.5) {
+                hit = true;
+                break;
+            }
+        } else if (i > 10 && length(map_pos - ro) > 150.0) {
+            // Give up if we wandered too far from the world
+            break;
+        }
+
+        // Standard DDA step logic
+        if (side_dist.x < side_dist.y) {
+            if (side_dist.x < side_dist.z) {
+                side_dist.x += delta_dist.x;
+                map_pos.x += ray_step.x;
+                norm = vec3(-ray_step.x, 0, 0);
+            } else {
+                side_dist.z += delta_dist.z;
+                map_pos.z += ray_step.z;
+                norm = vec3(0, 0, -ray_step.z);
+            }
+        } else {
+            if (side_dist.y < side_dist.z) {
+                side_dist.y += delta_dist.y;
+                map_pos.y += ray_step.y;
+                norm = vec3(0, -ray_step.y, 0);
+            } else {
+                side_dist.z += delta_dist.z;
+                map_pos.z += ray_step.z;
+                norm = vec3(0, 0, -ray_step.z);
+            }
+        }
+    }
+
+    // 4. SHADING
+    vec3 col = mix(vec3(0.1, 0.2, 0.4), vec3(0.4, 0.6, 0.9), uv.y * 0.5 + 0.5); // Sky
+    
+    if (hit) {
+        float dif = clamp(dot(norm, normalize(vec3(0.5, 1.0, 0.3))), 0.2, 1.0);
+        
+        // Material coloring based on height
+        vec3 mat_col = vec3(0.3, 0.4, 0.2); // Grass
+        if (map_pos.y > 42.0) mat_col = vec3(0.9); // Snow
+        if (map_pos.y < 12.0) mat_col = vec3(0.4, 0.3, 0.2); // Dirt
+        
+        col = mat_col * dif;
+        
+        // Depth Fog
+        float dist = length(map_pos - ro);
+        col = mix(col, vec3(0.4, 0.6, 0.9), clamp(dist / 180.0, 0.0, 1.0));
+    }
+
+    imageStore(all_storage_images[pc.out_img], pix, vec4(col, 1.0));
+}
