@@ -1,9 +1,6 @@
 #version 450
 #extension GL_EXT_nonuniform_qualifier : require
 
-struct Item { float val; float weight; };
-struct Node { float val; float weight; uint depth; uint parent; uint status; float x_pos; uint p1, p2; };
-
 layout(set = 0, binding = 0) buffer AllInOne { uint data[]; } all_bufs[];
 
 layout(push_constant) uniform PushConstants {
@@ -44,29 +41,23 @@ void main() {
     }
 
     if (n_depth < pc.num_items) {
-        uint b_item = n_depth * 2;
-        float i_val = uintBitsToFloat(all_bufs[0].data[b_item]);
-        float i_weight = uintBitsToFloat(all_bufs[0].data[b_item+1]);
+        // Recalibrated spread: sum of spread will never exceed 1.0
+        float spread = 0.2 * pow(0.85, n_depth);
 
-        // Very slow spread decay to keep tree wide
-        float spread = 0.3 * pow(0.96, n_depth);
-
-        // Branch 1 (Right)
-        if (n_weight + i_weight <= pc.capacity) {
-            uint cid = atomicAdd(all_bufs[2].data[0], 1);
-            if (cid < pc.max_nodes) {
-                uint cb = cid * 8;
-                all_bufs[1].data[cb+0] = floatBitsToUint(n_val + i_val);
-                all_bufs[1].data[cb+1] = floatBitsToUint(n_weight + i_weight);
-                all_bufs[1].data[cb+2] = n_depth + 1;
-                all_bufs[1].data[cb+3] = cur;
-                all_bufs[1].data[cb+4] = 0;
-                all_bufs[1].data[cb+5] = floatBitsToUint(n_x + spread);
-                atomicMax(all_bufs[2].data[1], all_bufs[1].data[cb+0]);
-            }
-        }
-        // Branch 2 (Left)
+        // Right
         uint cid = atomicAdd(all_bufs[2].data[0], 1);
+        if (cid < pc.max_nodes) {
+            uint cb = cid * 8;
+            all_bufs[1].data[cb+0] = floatBitsToUint(n_val + uintBitsToFloat(all_bufs[0].data[n_depth*2]));
+            all_bufs[1].data[cb+1] = floatBitsToUint(n_weight + uintBitsToFloat(all_bufs[0].data[n_depth*2+1]));
+            all_bufs[1].data[cb+2] = n_depth + 1;
+            all_bufs[1].data[cb+3] = cur;
+            all_bufs[1].data[cb+4] = (uintBitsToFloat(all_bufs[1].data[cb+1]) > pc.capacity) ? 1 : 0;
+            all_bufs[1].data[cb+5] = floatBitsToUint(n_x + spread);
+            if (all_bufs[1].data[cb+4] == 0) atomicMax(all_bufs[2].data[1], all_bufs[1].data[cb+0]);
+        }
+        // Left
+        cid = atomicAdd(all_bufs[2].data[0], 1);
         if (cid < pc.max_nodes) {
             uint cb = cid * 8;
             all_bufs[1].data[cb+0] = floatBitsToUint(n_val);
@@ -76,8 +67,8 @@ void main() {
             all_bufs[1].data[cb+4] = 0;
             all_bufs[1].data[cb+5] = floatBitsToUint(n_x - spread);
         }
-        all_bufs[1].data[cur * 8 + 4] = 3; // PROCESSED
+        all_bufs[1].data[cur * 8 + 4] = 3; 
     } else {
-        all_bufs[1].data[cur * 8 + 4] = 2; // LEAF
+        all_bufs[1].data[cur * 8 + 4] = 2; 
     }
 }

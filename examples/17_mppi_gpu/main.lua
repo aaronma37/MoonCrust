@@ -7,6 +7,7 @@ local pipeline = require("vulkan.pipeline")
 local swapchain = require("vulkan.swapchain")
 local image = require("vulkan.image")
 local bit = require("bit")
+local sdl = require("vulkan.sdl")
 
 local M = {
     last_frame_time = 0,
@@ -14,7 +15,7 @@ local M = {
     angle = 0,
 }
 
-local FPS_LIMIT = 120
+local FPS_LIMIT = 60
 local FRAME_TIME = 1000 / FPS_LIMIT
 
 local SAMPLES = 1024
@@ -47,6 +48,7 @@ local active_hoop_started_t = 0.0
 local sw_image_initialized = {}
 local frame_no = 0
 local device_lost = false
+local last_frame_ticks = 0
 
 local function read_text(path)
     local f = io.open(path, "r")
@@ -341,6 +343,15 @@ end
 
 function M.update()
  if device_lost then return end
+
+ local current_ticks = tonumber(sdl.SDL_GetTicks())
+ local elapsed = current_ticks - last_frame_ticks
+ if elapsed < FRAME_TIME then
+    sdl.SDL_Delay(FRAME_TIME - elapsed)
+    current_ticks = tonumber(sdl.SDL_GetTicks())
+ end
+ last_frame_ticks = current_ticks
+
  frame_no = frame_no + 1
  M.current_time = M.current_time + 0.016
     local hoops = build_hoops(M.current_time)
