@@ -1,0 +1,69 @@
+#version 450
+#extension GL_EXT_nonuniform_qualifier : require
+
+struct Particle {
+    vec2 current_pos;
+    vec2 source_pos;
+    vec2 target_pos;
+    float u; // Scaling factor u_i
+    float v; // Scaling factor v_j
+};
+
+layout(set = 0, binding = 0) buffer ParticleBuffer {
+    Particle p[];
+} all_buffers[];
+
+layout(push_constant) uniform PushConstants {
+    float dt;
+    float time;
+    uint  buf_id;
+    uint  num_particles;
+    float epsilon; // Entropic regularization
+    uint  mode;    // 0 = update u, 1 = update v, 2 = integrate
+} pc;
+
+layout (local_size_x = 256) in;
+
+// Gaussian Kernel K_ij = exp(-dist(x_i, y_j)^2 / epsilon)
+float kernel(vec2 xi, vec2 yj) {
+    float d2 = dot(xi - yj, xi - yj);
+    return exp(-d2 / pc.epsilon);
+}
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    uint bid = pc.buf_id;
+    if (idx >= pc.num_particles) return;
+
+    if (pc.mode == 0) {
+        float sum = 0.0;
+        vec2 xi = all_buffers[bid].p[idx].source_pos;
+        for (uint j = 0; j < pc.num_particles; j++) {
+            sum += kernel(xi, all_buffers[bid].p[j].target_pos) * all_buffers[bid].p[j].v;
+        }
+        all_buffers[bid].p[idx].u = 1.0 / (sum + 1e-9);
+
+    } else if (pc.mode == 1) {
+        float sum = 0.0;
+        vec2 yj = all_buffers[bid].p[idx].target_pos;
+        for (uint i = 0; i < pc.num_particles; i++) {
+            sum += kernel(all_buffers[bid].p[i].source_pos, yj) * all_buffers[bid].p[i].u;
+        }
+        all_buffers[bid].p[idx].v = 1.0 / (sum + 1e-9);
+
+    } else if (pc.mode == 2) {
+        vec2 xi = all_buffers[bid].p[idx].source_pos;
+        vec2 target_mapping = vec2(0.0);
+        float u_i = all_buffers[bid].p[idx].u;
+        
+        for (uint j = 0; j < pc.num_particles; j++) {
+            vec2 yj = all_buffers[bid].p[j].target_pos;
+            float kv = kernel(xi, yj) * all_buffers[bid].p[j].v;
+            target_mapping += kv * yj;
+        }
+        target_mapping *= u_i;
+
+        vec2 current = all_buffers[bid].p[idx].current_pos;
+        all_buffers[bid].p[idx].current_pos = mix(current, target_mapping, pc.dt * 3.0);
+    }
+}

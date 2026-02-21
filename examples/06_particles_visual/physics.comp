@@ -38,12 +38,16 @@ void main() {
 
     // Vector to attractor
     vec3 dir = target - pos;
-    float distSq = dot(dir, dir) + 0.1; 
-    vec3 accel = normalize(dir) * (1.8 / distSq);
+    float dist = length(dir);
+    float distSq = dist * dist + 0.1; 
+    vec3 accel = vec3(0.0);
+    if (dist > 0.0001) accel = (dir / dist) * (1.8 / distSq);
 
     // Apply forces
     vel += accel * pc.dt;
-    vel *= 0.98; // More damping for cleaner trails
+    
+    // Framerate-independent damping (matches ~0.98 at 60fps)
+    vel *= exp(-1.2 * pc.dt);
 
     // Integration
     pos += vel * pc.dt;

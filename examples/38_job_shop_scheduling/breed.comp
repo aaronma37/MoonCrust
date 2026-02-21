@@ -1,0 +1,74 @@
+#version 450
+#extension GL_EXT_nonuniform_qualifier : require
+
+#define NUM_JOBS 32
+#define NUM_MACHINES 16
+#define NUM_OPS (NUM_JOBS * NUM_MACHINES)
+
+layout(set = 0, binding = 1) buffer PopulationBuffer {
+    uint genes[];
+} pop;
+
+layout(set = 0, binding = 2) buffer ScoreBuffer {
+    float makespans[];
+} scores;
+
+layout(push_constant) uniform PushConstants {
+    float dt;
+    float time;
+    uint  pop_size;
+    uint  best_idx;
+    uint  seed;
+} pc;
+
+layout (local_size_x = 64) in;
+
+uint pcg_hash(uint v) {
+    uint state = v * 747796405u + 2891336453u;
+    uint word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    return (word >> 22u) ^ word;
+}
+
+void main() {
+    uint gid = gl_GlobalInvocationID.x;
+    if (gid >= pc.pop_size) return;
+    
+    // Elitism: Keep the best one untouched
+    if (gid == pc.best_idx) return;
+
+    uint rng = pcg_hash(gid + pc.seed);
+
+    // --- Tournament Selection ---
+    // Pick 2 random parents, choose the best one
+    uint p1 = pcg_hash(rng) % pc.pop_size;
+    uint p2 = pcg_hash(rng + 137) % pc.pop_size;
+    
+    uint winner = (scores.makespans[p1] < scores.makespans[p2]) ? p1 : p2;
+    // Strong bias towards the global best to speed up convergence visual
+    if ((rng % 100) < 50) winner = pc.best_idx;
+
+    // --- Mutation (Swap) ---
+    // Copy winner to current slot
+    uint src_base = winner * NUM_OPS;
+    uint dst_base = gid * NUM_OPS;
+    
+    // Copy loop (unrolled partially by hardware hopefully)
+    // We do a "Job-Based Swap Mutation"
+    // Just copying directly first
+    for (int i=0; i<NUM_OPS; i++) {
+        pop.genes[dst_base + i] = pop.genes[src_base + i];
+    }
+
+    // Perform k swaps
+    uint k = 4; // Mutation rate
+    for (int i=0; i<k; i++) {
+        rng = pcg_hash(rng);
+        uint idx_a = rng % NUM_OPS;
+        rng = pcg_hash(rng);
+        uint idx_b = rng % NUM_OPS;
+        
+        uint temp = pop.genes[dst_base + idx_a];
+        pop.genes[dst_base + idx_a] = pop.genes[dst_base + idx_b];
+        pop.genes[dst_base + idx_b] = temp;
+    }
+}

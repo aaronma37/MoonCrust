@@ -38,6 +38,11 @@ local examples = {
     ["30"] = "examples.30_sponza_gltf.main",
     ["31"] = "examples.31_neuro_symbolic_mesh.main",
     ["32"] = "examples.32_cellular_automata.main",
+    ["33"] = "examples.33_gpu_vrp.main",
+    ["34"] = "examples.34_optimal_transport.main",
+    ["35"] = "examples.35_ant_colony.main",
+    ["36"] = "examples.36_topology_opt.main",
+    ["37"] = "examples.37_admm_consensus.main",
 }
 
 -- Default to the flagship if no arg provided

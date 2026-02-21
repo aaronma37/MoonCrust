@@ -17,7 +17,7 @@ function M.init()
     queue = vulkan.get_queue(device, graphics_family)
 
     -- Create Swapchain
-    sw = swapchain.new(instance, physical_device, device, _SDL_WINDOW)
+    sw = swapchain.new(instance, physical_device, device, _G._SDL_WINDOW)
     print("Swapchain created with", sw.image_count, "images.")
 
     -- Create Semaphores

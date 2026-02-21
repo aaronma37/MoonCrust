@@ -1,6 +1,7 @@
 local ffi = require("ffi")
 
--- Use ffi.C since mooncrust is already linked with SDL3
+-- Use ffi.C since mooncrust is already linked with SDL3.
+-- Do NOT use ffi.load("SDL3") as it creates a second, uninitialized instance of SDL.
 local sdl_ffi = ffi.C
 
 -- Note: SDL3 uses different types than SDL2.
@@ -19,6 +20,8 @@ ffi.cdef[[
     const uint8_t* SDL_GetKeyboardState(int* numkeys);
     
     uint64_t SDL_GetTicks(void);
+    uint64_t SDL_GetPerformanceCounter(void);
+    uint64_t SDL_GetPerformanceFrequency(void);
     void SDL_Delay(uint32_t ms);
     
     const char* SDL_GetError(void);

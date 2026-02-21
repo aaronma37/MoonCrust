@@ -15,14 +15,14 @@ layout(set = 0, binding = 0) buffer ParticleBuffer {
 layout(push_constant) uniform PushConstants {
     float dt;
     float time;
-    uint particle_buffer_id;
-    uint texture_id;
+    uint  buf_id;
+    uint  tex_id;
 } pc;
 
 layout(location = 0) out float vSpeed;
 
 void main() {
-    uint bid = pc.particle_buffer_id;
+    uint bid = pc.buf_id;
     vec3 world_pos = all_buffers[bid].particles[gl_VertexIndex].pos;
     
     // 3D Offset: Move everything back by 4.5 units so it's always in front of camera
@@ -37,7 +37,7 @@ void main() {
     // The view_pos.z in the 'w' component handles the perspective divide.
     
     // Scale point size inversely with distance (w)
-    gl_PointSize = 3.0 / view_pos.z; 
+    gl_PointSize = 3.0; // Debug constant size
     
     vSpeed = length(all_buffers[bid].particles[gl_VertexIndex].vel);
 }

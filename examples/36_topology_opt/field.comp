@@ -1,0 +1,66 @@
+#version 450
+
+layout(set = 0, binding = 0, r32f) uniform image2D density_map;
+layout(set = 0, binding = 1, r32f) uniform image2D pot_a;
+layout(set = 0, binding = 2, r32f) uniform image2D pot_b;
+
+layout(push_constant) uniform PushConstants {
+    float dt;
+    float time;
+    uint  width;
+    uint  height;
+    uint  mode; 
+    uint  p1, p2, p3;
+} pc;
+
+layout (local_size_x = 16, local_size_y = 16) in;
+
+void main() {
+    ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
+    if (pos.x >= pc.width || pos.y >= pc.height) return;
+
+    // --- Boundary Conditions ---
+    if (pos.x == 0) {
+        imageStore(pot_a, pos, vec4(0.0));
+        imageStore(pot_b, pos, vec4(0.0));
+        return;
+    }
+    if (pos.x == int(pc.width - 1) && abs(pos.y - int(pc.height/2)) < 8) {
+        imageStore(pot_a, pos, vec4(1.0));
+        imageStore(pot_b, pos, vec4(1.0));
+        return;
+    }
+
+    float rho = imageLoad(density_map, pos).r;
+    // Survival floor for conductivity to keep solver stable
+    float cond = pow(max(0.1, rho), 3.0);
+
+    float sum_val = 0.0;
+    float sum_cond = 0.0;
+
+    ivec2 n_offsets[4] = { ivec2(1,0), ivec2(-1,0), ivec2(0,1), ivec2(0,-1) };
+    for(int i=0; i<4; i++) {
+        ivec2 npos = pos + n_offsets[i];
+        if (npos.x >= 0 && npos.x < pc.width && npos.y >= 0 && npos.y < pc.height) {
+            float n_rho = imageLoad(density_map, npos).r;
+            float n_phi = (pc.mode == 0) ? imageLoad(pot_a, npos).r : imageLoad(pot_b, npos).r;
+            
+            // Sanitize input
+            if (isnan(n_phi)) n_phi = 0.0;
+
+            float n_cond = pow(max(0.1, n_rho), 3.0);
+            float edge_cond = (cond + n_cond) * 0.5;
+            sum_val += edge_cond * n_phi;
+            sum_cond += edge_cond;
+        }
+    }
+
+    if (sum_cond > 0.0) {
+        float next_phi = sum_val / sum_cond;
+        // Clamp result to [0, 1] range strictly
+        next_phi = clamp(next_phi, 0.0, 1.0);
+        
+        if (pc.mode == 0) imageStore(pot_b, pos, vec4(next_phi));
+        else imageStore(pot_a, pos, vec4(next_phi));
+    }
+}

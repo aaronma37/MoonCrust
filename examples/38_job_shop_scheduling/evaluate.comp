@@ -1,0 +1,110 @@
+#version 450
+#extension GL_EXT_nonuniform_qualifier : require
+
+// Problem Constants
+#define NUM_JOBS 32
+#define NUM_MACHINES 16
+#define NUM_OPS (NUM_JOBS * NUM_MACHINES)
+
+struct Operation {
+    uint machine;
+    float duration;
+};
+
+// Static Problem Data
+layout(set = 0, binding = 0) buffer JobDataBuffer {
+    Operation ops[]; // Flat array: Job0[0..15], Job1[0..15]...
+} job_data;
+
+// Population: 4096 schedules
+// Each schedule is an array of NUM_OPS integers (Job IDs)
+// This layout might be stride-heavy, but fine for 1D access.
+layout(set = 0, binding = 1) buffer PopulationBuffer {
+    uint genes[]; // Length = POP_SIZE * NUM_OPS
+} pop;
+
+// Results
+layout(set = 0, binding = 2) buffer ScoreBuffer {
+    float makespans[]; // Length = POP_SIZE
+} scores;
+
+// Render Data (for the best schedule)
+layout(set = 0, binding = 3) buffer RenderBuffer {
+    vec4 rects[]; // [start_time, machine_y, end_time, job_id]
+} render_data;
+
+layout(push_constant) uniform PushConstants {
+    float dt;
+    float time;
+    uint  pop_size;
+    uint  best_idx; // Index of the best schedule from previous frame
+    uint  mode;     // 0 = Evaluate, 1 = WriteBack Best
+} pc;
+
+layout (local_size_x = 64) in;
+
+void main() {
+    uint gid = gl_GlobalInvocationID.x;
+    if (gid >= pc.pop_size && pc.mode == 0) return;
+    
+    // In WriteBack mode, we only run 1 thread to output the visual geometry
+    if (pc.mode == 1) {
+        if (gid > 0) return;
+        gid = pc.best_idx;
+    }
+
+    // --- Simulation State (Registers) ---
+    float job_avail[NUM_JOBS];
+    float machine_avail[NUM_MACHINES];
+    uint  job_op_idx[NUM_JOBS];
+
+    // Initialize state
+    for (int i = 0; i < NUM_JOBS; i++) { job_avail[i] = 0.0; job_op_idx[i] = 0; }
+    for (int i = 0; i < NUM_MACHINES; i++) machine_avail[i] = 0.0;
+
+    // --- Decode Chromosome ---
+    // The chromosome is a permutation of Job IDs.
+    // e.g. [0, 1, 0, 2, 1...] means "Schedule J0-Op0, then J1-Op0, then J0-Op1..."
+    
+    uint base_gene = gid * NUM_OPS;
+    float max_time = 0.0;
+
+    for (int i = 0; i < NUM_OPS; i++) {
+        uint job_id = pop.genes[base_gene + i];
+        
+        // Safety wrap
+        if (job_id >= NUM_JOBS) job_id = 0;
+        
+        uint op_step = job_op_idx[job_id];
+        if (op_step >= NUM_MACHINES) continue; // Should not happen in valid perm
+        
+        // Fetch op data
+        // Flat index: job_id * 16 + op_step
+        uint op_data_idx = job_id * NUM_MACHINES + op_step;
+        uint machine = job_data.ops[op_data_idx].machine;
+        float duration = job_data.ops[op_data_idx].duration;
+
+        // Earliest start is when both Job and Machine are ready
+        float start_t = max(job_avail[job_id], machine_avail[machine]);
+        float end_t = start_t + duration;
+
+        // Update state
+        job_avail[job_id] = end_t;
+        machine_avail[machine] = end_t;
+        job_op_idx[job_id]++;
+        
+        if (end_t > max_time) max_time = end_t;
+
+        // Visual Output (only for the best schedule)
+        if (pc.mode == 1) {
+            // Store rect: [start, machine, width (duration), job_id]
+            // We use .z for width/duration for easier rendering math
+            render_data.rects[i] = vec4(start_t, float(machine), duration, float(job_id));
+        }
+    }
+
+    // Score Output
+    if (pc.mode == 0) {
+        scores.makespans[gid] = max_time;
+    }
+}

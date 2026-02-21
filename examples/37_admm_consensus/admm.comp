@@ -1,0 +1,65 @@
+#version 450
+
+layout(set = 0, binding = 0, rgba32f) uniform image2D x_map;
+layout(set = 0, binding = 1, rgba32f) uniform image2D target_map;
+layout(set = 0, binding = 2, rgba32f) uniform image2D z_map;
+layout(set = 0, binding = 3, rgba32f) uniform image2D u_map;
+
+layout(push_constant) uniform PushConstants {
+    float dt;
+    float time;
+    uint  width;
+    uint  height;
+    float lambda;
+    float rho;
+    uint  mode;
+    uint  pad;
+} pc;
+
+layout (local_size_x = 16, local_size_y = 16) in;
+
+vec4 soft_threshold(vec4 v, float alpha) {
+    return sign(v) * max(abs(v) - alpha, 0.0);
+}
+
+void main() {
+    ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
+    if (pos.x >= pc.width || pos.y >= pc.height) return;
+
+    if (pc.mode == 0) {
+        vec4 b = imageLoad(target_map, pos);
+        vec4 z = imageLoad(z_map, pos);
+        vec4 u = imageLoad(u_map, pos);
+        
+        vec4 sum_neighbors = vec4(0.0);
+        ivec2 neighbors[4] = { ivec2(1,0), ivec2(-1,0), ivec2(0,1), ivec2(0,-1) };
+        for(int i=0; i<4; i++) {
+            sum_neighbors += imageLoad(x_map, pos + neighbors[i]);
+        }
+        
+        // Stabilized consensus step
+        vec4 rhs = b + pc.rho * (z - u);
+        vec4 next_x = (rhs + pc.rho * sum_neighbors) / (1.0 + 4.0 * pc.rho);
+        
+        // Hard clamping to prevent numerical explosion
+        next_x = clamp(next_x, vec4(0.0), vec4(1.0));
+        imageStore(x_map, pos, next_x);
+
+    } else if (pc.mode == 1) {
+        vec4 x = imageLoad(x_map, pos);
+        vec4 u = imageLoad(u_map, pos);
+        
+        vec4 next_z = soft_threshold(x + u, pc.lambda / pc.rho);
+        imageStore(z_map, pos, next_z);
+
+    } else if (pc.mode == 2) {
+        vec4 x = imageLoad(x_map, pos);
+        vec4 z = imageLoad(z_map, pos);
+        vec4 u = imageLoad(u_map, pos);
+        
+        // Damped dual update
+        vec4 next_u = u + (x - z) * 0.2;
+        next_u = clamp(next_u, vec4(-0.5), vec4(0.5));
+        imageStore(u_map, pos, next_u);
+    }
+}

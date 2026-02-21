@@ -23,7 +23,24 @@ function M.new(instance, physical_device, device, window)
     sdl.SDL_GetWindowSizeInPixels(window, pw, ph)
     local width, height = pw[0], ph[0]
 
-    -- 3. Create Swapchain
+    -- 3. Get Present Modes and choose best
+    local mode_count = ffi.new("uint32_t[1]")
+    vk.vkGetPhysicalDeviceSurfacePresentModesKHR(physical_device, self.surface, mode_count, nil)
+    local modes = ffi.new("VkPresentModeKHR[?]", mode_count[0])
+    vk.vkGetPhysicalDeviceSurfacePresentModesKHR(physical_device, self.surface, mode_count, modes)
+    
+    local present_mode = vk.VK_PRESENT_MODE_FIFO_KHR
+    for i=0, mode_count[0]-1 do
+        if modes[i] == vk.VK_PRESENT_MODE_MAILBOX_KHR then
+            present_mode = vk.VK_PRESENT_MODE_MAILBOX_KHR
+            break
+        elseif modes[i] == vk.VK_PRESENT_MODE_IMMEDIATE_KHR then
+            present_mode = vk.VK_PRESENT_MODE_IMMEDIATE_KHR
+        end
+    end
+    print("Swapchain: Using Present Mode: " .. present_mode)
+
+    -- 4. Create Swapchain
     local swap_info = ffi.new("VkSwapchainCreateInfoKHR", {
         sType = vk.VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
         surface = ffi.cast("VkSurfaceKHR", self.surface),
@@ -36,7 +53,7 @@ function M.new(instance, physical_device, device, window)
         imageSharingMode = vk.VK_SHARING_MODE_EXCLUSIVE,
         preTransform = vk.VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR,
         compositeAlpha = vk.VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
-        presentMode = vk.VK_PRESENT_MODE_FIFO_KHR,
+        presentMode = present_mode,
         clipped = vk.VK_TRUE
     })
 
@@ -99,12 +116,15 @@ end
 
 function Swapchain:present(queue, image_index, wait_semaphore)
     local pIndex = ffi.new("uint32_t[1]", {image_index})
+    local pSwaps = ffi.new("VkSwapchainKHR[1]", {self.handle})
+    local pSems = wait_semaphore and ffi.new("VkSemaphore[1]", {wait_semaphore}) or nil
+    
     local present_info = ffi.new("VkPresentInfoKHR", {
         sType = vk.VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
         waitSemaphoreCount = wait_semaphore and 1 or 0,
-        pWaitSemaphores = wait_semaphore and ffi.new("VkSemaphore[1]", {wait_semaphore}) or nil,
+        pWaitSemaphores = pSems,
         swapchainCount = 1,
-        pSwapchains = ffi.new("VkSwapchainKHR[1]", {self.handle}),
+        pSwapchains = pSwaps,
         pImageIndices = pIndex
     })
     vk.vkQueuePresentKHR(queue, present_info)

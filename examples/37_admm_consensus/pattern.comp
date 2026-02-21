@@ -1,0 +1,47 @@
+#version 450
+
+layout(set = 0, binding = 1, rgba32f) uniform image2D target_map;
+
+layout(push_constant) uniform PushConstants {
+    float dt;
+    float time;
+    uint  width;
+    uint  height;
+    float lambda;
+    float rho;
+    uint  mode;
+    uint  pad;
+} pc;
+
+layout (local_size_x = 16, local_size_y = 16) in;
+
+uint pcg_hash(uint v) {
+    uint state = v * 747796405u + 2891336453u;
+    uint word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    return (word >> 22u) ^ word;
+}
+
+void main() {
+    ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
+    if (pos.x >= pc.width || pos.y >= pc.height) return;
+
+    vec2 uv = vec2(pos) / vec2(pc.width, pc.height);
+    
+    float s = sin(pc.time * 0.5);
+    float c = cos(pc.time * 0.5);
+    vec2 cuv = (uv - 0.5) * mat2(c, -s, s, c);
+    
+    bool stripe = fract(cuv.x * 6.0) > 0.5;
+    bool ring = abs(length(cuv) - 0.3) < 0.08;
+    
+    vec3 base_col = stripe ? vec3(0.1, 0.4, 1.0) : vec3(1.0, 0.1, 0.4);
+    if (ring) base_col = vec3(1.0, 0.9, 0.1);
+    
+    uint rng = pcg_hash(pos.y * pc.width + pos.x + uint(pc.time * 1000.0));
+    vec3 noise = vec3(float(rng & 0xFF), float((rng >> 8) & 0xFF), float((rng >> 16) & 0xFF)) / 255.0;
+    
+    // 30% noise - much more manageable input for the visual demo
+    vec3 final_col = mix(base_col, noise, 0.3);
+    
+    imageStore(target_map, pos, vec4(final_col, 1.0));
+}

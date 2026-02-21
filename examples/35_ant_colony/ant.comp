@@ -1,0 +1,113 @@
+#version 450
+#extension GL_EXT_nonuniform_qualifier : require
+
+struct Ant {
+    vec2 pos;
+    float angle;
+    uint  phase; // 0 = foraging, 1 = returning
+    uint  home_city;
+    uint  target_city;
+    uint  padding1;
+    uint  padding2;
+};
+
+struct City {
+    vec2 pos;
+    uint id;
+    uint pad;
+};
+
+layout(set = 0, binding = 0) buffer AntBuffer { Ant ants[]; } all_ants[];
+layout(set = 0, binding = 0) buffer CityBuffer { City cities[]; } all_cities[];
+layout(set = 0, binding = 2, rgba8) uniform image2D pheromone_map;
+
+layout(push_constant) uniform PushConstants {
+    float dt;
+    float time;
+    uint  ant_buf_id;
+    uint  city_buf_id;
+    uint  num_ants;
+    uint  num_cities;
+    uint  seed;
+} pc;
+
+layout (local_size_x = 256) in;
+
+uint pcg_hash(uint v) {
+    uint state = v * 747796405u + 2891336453u;
+    uint word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    return (word >> 22u) ^ word;
+}
+
+float sense(vec2 pos, float angle, float sensor_angle, float sensor_dist) {
+    float sa = angle + sensor_angle;
+    vec2 sensor_pos = pos + vec2(cos(sa), sin(sa)) * sensor_dist;
+    ivec2 tex_coord = ivec2((sensor_pos * 0.5 + 0.5) * imageSize(pheromone_map));
+    return imageLoad(pheromone_map, tex_coord).r;
+}
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= pc.num_ants) return;
+
+    Ant ant = all_ants[pc.ant_buf_id].ants[idx];
+    uint rng = pcg_hash(idx + pc.seed);
+
+    // --- 1. Sense and Steer ---
+    float sensor_angle = 0.45;
+    float sensor_dist = 0.03;
+    
+    float v_fwd   = sense(ant.pos, ant.angle, 0.0, sensor_dist);
+    float v_left  = sense(ant.pos, ant.angle, sensor_angle, sensor_dist);
+    float v_right = sense(ant.pos, ant.angle, -sensor_angle, sensor_dist);
+
+    float random_steer = (float(rng % 1000) / 1000.0 - 0.5) * 0.2;
+    
+    if (v_fwd > v_left && v_fwd > v_right) {
+        // Continue straight
+    } else if (v_fwd < v_left && v_fwd < v_right) {
+        ant.angle += random_steer * 2.0;
+    } else if (v_left > v_right) {
+        ant.angle += sensor_angle * 0.5;
+    } else if (v_right > v_left) {
+        ant.angle -= sensor_angle * 0.5;
+    }
+    
+    ant.angle += random_steer;
+
+    // --- 2. Move ---
+    float speed = 0.25;
+    ant.pos += vec2(cos(ant.angle), sin(ant.angle)) * speed * pc.dt;
+
+    // --- 3. Goal Behavior ---
+    vec2 target_pos = all_cities[pc.city_buf_id].cities[ant.target_city].pos;
+    float dist_to_target = distance(ant.pos, target_pos);
+    
+    if (dist_to_target < 0.05) {
+        // Arrived! Swap targets
+        uint old_home = ant.home_city;
+        ant.home_city = ant.target_city;
+        
+        // Pick a new target city that isn't the current home
+        rng = pcg_hash(rng);
+        ant.target_city = rng % pc.num_cities;
+        if (ant.target_city == ant.home_city) ant.target_city = (ant.target_city + 1) % pc.num_cities;
+        
+        ant.angle += 3.14159; // Turn around
+        ant.phase = 1 - ant.phase;
+    }
+
+    // --- 4. Boundary Bounce ---
+    if (ant.pos.x < -0.95 || ant.pos.x > 0.95 || ant.pos.y < -0.95 || ant.pos.y > 0.95) {
+        ant.pos = clamp(ant.pos, -0.94, 0.94);
+        ant.angle += 3.14159 * 0.5;
+    }
+
+    // --- 5. Deposit Pheromone ---
+    ivec2 tex_coord = ivec2((ant.pos * 0.5 + 0.5) * imageSize(pheromone_map));
+    vec4 current_p = imageLoad(pheromone_map, tex_coord);
+    float deposit = 0.15;
+    imageStore(pheromone_map, tex_coord, clamp(current_p + vec4(deposit, deposit * 0.5, 0.0, 0.0), 0.0, 1.0));
+
+    all_ants[pc.ant_buf_id].ants[idx] = ant;
+}

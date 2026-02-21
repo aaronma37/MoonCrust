@@ -130,7 +130,17 @@ function M.create_graphics_pipeline(device, layout, vert_or_shaders, frag_module
     local color_blend_attachments = ffi.new("VkPipelineColorBlendAttachmentState[?]", formats_count)
     for i=0, formats_count-1 do
         color_blend_attachments[i].colorWriteMask = bit.bor(vk.VK_COLOR_COMPONENT_R_BIT, vk.VK_COLOR_COMPONENT_G_BIT, vk.VK_COLOR_COMPONENT_B_BIT, vk.VK_COLOR_COMPONENT_A_BIT)
-        color_blend_attachments[i].blendEnable = vk.VK_FALSE
+        if options.additive then
+            color_blend_attachments[i].blendEnable = vk.VK_TRUE
+            color_blend_attachments[i].srcColorBlendFactor = vk.VK_BLEND_FACTOR_ONE
+            color_blend_attachments[i].dstColorBlendFactor = vk.VK_BLEND_FACTOR_ONE
+            color_blend_attachments[i].colorBlendOp = vk.VK_BLEND_OP_ADD
+            color_blend_attachments[i].srcAlphaBlendFactor = vk.VK_BLEND_FACTOR_ONE
+            color_blend_attachments[i].dstAlphaBlendFactor = vk.VK_BLEND_FACTOR_ZERO
+            color_blend_attachments[i].alphaBlendOp = vk.VK_BLEND_OP_ADD
+        else
+            color_blend_attachments[i].blendEnable = vk.VK_FALSE
+        end
     end
 
     local color_blending = ffi.new("VkPipelineColorBlendStateCreateInfo", {

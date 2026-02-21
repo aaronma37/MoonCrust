@@ -1,0 +1,22 @@
+#version 450
+
+layout(set = 0, binding = 2, rgba8) uniform image2D pheromone_map;
+
+layout (local_size_x = 16, local_size_y = 16) in;
+
+void main() {
+    ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(pos, imageSize(pheromone_map)))) return;
+
+    // --- Evaporation and Diffusion (Simple Box Blur + Decay) ---
+    vec4 sum = vec4(0.0);
+    for (int dy = -1; dy <= 1; dy++) {
+        for (int dx = -1; dx <= 1; dx++) {
+            sum += imageLoad(pheromone_map, pos + ivec2(dx, dy));
+        }
+    }
+    
+    vec4 avg = sum / 9.0;
+    float decay = 0.92; // Pheromone persistence
+    imageStore(pheromone_map, pos, avg * decay);
+}

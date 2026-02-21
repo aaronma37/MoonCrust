@@ -104,9 +104,12 @@ function Graph:execute(cb)
             local res = req.res
             local needs_barrier = false
             
-            -- Check if state changed
+            -- Check if state changed or if it was a write (requiring a barrier for visibility/ordering)
+            local write_mask = bit.bor(vk.VK_ACCESS_SHADER_WRITE_BIT, vk.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, vk.VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT, vk.VK_ACCESS_TRANSFER_WRITE_BIT)
+            local has_write = (bit.band(res.access, write_mask) ~= 0) or (bit.band(req.access, write_mask) ~= 0)
+            
             if res.type == M.TYPE_BUFFER then
-                if res.access ~= req.access or res.stage ~= req.stage then
+                if res.access ~= req.access or res.stage ~= req.stage or has_write then
                     needs_barrier = true
                     table.insert(buffer_barriers, ffi.new("VkBufferMemoryBarrier", {
                         sType = vk.VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
@@ -121,8 +124,15 @@ function Graph:execute(cb)
                     }))
                 end
             elseif res.type == M.TYPE_IMAGE then
-                if res.layout ~= req.layout or res.access ~= req.access or res.stage ~= req.stage then
+                if res.layout ~= req.layout or res.access ~= req.access or res.stage ~= req.stage or has_write then
                     needs_barrier = true
+                    
+                    local aspect = vk.VK_IMAGE_ASPECT_COLOR_BIT
+                    if req.layout == vk.VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL or 
+                       req.layout == vk.VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL then
+                        aspect = vk.VK_IMAGE_ASPECT_DEPTH_BIT
+                    end
+
                     table.insert(image_barriers, ffi.new("VkImageMemoryBarrier", {
                         sType = vk.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
                         srcAccessMask = res.access,
@@ -133,7 +143,7 @@ function Graph:execute(cb)
                         dstQueueFamilyIndex = vk.VK_QUEUE_FAMILY_IGNORED,
                         image = ffi.cast("VkImage", res.handle),
                         subresourceRange = {
-                            aspectMask = vk.VK_IMAGE_ASPECT_COLOR_BIT,
+                            aspectMask = aspect,
                             baseMipLevel = 0,
                             levelCount = 1,
                             baseArrayLayer = 0,

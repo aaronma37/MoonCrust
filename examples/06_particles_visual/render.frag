@@ -6,15 +6,15 @@ layout(set = 0, binding = 1) uniform sampler2D all_textures[];
 layout(push_constant) uniform PushConstants {
     float dt;
     float time;
-    uint particle_buffer_id;
-    uint texture_id;
+    uint  buf_id;
+    uint  tex_id;
 } pc;
 
 layout(location = 0) in float vSpeed;
 layout(location = 0) out vec4 outColor;
 
 void main() {
-    vec4 tex = texture(all_textures[pc.texture_id], gl_PointCoord);
+    vec4 tex = texture(all_textures[pc.tex_id], gl_PointCoord);
     
     // Three-step "Heat Map" Ramp
     vec3 cLow  = vec3(1.0, 0.05, 0.0); // Red
@@ -31,6 +31,6 @@ void main() {
         finalRGB = mix(cMid, cHigh, (f - 0.5) * 2.0);
     }
     
-    // Lowered intensity (1.5x instead of 5x) to prevent washing out to white
-    outColor = vec4(tex.rgb * finalRGB * 1.5, tex.a);
+    // Toned down intensity and included alpha in color for additive blend
+    outColor = vec4(tex.rgb * finalRGB * (tex.a * tex.a) * 0.7, tex.a);
 }

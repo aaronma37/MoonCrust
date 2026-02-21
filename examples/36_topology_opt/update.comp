@@ -1,0 +1,65 @@
+#version 450
+
+layout(set = 0, binding = 0, r32f) uniform image2D density_map;
+layout(set = 0, binding = 1, r32f) uniform image2D pot_a;
+layout(set = 0, binding = 2, r32f) uniform image2D pot_b;
+
+layout(push_constant) uniform PushConstants {
+    float dt;
+    float time;
+    uint  width;
+    uint  height;
+    uint  mode;
+    uint  p1, p2, p3;
+} pc;
+
+layout (local_size_x = 16, local_size_y = 16) in;
+
+void main() {
+    ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
+    if (pos.x >= pc.width || pos.y >= pc.height) return;
+
+    if (pos.x == 0 || (pos.x == int(pc.width-1) && abs(pos.y - int(pc.height/2)) < 8)) {
+        imageStore(density_map, pos, vec4(1.0));
+        return;
+    }
+
+    float rho = imageLoad(density_map, pos).r;
+    
+    // Use the latest converged potential (pot_a from main.lua loop)
+    float phi = imageLoad(pot_a, pos).r;
+    float phi_r = imageLoad(pot_a, pos + ivec2(1,0)).r;
+    float phi_l = imageLoad(pot_a, pos + ivec2(-1,0)).r;
+    float phi_u = imageLoad(pot_a, pos + ivec2(0,1)).r;
+    float phi_d = imageLoad(pot_a, pos + ivec2(0,-1)).r;
+
+    vec2 grad = vec2(phi_r - phi_l, phi_u - phi_d) * 0.5;
+    float energy = dot(grad, grad) * max(0.05, rho);
+
+    // AI Decision Logic
+    float threshold = 0.000002; 
+    bool has_signal = (phi > 0.001 && phi < 0.999);
+    float growth = (energy > threshold) ? 0.25 : -0.2;
+    
+    // Protection: Don't erode if we don't have a stress signal yet
+    if (!has_signal && pos.x < int(pc.width * 0.6)) growth = max(0.0, growth);
+    
+    growth += 0.1 * (0.35 - rho); // Target 35% volume
+
+    float next_rho = clamp(rho + growth * pc.dt * 10.0, 0.01, 1.0);
+    
+    // --- Anti-Checkerboard Filter ---
+    // Weighted box blur to enforce structural continuity
+    float sum_rho = 0.0;
+    float kernel[9] = { 0.07, 0.12, 0.07, 0.12, 0.24, 0.12, 0.07, 0.12, 0.07 };
+    int k_idx = 0;
+    for(int dy=-1; dy<=1; dy++) {
+        for(int dx=-1; dx<=1; dx++) {
+            sum_rho += imageLoad(density_map, pos + ivec2(dx, dy)).r * kernel[k_idx++];
+        }
+    }
+    // High filter strength (0.6) removes dithering
+    next_rho = mix(next_rho, sum_rho, 0.6);
+
+    imageStore(density_map, pos, vec4(next_rho));
+}

@@ -1,0 +1,77 @@
+#version 450
+#extension GL_EXT_nonuniform_qualifier : require
+
+struct City {
+    vec2 pos;
+    uint vehicle_id;
+    uint next_index;
+};
+
+layout(set = 0, binding = 0) buffer CityBuffer {
+    City cities[];
+} all_buffers[];
+
+layout(push_constant) uniform PushConstants {
+    float dt;
+    float time;
+    uint  city_buf_id;
+    uint  seed;
+    uint  vehicle_count;
+    float temperature; // New: Simulated Annealing temp
+} pc;
+
+layout (local_size_x = 256) in;
+
+uint pcg_hash(uint v) {
+    uint state = v * 747796405u + 2891336453u;
+    uint word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    return (word >> 22u) ^ word;
+}
+
+void main() {
+    uint city_idx = gl_GlobalInvocationID.x;
+    uint bid = pc.city_buf_id;
+    uint num_cities = all_buffers[bid].cities.length();
+    if (city_idx >= num_cities) return;
+
+    uint rng = pcg_hash(city_idx + pc.seed);
+
+    // --- HEAVY COMPUTE LOOP ---
+    // Each thread performs 32 trials internally
+    for (int trial = 0; trial < 32; trial++) {
+        rng = pcg_hash(rng);
+        uint target_idx = rng % num_cities;
+        if (city_idx == target_idx) continue;
+
+        City cityA = all_buffers[bid].cities[city_idx];
+        City cityB = all_buffers[bid].cities[target_idx];
+
+        if (cityA.vehicle_id != cityB.vehicle_id) {
+            // Territory Competition
+            if (city_idx < pc.vehicle_count) continue;
+            float d_curr = distance(cityA.pos, all_buffers[bid].cities[cityA.next_index].pos);
+            float d_new  = distance(cityA.pos, cityB.pos);
+            
+            // Acceptance probability based on distance improvement and temperature
+            float delta = d_new - d_curr;
+            if (d_new < d_curr * 0.95 || (pc.temperature > 0.01 && (rng % 1000) < (pc.temperature * 10))) {
+                all_buffers[bid].cities[city_idx].vehicle_id = cityB.vehicle_id;
+                all_buffers[bid].cities[city_idx].next_index = target_idx;
+            }
+        } else {
+            // Intra-Route 2-Opt Optimization
+            uint nextA_idx = cityA.next_index;
+            uint nextB_idx = cityB.next_index;
+            vec2 pNextA = all_buffers[bid].cities[nextA_idx].pos;
+            vec2 pNextB = all_buffers[bid].cities[nextB_idx].pos;
+
+            float current_dist = distance(cityA.pos, pNextA) + distance(cityB.pos, pNextB);
+            float new_dist     = distance(cityA.pos, cityB.pos) + distance(pNextA, pNextB);
+
+            if (new_dist < current_dist) {
+                all_buffers[bid].cities[city_idx].next_index = target_idx;
+                all_buffers[bid].cities[nextA_idx].next_index = nextB_idx;
+            }
+        }
+    }
+}
