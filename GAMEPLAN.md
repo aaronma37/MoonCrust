@@ -27,9 +27,10 @@ MoonCrust is a High-Performance Compute & Render Kernel that exposes Vulkan 1.4 
 *   **Logic:** Resources are only freed when `current_frame - frame_index > MAX_FLIGHT_FRAMES`.
 *   **Sync:** Driven by Vulkan Timeline Semaphores for nanosecond-precision cleanup.
 
-### D. Render Graph & Synchronization
-*   **Goal:** Automate `VkPipelineBarrier2` and Image Layout Transitions.
+### D. Auto-Sync Render Graph (Dynamic) & Introspection
+*   **Goal:** Automate `VkPipelineBarrier2` and Image Layout Transitions with per-frame flexibility.
 *   **API:** Users define "Passes" with Input/Output dependencies; MoonCrust calculates the barriers.
+*   **Observability:** Built-in `get_introspection_data()` allows for real-time visualization of the pass dependency graph.
 
 ---
 
@@ -53,8 +54,8 @@ MoonCrust is a High-Performance Compute & Render Kernel that exposes Vulkan 1.4 
 - [x] **Command Encoder:** A "Fluent" API for recording commands (`cmd:draw(mesh_id):end()`).
 
 ### Phase 4: The Kernel Release (Month 4) - [COMPLETE]
-- [x] **Render Graph:** Automatic barrier generation for multi-pass effects.
-- [x] **Compute-First Logic:** Example projects (Slime Mold, SPH Fluid, MOO Search, Path Tracer) showing complex GPU-driven simulations, interactive pathfinding, and cinematic rendering.
+- [x] **Render Graph:** Automatic barrier generation for multi-pass effects with per-frame dynamic reconstruction and introspection support.
+- [x] **Compute-First Logic:** Example projects (Slime Mold, SPH Fluid, MOO Search, Path Tracer, Optimization Solvers) showing complex GPU-driven simulations, interactive pathfinding, and cinematic rendering.
 - [x] **Documentation:** The "MoonCrust Manual" (README.md).
 
 ---

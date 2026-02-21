@@ -9,7 +9,8 @@ MoonCrust is designed for researchers, graphics engineers, and simulation develo
 *   **Vulkan 1.4 + LuaJIT**: Pure Vulkan power accessible through an ergonomic Lua interface.
 *   **The Bindless Revolution**: Direct access to 1,000+ buffers and textures in shaders via push-constant indexing.
 *   **Zero-Copy Architecture**: Custom **Lua-TLSF** allocator for O(1) GPU memory management without C++ overhead.
-*   **Auto-Sync Render Graph**: Transparent synchronization and layout transitions for complex multi-pass pipelines.
+*   **Dynamic & Auto-Sync Render Graph**: Transparent synchronization and layout transitions for complex multi-pass pipelines.
+*   **Debug Visualization & Introspection**: Built-in tools to visualize pass dependencies and resource states in real-time.
 *   **Industrial-Grade Simulations**: Support for millions of particles, fluid dynamics, path tracing, and real-time path planning.
 
 ## 🛠️ Quick Start
@@ -44,9 +45,12 @@ MoonCrust includes a wide range of examples demonstrating everything from basic 
 
 ### 🔬 Physics & Simulations
 *   **04_particles_1m**: A massive 1-million particle simulation running at high framerates.
+*   **06_particles_visual**: Particle system with custom vertex/fragment shaders for stylized rendering.
+*   **07_interactive_particles**: Force-field based particle interaction with mouse and spatial boundaries.
 *   **08_slime_mold**: 1M agent Physarum (slime mold) simulation with trail diffusion and evaporation.
 *   **09_fluid_sph**: Real-time Smoothed Particle Hydrodynamics (SPH) fluid simulation using spatial hashing.
 *   **29_magic_sandbox**: A multi-element falling sand simulation with physics, light propagation, and botany.
+*   **32_cellular_automata**: High-speed GPU implementation of Conway's Game of Life and Wireworld.
 
 ### 🎨 Rendering & Visuals
 *   **11_grass_mesh_shader**: High-performance grass rendering using modern Vulkan Mesh Shaders.
@@ -64,9 +68,11 @@ MoonCrust includes a wide range of examples demonstrating everything from basic 
 *   **16_hybrid_astar**: GPU-accelerated Hybrid A* pathfinding for non-holonomic vehicles.
 *   **17_mppi_gpu**: Model Predictive Path Integral control with thousands of parallel GPU rollouts.
 *   **19_octree_astar**: A* pathfinding implemented on a sparse 3D octree structure.
+*   **33_gpu_vrp**: Solving the Vehicle Routing Problem (VRP) using parallel GPU heuristics.
+*   **35_ant_colony**: Path optimization through decentralized Ant Colony Simulation.
 
 ### 🧠 Machine Learning & Signal
-*   **13_graph_visualizer**: Real-time visualization of large dynamic graphs.
+*   **13_graph_visualizer**: Real-time visualization of the kernel's **Dynamic Render Graph** and its pass dependencies.
 *   **22_neural_regression**: Training and inference of a Multi-Layer Perceptron (MLP) entirely on the GPU.
 *   **24_neuro_audio**: Real-time physical modeling audio synthesis and visualization using GPU compute and SDL3.
 *   **31_neuro_symbolic_mesh**: Mesh optimization using Simulated Annealing on the GPU to refine vertex positions.
@@ -75,6 +81,13 @@ MoonCrust includes a wide range of examples demonstrating everything from basic 
 *   **18_voronoi_sdf_graph**: Real-time generation of 3D Voronoi graphs from Signed Distance Field sites.
 *   **23_sa_tsp_massing**: Solving the Traveling Salesperson Problem (TSP) using parallel Simulated Annealing chains.
 *   **25_voxel_atrium / 28_voxel_world**: Efficient voxel-based world generation and rendering.
+
+### ⚙️ Optimization & Solvers
+*   **34_optimal_transport**: Computing the Wasserstein distance and optimal transport plans via Sinkhorn iterations.
+*   **36_topology_opt**: Real-time structural topology optimization for engineering design.
+*   **37_admm_consensus**: Distributed optimization using the Alternating Direction Method of Multipliers.
+*   **38_job_shop_scheduling**: Combinatorial optimization of factory tasks using parallel Genetic Algorithms.
+*   **39_branch_and_bound**: Global optimization solver for discrete mathematical programs.
 
 ---
 
@@ -90,8 +103,8 @@ void main() {
 }
 ```
 
-### 2. The Auto-Sync Render Graph
-The graph removes manual synchronization. You define dependencies; the kernel handles the rest.
+### 2. The Dynamic & Auto-Sync Render Graph
+The graph removes manual synchronization and supports per-frame dynamic reconstruction. You define dependencies; the kernel handles the rest. Built-in introspection allows for real-time visualization of the entire pipeline.
 ```lua
 graph:add_pass("Physics", function(cb)
     vk.vkCmdDispatch(cb, groups, 1, 1)
