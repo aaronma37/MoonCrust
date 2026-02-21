@@ -45,6 +45,7 @@ local examples = {
     ["37"] = "examples.37_admm_consensus.main",
     ["38"] = "examples.38_job_shop_scheduling.main",
     ["39"] = "examples.39_branch_and_bound.main",
+    ["40"] = "examples.40_particle_term.main",
 }
 
 -- Default to the flagship if no arg provided

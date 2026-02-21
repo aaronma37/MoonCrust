@@ -1,0 +1,82 @@
+#version 450
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(set = 0, binding = 2, r32f) uniform image2D storage_images[];
+
+// Font Data (Same as physics.comp)
+uint get_font_mask(uint ascii) {
+    ascii = ascii & 0x7F;
+    if (ascii >= 97 && ascii <= 122) { ascii -= 32; } 
+
+    if (ascii >= 48 && ascii <= 57) { // 0-9
+        uint nums[] = {0x69996, 0x26227, 0xF168F, 0xF171F, 0x99F11, 0xF8F1F, 0xF8F9F, 0xF1111, 0x69696, 0x69716};
+        return nums[ascii - 48];
+    }
+    if (ascii >= 65 && ascii <= 90) { // A-Z
+        uint letters[] = {
+            0x699F9, 0xE9E9E, 0x78887, 0xE999E, 0xF8E8F, 0xF8E88, 0x78B97, 0x99F99, 0x72227, 0x11196,
+            0x9ACCA, 0x8888F, 0x9F999, 0x9DDB9, 0x69996, 0xE9E88, 0x699A5, 0xE9EA9, 0x7861E, 0x72222,
+            0x99996, 0x99996, 0x999F9, 0x99699, 0x99622, 0xF124F
+        };
+        return letters[ascii - 65];
+    }
+    if (ascii == 33) return 0x22202; // !
+    if (ascii == 63) return 0x61202; // ?
+    if (ascii == 46) return 0x00002; // .
+    if (ascii == 58) return 0x02020; // :
+    if (ascii == 62) return 0x84248; // >
+    if (ascii == 35) return 0x5F5F5; // #
+    return 0x00000;
+}
+
+bool is_pixel_on(uint ascii, uint x, uint y) {
+    if (x > 3 || y > 4) return false;
+    uint mask = get_font_mask(ascii);
+    uint bit_idx = (4 - y) * 4 + (3 - x);
+    return ((mask >> bit_idx) & 1) != 0;
+}
+
+void main() {
+    // Access index 3 as configured in main.lua
+    ivec2 size = imageSize(storage_images[3]);
+    ivec2 uv = ivec2(gl_GlobalInvocationID.xy);
+    if (uv.x >= size.x || uv.y >= size.y) return;
+
+    // Map UV to Char and Local coords
+    // 64x64 pixels per char
+    uint char_x = uv.x / 64;
+    uint char_y = uv.y / 64;
+    uint char_id = char_y * 16 + char_x; // ASCII code if we map 1:1
+
+    // Local coordinates in 0..1 frame of the char
+    float lx = float(uv.x % 64) / 64.0;
+    float ly = float(uv.y % 64) / 64.0;
+
+    // Center the char
+    float grid_w = 4.0;
+    float grid_h = 5.0;
+    float scale = 0.6; // Scale of font relative to cell
+    vec2 offset = vec2(0.2, 0.2); // Offset to center
+
+    // Brute force distance to all ON bits
+    float min_dist = 1000.0;
+
+    // DEBUG: Circle in center
+    min_dist = distance(vec2(lx, ly), vec2(0.5)) - 0.3;
+
+    /*
+    for (uint by = 0; by < 5; by++) {
+        for (uint bx = 0; bx < 4; bx++) {
+            if (is_pixel_on(char_id, bx, by)) {
+                vec2 bit_center = offset + vec2(float(bx)/grid_w, float(by)/grid_h) * scale + vec2(0.5/grid_w, 0.5/grid_h)*scale;
+                float d = distance(vec2(lx, ly), bit_center);
+                float radius = 0.06; // Thickness
+                min_dist = min(min_dist, d - radius);
+            }
+        }
+    }
+    */
+    
+    // Write SDF: Negative inside, Positive outside
+    imageStore(storage_images[3], uv, vec4(min_dist, 0, 0, 0));
+}

@@ -1,0 +1,115 @@
+#version 450
+#extension GL_EXT_nonuniform_qualifier : enable
+
+struct Particle {
+    vec4 pos;
+    vec4 vel;
+    float temp;
+    uint cell_id;
+    uint char_id;
+    uint pad;
+};
+
+layout(push_constant) uniform PushConstants {
+    float dt;
+    float time;
+    uint p_buf_id;
+    uint t_buf_id;
+    uint sdf_tex_id;
+    uint term_w;
+    uint term_h;
+    uint particles_per_char;
+} pc;
+
+layout(set = 0, binding = 0) buffer ParticleBuffer { Particle p[]; } particles_heap[];
+layout(set = 0, binding = 0) buffer TextBuffer { uint t[]; } text_heap[];
+
+uint hash(uint x) {
+    x = ((x >> 16) ^ x) * 0x45d9f3b;
+    x = ((x >> 16) ^ x) * 0x45d9f3b;
+    x = (x >> 16) ^ x;
+    return x;
+}
+
+float random(uint seed) {
+    return float(hash(seed) % 1000000) / 1000000.0;
+}
+
+uint get_font_mask(uint ascii) {
+    ascii = ascii & 0x7F;
+    if (ascii >= 97 && ascii <= 122) { ascii -= 32; } 
+    if (ascii >= 48 && ascii <= 57) { 
+        uint nums[] = {0x69996, 0x26227, 0xF168F, 0xF171F, 0x99F11, 0xF8F1F, 0xF8F9F, 0xF1111, 0x69696, 0x69716};
+        return nums[ascii - 48];
+    }
+    if (ascii >= 65 && ascii <= 90) { 
+        uint letters[] = {
+            0x699F9, 0xE9E9E, 0x78887, 0xE999E, 0xF8E8F, 0xF8E88, 0x78B97, 0x99F99, 0x72227, 0x11196,
+            0x9ACCA, 0x8888F, 0x9F999, 0x9DDB9, 0x69996, 0xE9E88, 0x699A5, 0xE9EA9, 0x7861E, 0x72222,
+            0x99996, 0x99996, 0x999F9, 0x99699, 0x99622, 0xF124F
+        };
+        return letters[ascii - 65];
+    }
+    if (ascii == 33) return 0x22202; 
+    if (ascii == 62) return 0x84248; 
+    return 0x00000;
+}
+
+layout(local_size_x = 256) in;
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= pc.term_w * pc.term_h * pc.particles_per_char) return;
+
+    Particle p = particles_heap[nonuniformEXT(pc.p_buf_id)].p[idx];
+    
+    // Robust Cell Determination
+    uint cell_id = idx / pc.particles_per_char;
+    uint target_char = text_heap[nonuniformEXT(pc.t_buf_id)].t[cell_id];
+
+    if (p.char_id != uint(target_char)) {
+        p.char_id = uint(target_char);
+        p.temp = 1.0; 
+    }
+
+    uint cx = cell_id % pc.term_w;
+    uint cy = cell_id / pc.term_w;
+    
+    float cell_w = 2.0 / float(pc.term_w);
+    float cell_h = 2.0 / float(pc.term_h);
+    float cell_x0 = (float(cx) / float(pc.term_w)) * 2.0 - 1.0;
+    float cell_y0 = (float(cy) / float(pc.term_h)) * 2.0 - 1.0;
+
+    uint local_id = idx % pc.particles_per_char;
+    uint lx = local_id % 16;
+    uint ly = local_id / 16;
+    
+    uint fx = lx / 4;
+    uint fy = ly / 3;
+    uint mask = get_font_mask(p.char_id);
+    bool on = ((mask >> ((4-fy)*4 + (3-fx))) & 1) != 0;
+
+    vec2 target;
+    if (on) {
+        target = vec2(cell_x0 + (float(lx)/16.0)*cell_w, cell_y0 + (float(ly)/16.0)*cell_h);
+    } else {
+        // If OFF, just stay at the center (invisible)
+        target = vec2(cell_x0 + 0.5*cell_w, cell_y0 + 0.5*cell_h);
+    }
+
+    vec2 force = (target - p.pos.xy) * 80.0;
+    
+    if (p.temp > 0.01) {
+        float r1 = random(idx + uint(pc.time * 1000.0)) * 2.0 - 1.0;
+        float r2 = random(idx + 1 + uint(pc.time * 1000.0)) * 2.0 - 1.0;
+        force += vec2(r1, r2) * p.temp * 40.0;
+        p.temp *= 0.95;
+    }
+
+    p.vel.xy += force * pc.dt;
+    p.vel.xy *= 0.7;
+    p.pos.xy += p.vel.xy * pc.dt;
+    p.pos.z = 0.5;
+    p.pos.w = on ? 0.0 : 1.0; // W=0 is inside (visible)
+
+    particles_heap[nonuniformEXT(pc.p_buf_id)].p[idx] = p;
+}
