@@ -43,6 +43,7 @@ local examples = {
     ["35"] = "examples.35_ant_colony.main",
     ["36"] = "examples.36_topology_opt.main",
     ["37"] = "examples.37_admm_consensus.main",
+    ["38"] = "examples.38_job_shop_scheduling.main",
 }
 
 -- Default to the flagship if no arg provided
