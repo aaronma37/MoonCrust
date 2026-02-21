@@ -60,6 +60,7 @@ MoonCrust includes a wide range of examples demonstrating everything from basic 
 *   **26_mesh_cathedral**: A complex mesh rendering demo featuring a cathedral.
 *   **27_obj_viewer**: A high-performance OBJ file loader and viewer.
 *   **30_sponza_gltf**: Loading and rendering the classic Sponza scene from GLTF with modern techniques.
+*   **40_particle_term**: A particle-based terminal emulator using **Simulated Annealing** and **SDF Fonts** to fluidly morph and settle particles into text characters.
 
 ### 🤖 Pathfinding & AI
 *   **10_moo_graph_search**: Multi-Objective Optimization (MOO) graph search on the GPU.
