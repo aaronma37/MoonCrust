@@ -45,15 +45,18 @@ ffi.cdef[[
     bool igSelectable_Bool(const char* label, bool selected, int flags, const ImVec2_c size);
     void igOpenPopup_Str(const char* str_id, int popup_flags);
     bool igBeginPopupModal(const char* name, bool* p_open, int flags);
+    void igEndPopup(void);
     void igCloseCurrentPopup(void);
     bool igIsItemClicked(int mouse_button);
     bool igIsKeyPressed_Bool(int key, bool repeat);
-    void igEndPopup(void);
+    void igEnd(void);
     void igTextColored(const ImVec4_c col, const char* fmt, ...);
+    void igSetNextWindowFocus(void);
 ]]
 
 local Flags = {
-    NoTitleBar = 1, NoResize = 2, NoMove = 4, NoScrollbar = 8, NoCollapse = 32, NoNav = 128, NoDecoration = 43, AlwaysAutoResize = 64,
+    NoTitleBar = 1, NoResize = 2, NoMove = 4, NoScrollbar = 8, NoCollapse = 32, NoNav = 128, NoDecoration = 43, 
+    AlwaysAutoResize = 64, AlwaysOnTop = 262144
 }
 
 local Keys = {
@@ -72,7 +75,7 @@ local state = {
     layout = { type = "view", view_type = "lidar", id = 1 },
     next_id = 2,
     focused_id = 1,
-    fuzzy = { open_trigger = false, query = ffi.new("char[128]"), selected_idx = 0, results = {} }
+    fuzzy = { active = false, query = ffi.new("char[128]"), selected_idx = 0, results = {} }
 }
 
 local M = state
@@ -135,9 +138,16 @@ local function render_topic_explorer(gui)
     end
 end
 
+local function render_log_view(gui)
+    gui.igText("Log Viewer")
+    gui.igSeparator()
+    gui.igText("No logs in stream yet.")
+end
+
 M.register_panel("lidar", "Lidar Cloud", render_lidar_view)
 M.register_panel("telemetry", "Telemetry Controls", render_telemetry_view)
 M.register_panel("topics", "Topic Explorer", render_topic_explorer)
+M.register_panel("log", "Log Viewer", render_log_view)
 
 local pc_p_obj = ffi.new("ParserPC")
 local pc_r_obj = ffi.new("RenderPC")
@@ -159,34 +169,27 @@ local function discover_topics()
 end
 
 function M.init()
-    print("[42] Initializing Vulkan...")
     local instance = vulkan.get_instance()
     local physical_device = vulkan.get_physical_device()
     device = vulkan.get_device()
     queue, graphics_family = vulkan.get_queue()
     sw = swapchain.new(instance, physical_device, device, _G._SDL_WINDOW)
-    
-    print("[42] Initializing Bridge & ImGui...")
     robot.init_bridge()
     imgui.init()
-    
     local f = io.open(state.mcap_path, "r")
     if not f then robot.lib.mcap_generate_test_file(state.mcap_path) else f:close() end
     state.bridge = robot.lib.mcap_open(state.mcap_path)
-    if state.bridge == nil then error("Failed to open " .. state.mcap_path) end
     state.start_time = robot.lib.mcap_get_start_time(state.bridge)
     state.end_time = robot.lib.mcap_get_end_time(state.bridge)
     state.current_time_ns = state.start_time
     discover_topics()
 
-    print("[42] Allocating Buffers...")
     raw_buffer = mc.buffer(M.points_count * 12, "storage", nil, true)
     point_buffer = mc.buffer(M.points_count * 16, "storage", nil, false)
     bindless_set = mc.gpu.get_bindless_set()
     descriptors.update_buffer_set(device, bindless_set, 0, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, raw_buffer.handle, 0, raw_buffer.size, 10)
     descriptors.update_buffer_set(device, bindless_set, 0, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, point_buffer.handle, 0, point_buffer.size, 11)
     
-    print("[42] Creating Pipelines...")
     local bl_layout = mc.gpu.get_bindless_layout()
     local pc_p_range = ffi.new("VkPushConstantRange[1]", {{ stageFlags = vk.VK_SHADER_STAGE_COMPUTE_BIT, offset = 0, size = ffi.sizeof("ParserPC") }})
     layout_parse = pipeline.create_layout(device, {bl_layout}, pc_p_range)
@@ -198,7 +201,6 @@ function M.init()
         topology = vk.VK_PRIMITIVE_TOPOLOGY_POINT_LIST, alpha_blend = true, color_formats = { vk.VK_FORMAT_B8G8R8A8_SRGB }
     })
 
-    print("[42] Finalizing Sync Objects...")
     local pool = command.create_pool(device, graphics_family)
     cb = command.allocate_buffers(device, pool, 1)[1]
     local pF = ffi.new("VkFence[1]"); vk.vkCreateFence(device, ffi.new("VkFenceCreateInfo", { sType=vk.VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, flags=vk.VK_FENCE_CREATE_SIGNALED_BIT }), nil, pF); frame_fence = pF[0]
@@ -215,6 +217,8 @@ function M.init()
         local mvp = mc.mat4_multiply(proj, view)
         for i=0,15 do pc_r_obj.view_proj[i] = mvp.m[i] end
         pc_r_obj.buf_idx, pc_r_obj.point_size = 11, 3.0
+        
+        -- DRAW PAYLOAD
         vk.vkCmdBindPipeline(cb_handle, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe_render)
         vk.vkCmdPushConstants(cb_handle, pipe_layout, vk.VK_SHADER_STAGE_ALL_GRAPHICS, 0, ffi.sizeof("RenderPC"), pc_r_obj)
         local sx, sy = _G._WIN_PW / _G._WIN_LW, _G._WIN_PH / _G._WIN_LH
@@ -225,8 +229,19 @@ function M.init()
         scissor_obj.extent.width, scissor_obj.extent.height = data.w*sx, data.h*sy
         vk.vkCmdSetScissor(cb_handle, 0, 1, scissor_obj)
         vk.vkCmdDraw(cb_handle, M.points_count, 1, 0, 0)
+        
+        -- RESTORE STATE FOR IMGUI
+        local imgui_renderer = require("imgui.renderer")
+        vk.vkCmdBindPipeline(cb_handle, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, imgui_renderer.pipeline)
+        viewport_obj.x, viewport_obj.y, viewport_obj.width, viewport_obj.height = 0, 0, _G._WIN_PW, _G._WIN_PH
+        vk.vkCmdSetViewport(cb_handle, 0, 1, viewport_obj)
+        local sets = ffi.new("VkDescriptorSet[1]", {mc.gpu.get_bindless_set()})
+        vk.vkCmdBindDescriptorSets(cb_handle, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, imgui_renderer.layout, 0, 1, sets, 0, nil)
+        local v_buffers = ffi.new("VkBuffer[1]", {imgui_renderer.v_buffer.handle})
+        local v_offsets = ffi.new("VkDeviceSize[1]", {0})
+        vk.vkCmdBindVertexBuffers(cb_handle, 0, 1, v_buffers, v_offsets)
+        vk.vkCmdBindIndexBuffer(cb_handle, imgui_renderer.i_buffer.handle, 0, vk.VK_INDEX_TYPE_UINT16)
     end
-    print("[42] Initialization Complete.")
 end
 
 local function split_focused(direction)
@@ -269,6 +284,48 @@ local function replace_focused_view(new_type)
     find_and_replace(state.layout)
 end
 
+local function render_fuzzy_finder(gui)
+    if state.fuzzy.active then
+        gui.igOpenPopup_Str("FuzzyFinder", 0)
+        state.fuzzy.active = false
+    end
+
+    local lw, lh = _G._WIN_LW or 1280, _G._WIN_LH or 720
+    gui.igSetNextWindowPos(ffi.new("ImVec2_c", {lw/2, 100}), 0, ffi.new("ImVec2_c", {0.5, 0}))
+    gui.igSetNextWindowSize(ffi.new("ImVec2_c", {400, 0}), 0)
+    
+    if gui.igBeginPopupModal("FuzzyFinder", nil, Flags.AlwaysAutoResize) then
+        if gui.igInputText("##Search", state.fuzzy.query, 128, 0, nil, nil) then
+            state.fuzzy.results = {}
+            local q = ffi.string(state.fuzzy.query):lower()
+            for _, p in pairs(M.panels) do if p.name:lower():find(q, 1, true) then table.insert(state.fuzzy.results, p) end end
+            state.fuzzy.selected_idx = 0
+        end
+        gui.igSetKeyboardFocusHere(-1)
+        
+        if #state.fuzzy.results == 0 and ffi.string(state.fuzzy.query) == "" then
+            for _, p in pairs(M.panels) do table.insert(state.fuzzy.results, p) end
+        end
+
+        for i, p in ipairs(state.fuzzy.results) do
+            local is_sel = (i-1 == state.fuzzy.selected_idx)
+            if gui.igSelectable_Bool(p.name, is_sel, 0, ffi.new("ImVec2_c", {0, 0})) then
+                replace_focused_view(p.id)
+                gui.igCloseCurrentPopup()
+            end
+        end
+        
+        if input.key_pressed(Keys.ESC) then gui.igCloseCurrentPopup() end
+        if input.key_pressed(Keys.DOWN) then state.fuzzy.selected_idx = (state.fuzzy.selected_idx + 1) % #state.fuzzy.results end
+        if input.key_pressed(Keys.UP) then state.fuzzy.selected_idx = (state.fuzzy.selected_idx - 1 + #state.fuzzy.results) % #state.fuzzy.results end
+        if input.key_pressed(Keys.ENTER) and state.fuzzy.results[state.fuzzy.selected_idx+1] then
+            replace_focused_view(state.fuzzy.results[state.fuzzy.selected_idx+1].id)
+            gui.igCloseCurrentPopup()
+        end
+        gui.igEndPopup()
+    end
+end
+
 local function render_node(node, x, y, w, h, gui)
     if node.type == "split" then
         if node.direction == "v" then
@@ -285,10 +342,15 @@ local function render_node(node, x, y, w, h, gui)
         gui.igSetNextWindowSize(ffi.new("ImVec2_c", {w, h}), 0)
         if gui.igBegin(string.format("View %d###%d", node.id, node.id), nil, Flags.NoDecoration) then
             if gui.igIsWindowHovered(0) then state.focused_id = node.id end
-            if state.fuzzy.open_trigger and state.focused_id == node.id then
+            
+            -- Open popup in current window context
+            if state.fuzzy.active and state.focused_id == node.id then
                 gui.igOpenPopup_Str("FuzzyFinder", 0)
-                state.fuzzy.open_trigger = false
+                state.fuzzy.active = false
             end
+            
+            render_fuzzy_finder(gui)
+
             local p = M.panels[node.view_type]
             if p then p.render(gui)
             else
@@ -300,35 +362,7 @@ local function render_node(node, x, y, w, h, gui)
     end
 end
 
-local function render_fuzzy_finder(gui)
-    gui.igSetNextWindowPos(ffi.new("ImVec2_c", {_G._WIN_LW/2, 100}), 0, ffi.new("ImVec2_c", {0.5, 0}))
-    if gui.igBeginPopupModal("FuzzyFinder", nil, Flags.AlwaysAutoResize) then
-        if gui.igInputText("Search", state.fuzzy.query, 128, 0, nil, nil) then
-            state.fuzzy.results = {}
-            local q = ffi.string(state.fuzzy.query):lower()
-            for _, p in pairs(M.panels) do if p.name:lower():find(q, 1, true) then table.insert(state.fuzzy.results, p) end end
-            state.fuzzy.selected_idx = 0
-        end
-        gui.igSetKeyboardFocusHere(-1)
-        for i, p in ipairs(state.fuzzy.results) do
-            if gui.igSelectable_Bool(p.name, i-1 == state.fuzzy.selected_idx, 0, ffi.new("ImVec2_c", {300, 0})) then
-                replace_focused_view(p.id)
-                gui.igCloseCurrentPopup()
-            end
-        end
-        if input.key_pressed(Keys.ESC) then gui.igCloseCurrentPopup() end
-        if input.key_pressed(Keys.DOWN) then state.fuzzy.selected_idx = (state.fuzzy.selected_idx + 1) % math.max(1, #state.fuzzy.results) end
-        if input.key_pressed(Keys.UP) then state.fuzzy.selected_idx = (state.fuzzy.selected_idx - 1 + #state.fuzzy.results) % math.max(1, #state.fuzzy.results) end
-        if input.key_pressed(Keys.ENTER) and state.fuzzy.results[state.fuzzy.selected_idx+1] then
-            replace_focused_view(state.fuzzy.results[state.fuzzy.selected_idx+1].id)
-            gui.igCloseCurrentPopup()
-        end
-        gui.igEndPopup()
-    end
-end
-
 function M.update()
-    -- print("[42] Frame Start") -- TRACING
     vk.vkWaitForFences(device, 1, ffi.new("VkFence[1]", {frame_fence}), vk.VK_TRUE, 0xFFFFFFFFFFFFFFFFULL)
     vk.vkResetFences(device, 1, ffi.new("VkFence[1]", {frame_fence}))
     local img_idx = sw:acquire_next_image(image_available_sem)
@@ -340,7 +374,7 @@ function M.update()
         if input.key_pressed(Keys.H) then split_focused("h") end
         if input.key_pressed(Keys.X) then close_focused() end
         if input.key_pressed(Keys.P) then
-            state.fuzzy.open_trigger = true
+            state.fuzzy.active = true
             ffi.fill(state.fuzzy.query, 128)
             state.fuzzy.results = {}
             for _, p in pairs(M.panels) do table.insert(state.fuzzy.results, p) end
@@ -354,13 +388,8 @@ function M.update()
         state.cam.orbit_x = state.cam.orbit_x + rmx * 0.2
         state.cam.orbit_y = math.max(-89, math.min(89, state.cam.orbit_y - rmy * 0.2))
     end
-    
     if not state.paused then
-        -- print("[42] Fetching MCAP data") -- TRACING
-        if not robot.lib.mcap_next(state.bridge, state.current_msg) then 
-            robot.lib.mcap_rewind(state.bridge) 
-            robot.lib.mcap_next(state.bridge, state.current_msg) 
-        end
+        if not robot.lib.mcap_next(state.bridge, state.current_msg) then robot.lib.mcap_rewind(state.bridge) robot.lib.mcap_next(state.bridge, state.current_msg) end
         state.current_time_ns = state.current_msg.log_time
         if raw_buffer.allocation.ptr ~= nil and state.current_msg.data ~= nil then
             local copy_size = math.min(tonumber(state.current_msg.data_size), raw_buffer.size)
@@ -371,29 +400,20 @@ function M.update()
     callback_data_idx = 1
     imgui.new_frame()
     render_node(state.layout, 0, 0, _G._WIN_LW, _G._WIN_LH, gui)
-    render_fuzzy_finder(gui)
 
     vk.vkResetCommandBuffer(cb, 0)
     vk.vkBeginCommandBuffer(cb, cb_begin_info)
-    
     pc_p_obj.in_buf_idx, pc_p_obj.in_offset_u32, pc_p_obj.out_buf_idx, pc_p_obj.count = 10, 0, 11, M.points_count
     vk.vkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_parse)
     vk.vkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_COMPUTE, layout_parse, 0, 1, ffi.new("VkDescriptorSet[1]", {bindless_set}), 0, nil)
     vk.vkCmdPushConstants(cb, layout_parse, vk.VK_SHADER_STAGE_COMPUTE_BIT, 0, ffi.sizeof("ParserPC"), pc_p_obj)
     vk.vkCmdDispatch(cb, math.ceil(M.points_count / 256), 1, 1)
-    
     vk.vkCmdPipelineBarrier(cb, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, vk.VK_PIPELINE_STAGE_VERTEX_SHADER_BIT, 0, 1, ffi.new("VkMemoryBarrier[1]", {{ sType = vk.VK_STRUCTURE_TYPE_MEMORY_BARRIER, srcAccessMask = vk.VK_ACCESS_SHADER_WRITE_BIT, dstAccessMask = vk.VK_ACCESS_SHADER_READ_BIT }}), 0, nil, 0, nil)
-    
     local bar = ffi.new("VkImageMemoryBarrier[1]", {{ 
-        sType=vk.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, 
-        oldLayout=vk.VK_IMAGE_LAYOUT_UNDEFINED, 
-        newLayout=vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 
-        image=ffi.cast("VkImage", sw.images[img_idx]), 
-        subresourceRange={ aspectMask = vk.VK_IMAGE_ASPECT_COLOR_BIT, levelCount = 1, layerCount = 1 }, 
-        dstAccessMask=vk.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT 
+        sType=vk.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, oldLayout=vk.VK_IMAGE_LAYOUT_UNDEFINED, newLayout=vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, image=ffi.cast("VkImage", sw.images[img_idx]), 
+        subresourceRange={ aspectMask = vk.VK_IMAGE_ASPECT_COLOR_BIT, levelCount = 1, layerCount = 1 }, dstAccessMask=vk.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT 
     }})
     vk.vkCmdPipelineBarrier(cb, vk.VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, vk.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, nil, 0, nil, 1, bar)
-    
     attachment_info_obj[0].sType = vk.VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO
     attachment_info_obj[0].imageView = ffi.cast("VkImageView", sw.views[img_idx])
     attachment_info_obj[0].imageLayout = vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
@@ -403,35 +423,15 @@ function M.update()
     attachment_info_obj[0].clearValue.color.float32[1] = 0.05
     attachment_info_obj[0].clearValue.color.float32[2] = 0.07
     attachment_info_obj[0].clearValue.color.float32[3] = 1.0
-    
-    local rendering_info = ffi.new("VkRenderingInfo", { 
-        sType=vk.VK_STRUCTURE_TYPE_RENDERING_INFO, 
-        renderArea={extent=sw.extent}, 
-        layerCount=1, 
-        colorAttachmentCount=1, 
-        pColorAttachments=attachment_info_obj 
-    })
-    vk.vkCmdBeginRendering(cb, rendering_info)
+    vk.vkCmdBeginRendering(cb, ffi.new("VkRenderingInfo", { sType=vk.VK_STRUCTURE_TYPE_RENDERING_INFO, renderArea={extent=sw.extent}, layerCount=1, colorAttachmentCount=1, pColorAttachments=attachment_info_obj }))
     vk.vkCmdSetViewport(cb, 0, 1, ffi.new("VkViewport", { x=0, y=0, width=_G._WIN_PW, height=_G._WIN_PH, minDepth=0, maxDepth=1 }))
     vk.vkCmdSetScissor(cb, 0, 1, ffi.new("VkRect2D", { offset={x=0, y=0}, extent=sw.extent }))
     imgui.render(cb)
     vk.vkCmdEndRendering(cb)
-    
     bar[0].oldLayout, bar[0].newLayout = vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, vk.VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
     vk.vkCmdPipelineBarrier(cb, vk.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, vk.VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nil, 0, nil, 1, bar)
     vk.vkEndCommandBuffer(cb)
-    
-    local submit_info = ffi.new("VkSubmitInfo", { 
-        sType=vk.VK_STRUCTURE_TYPE_SUBMIT_INFO, 
-        waitSemaphoreCount=1, 
-        pWaitSemaphores=ffi.new("VkSemaphore[1]", {image_available_sem}), 
-        pWaitDstStageMask=wait_stage_mask, 
-        commandBufferCount=1, 
-        pCommandBuffers=ffi.new("VkCommandBuffer[1]", {cb}), 
-        signalSemaphoreCount=1, 
-        pSignalSemaphores=ffi.new("VkSemaphore[1]", {sw.semaphores[img_idx]}) 
-    })
-    vk.vkQueueSubmit(queue, 1, submit_info, frame_fence)
+    vk.vkQueueSubmit(queue, 1, ffi.new("VkSubmitInfo", { sType=vk.VK_STRUCTURE_TYPE_SUBMIT_INFO, waitSemaphoreCount=1, pWaitSemaphores=ffi.new("VkSemaphore[1]", {image_available_sem}), pWaitDstStageMask=wait_stage_mask, commandBufferCount=1, pCommandBuffers=ffi.new("VkCommandBuffer[1]", {cb}), signalSemaphoreCount=1, pSignalSemaphores=ffi.new("VkSemaphore[1]", {sw.semaphores[img_idx]}) }), frame_fence)
     sw:present(queue, img_idx, sw.semaphores[img_idx])
 end
 
