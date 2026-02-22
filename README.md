@@ -77,6 +77,7 @@ MoonCrust includes a wide range of examples demonstrating everything from basic 
 *   **22_neural_regression**: Training and inference of a Multi-Layer Perceptron (MLP) entirely on the GPU.
 *   **24_neuro_audio**: Real-time physical modeling audio synthesis and visualization using GPU compute and SDL3.
 *   **31_neuro_symbolic_mesh**: Mesh optimization using Simulated Annealing on the GPU to refine vertex positions.
+*   **41_imgui_visualizer**: Advanced real-time visualization suite integrating **Dear ImGui**, **ImPlot**, and **ImPlot3D** for 2D/3D data inspection.
 
 ### 🏗️ Advanced Math & Geometry
 *   **18_voronoi_sdf_graph**: Real-time generation of 3D Voronoi graphs from Signed Distance Field sites.

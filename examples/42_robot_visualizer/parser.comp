@@ -1,0 +1,36 @@
+#version 450
+#extension GL_EXT_nonuniform_qualifier : enable
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0) buffer Data { uint u32[]; } all_buffers[];
+
+layout(push_constant) uniform PC {
+    uint in_buf_idx;
+    uint in_offset_u32;
+    uint out_buf_idx;
+    uint count;
+} pc;
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= pc.count) return;
+
+    // Read 3 floats (x, y, z) starting from in_offset_u32
+    // Each point is 3 uint32s
+    uint base = pc.in_offset_u32 + (idx * 3);
+    
+    float x = uintBitsToFloat(all_buffers[nonuniformEXT(pc.in_buf_idx)].u32[base + 0]);
+    float y = uintBitsToFloat(all_buffers[nonuniformEXT(pc.in_buf_idx)].u32[base + 1]);
+    float z = uintBitsToFloat(all_buffers[nonuniformEXT(pc.in_buf_idx)].u32[base + 2]);
+
+    // Write to output buffer as vec4 (x, y, z, 1.0)
+    // Output buffer starts at some index
+    // Note: Bindless means we just use the index provided
+    uint out_base = idx * 4; // vec4
+    
+    // We reuse the same binding 0 for output, just different index
+    all_buffers[nonuniformEXT(pc.out_buf_idx)].u32[out_base + 0] = floatBitsToUint(x);
+    all_buffers[nonuniformEXT(pc.out_buf_idx)].u32[out_base + 1] = floatBitsToUint(y);
+    all_buffers[nonuniformEXT(pc.out_buf_idx)].u32[out_base + 2] = floatBitsToUint(z);
+    all_buffers[nonuniformEXT(pc.out_buf_idx)].u32[out_base + 3] = floatBitsToUint(1.0);
+}

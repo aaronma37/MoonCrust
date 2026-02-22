@@ -13,6 +13,7 @@ ffi.cdef[[
     void SDL_DestroyWindow(void* window);
     uint32_t SDL_GetWindowID(void* window);
     bool SDL_Vulkan_CreateSurface(void* window, void* instance, void* allocator, void** surface);
+    bool SDL_GetWindowSize(void* window, int* w, int* h);
     bool SDL_GetWindowSizeInPixels(void* window, int* w, int* h);
     
     uint32_t SDL_GetMouseState(float* x, float* y);
