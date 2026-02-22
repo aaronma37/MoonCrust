@@ -88,6 +88,11 @@ function M.key_pressed(scancode)
     return curr_keyboard[scancode] ~= 0 and prev_keyboard[scancode] == 0
 end
 
+function M.key_released(scancode)
+    if not curr_keyboard or scancode < 0 or scancode >= num_keys then return false end
+    return curr_keyboard[scancode] == 0 and prev_keyboard[scancode] ~= 0
+end
+
 -- Common Scancodes (MoonCrust Subset)
 M.SCANCODE_W = 26
 M.SCANCODE_A = 4

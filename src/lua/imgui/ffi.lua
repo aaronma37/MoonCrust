@@ -31,6 +31,7 @@ ffi.cdef[[
     typedef int ImGuiMouseSource;
     typedef int ImPlotMarker;
     typedef int ImPlot3DMarker;
+    typedef int ImGuiKey;
 
     typedef struct ImDrawVert {
         ImVec2_c pos;
@@ -270,6 +271,14 @@ ffi.cdef[[
     void* igCreateContext(void* shared_font_atlas);
     void igDestroyContext(void* ctx);
     ImGuiIO* igGetIO_Nil(void);
+    
+    // Modern Event API
+    void ImGuiIO_AddKeyEvent(ImGuiIO* self, ImGuiKey key, bool down);
+    void ImGuiIO_AddInputCharacter(ImGuiIO* self, unsigned int c);
+    void ImGuiIO_AddMousePosEvent(ImGuiIO* self, float x, float y);
+    void ImGuiIO_AddMouseButtonEvent(ImGuiIO* self, int button, bool down);
+    void ImGuiIO_AddMouseWheelEvent(ImGuiIO* self, float wheel_x, float wheel_y);
+
     void igNewFrame(void);
     void igRender(void);
     ImDrawData* igGetDrawData(void);
@@ -280,6 +289,7 @@ ffi.cdef[[
     bool igBegin(const char* name, bool* p_open, ImGuiWindowFlags flags);
     void igEnd(void);
     void igText(const char* fmt, ...);
+    void igTextColored(const ImVec4_c col, const char* fmt, ...);
     bool igCheckbox(const char* label, bool* v);
     bool igButton(const char* label, const ImVec2_c size);
     void igSeparator(void);
