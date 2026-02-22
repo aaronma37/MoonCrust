@@ -22,8 +22,9 @@ end
 
 function M.tick()
     current_frame = current_frame + 1
+    local ring_idx = current_frame % 32
     
-    local kill_list = death_row[current_frame]
+    local kill_list = death_row[ring_idx]
     if kill_list then
         for _, res in ipairs(kill_list) do
             -- Safety: Ensure device is still valid
@@ -40,15 +41,17 @@ function M.tick()
                 -- print("Resource: Safely destroyed " .. tostring(res.handle))
             end
         end
-        death_row[current_frame] = nil
+        death_row[ring_idx] = nil
     end
 end
 
 function M.free(handle, type)
     if not handle then return end
+    print("Resource: Freeing " .. tostring(handle) .. " type " .. type)
     
     -- Schedule for death in 3 frames (Triple Buffering safety)
-    local kill_frame = current_frame + 3
+    -- Using a 32-slot ring buffer to avoid table growth/overflow
+    local kill_frame = (current_frame + 3) % 32
     
     if not death_row[kill_frame] then 
         death_row[kill_frame] = {} 

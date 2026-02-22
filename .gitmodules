@@ -1,3 +1,6 @@
 [submodule "examples/27_obj_viewer/Sponza"]
 	path = examples/27_obj_viewer/Sponza
 	url = https://github.com/jimmiebergmann/Sponza
+[submodule "examples/41_imgui_visualizer/cimgui"]
+	path = examples/41_imgui_visualizer/cimgui
+	url = https://github.com/cimgui/cimgui.git

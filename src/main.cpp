@@ -196,12 +196,34 @@ int main(int argc, char* argv[]) {
         while (SDL_PollEvent(&event)) {
             if (event.type == SDL_EVENT_QUIT) running = false;
             if (event.type == SDL_EVENT_KEY_DOWN && event.key.key == SDLK_ESCAPE) running = false;
+            
             if (event.type == SDL_EVENT_MOUSE_MOTION) {
                 lua_pushnumber(L, event.motion.x); lua_setglobal(L, "_MOUSE_X");
                 lua_pushnumber(L, event.motion.y); lua_setglobal(L, "_MOUSE_Y");
-                lua_pushinteger(L, event.motion.windowID); lua_setglobal(L, "_MOUSE_WINDOW");
+            }
+            if (event.type == SDL_EVENT_MOUSE_BUTTON_DOWN || event.type == SDL_EVENT_MOUSE_BUTTON_UP) {
+                bool down = (event.type == SDL_EVENT_MOUSE_BUTTON_DOWN);
+                if (event.button.button == SDL_BUTTON_LEFT) { lua_pushboolean(L, down); lua_setglobal(L, "_MOUSE_L"); }
+                if (event.button.button == SDL_BUTTON_RIGHT) { lua_pushboolean(L, down); lua_setglobal(L, "_MOUSE_R"); }
+                if (event.button.button == SDL_BUTTON_MIDDLE) { lua_pushboolean(L, down); lua_setglobal(L, "_MOUSE_M"); }
+                lua_pushnumber(L, event.button.x); lua_setglobal(L, "_MOUSE_X");
+                lua_pushnumber(L, event.button.y); lua_setglobal(L, "_MOUSE_Y");
+            }
+            if (event.type == SDL_EVENT_MOUSE_WHEEL) {
+                lua_pushnumber(L, event.wheel.y); lua_setglobal(L, "_MOUSE_WHEEL");
             }
         }
+        
+        // Push physical resolution as the source of truth every frame
+        int pw, ph;
+        SDL_GetWindowSizeInPixels(window, &pw, &ph);
+        lua_pushinteger(L, pw); lua_setglobal(L, "_WIN_PW");
+        lua_pushinteger(L, ph); lua_setglobal(L, "_WIN_PH");
+        int lw, lh;
+        SDL_GetWindowSize(window, &lw, &lh);
+        lua_pushinteger(L, lw); lua_setglobal(L, "_WIN_LW");
+        lua_pushinteger(L, lh); lua_setglobal(L, "_WIN_LH");
+
         lua_getglobal(L, "mooncrust_update");
         if (lua_isfunction(L, -1)) {
             if (lua_pcall(L, 0, 0, 0) != 0) {

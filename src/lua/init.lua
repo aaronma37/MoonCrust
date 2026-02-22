@@ -46,6 +46,8 @@ local examples = {
     ["38"] = "examples.38_job_shop_scheduling.main",
     ["39"] = "examples.39_branch_and_bound.main",
     ["40"] = "examples.40_particle_term.main",
+    ["41"] = "examples.41_imgui_visualizer.main",
+    ["42"] = "examples.42_robot_visualizer.main",
 }
 
 -- Default to the flagship if no arg provided

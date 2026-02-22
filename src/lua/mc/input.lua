@@ -20,16 +20,28 @@ local prev_mouse = 0
 local curr_mouse = 0
 local curr_window = 0
 
+local prev_mx, prev_my = 0, 0
+
 function M.tick()
-    -- Update Mouse Buttons
-    prev_mouse = curr_mouse
-    curr_mouse = sdl.SDL_GetMouseState(nil, nil) -- Only get buttons
-    sdl.SDL_GetRelativeMouseState(rmx_ptr, rmy_ptr)
+    -- Update Mouse Position
+    prev_mx, prev_my = mx_ptr[0], my_ptr[0]
     
-    -- Update Mouse Position from Window-Local Globals (pushed from C++ event loop)
+    -- Hallmark #6: Use logical window size to normalize mouse if needed, 
+    -- but here we just align with what C++ gives us.
     mx_ptr[0] = _G._MOUSE_X or 0
     my_ptr[0] = _G._MOUSE_Y or 0
-    curr_window = _G._MOUSE_WINDOW or 0
+    
+    -- Manual delta calculation
+    rmx_ptr[0] = mx_ptr[0] - prev_mx
+    rmy_ptr[0] = my_ptr[0] - prev_my
+    
+    -- Update Mouse Buttons from Globals (Event-driven)
+    prev_mouse = curr_mouse
+    local buttons = 0
+    if _G._MOUSE_L == true then buttons = bit.bor(buttons, 1) end
+    if _G._MOUSE_M == true then buttons = bit.bor(buttons, 2) end
+    if _G._MOUSE_R == true then buttons = bit.bor(buttons, 4) end
+    curr_mouse = buttons
     
     -- Update Keyboard
     local keys_ptr = sdl.SDL_GetKeyboardState(num_keys_ptr)
@@ -50,8 +62,13 @@ function M.mouse_delta() return rmx_ptr[0], rmy_ptr[0] end
 function M.mouse_window() return curr_window end
 
 function M.mouse_down(button)
-    -- button: 1=Left, 2=Middle, 3=Right
+    -- button: 1=Left, 2=Middle, 3=Right (Standard Lua 1-based)
+    -- But ImGui uses 0-based.
     local mask = bit.lshift(1, button - 1)
+    return bit.band(curr_mouse, mask) ~= 0
+end
+
+function M.mouse_down_raw(mask)
     return bit.band(curr_mouse, mask) ~= 0
 end
 
@@ -80,6 +97,8 @@ M.SCANCODE_SPACE = 44
 M.SCANCODE_LSHIFT = 225
 M.SCANCODE_LCTRL = 224
 M.SCANCODE_ESCAPE = 41
+
+M.sdl = sdl
 
 -- Number Keys
 M.SCANCODE_1 = 30
