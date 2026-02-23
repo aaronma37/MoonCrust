@@ -60,11 +60,15 @@ ffi.cdef[[
     ImVec2_c igGetWindowPos(void);
     ImVec2_c igGetWindowSize(void);
     uint64_t SDL_GetTicks(void);
+    void ImPlot_SetupAxis(int axis, const char* label, int flags);
+    void ImPlot_SetupAxisLimits(int axis, double v_min, double v_max, int cond);
     void ImPlot_SetupAxes(const char* x_label, const char* y_label, ImPlotFlags x_flags, ImPlotFlags y_flags);
     void ImPlot_PlotLine_FloatPtrInt(const char* label_id, const float* values, int count, double xscale, double x0, const ImPlotSpec_c spec);
 ]]
 
 local Flags = { NoDecoration = 43, AlwaysAutoResize = 64, AlwaysOnTop = 262144, TableBorders = 3, TableResizable = 16 }
+local ImPlotFlags = { CanvasOnly = 115 } -- NoTitle | NoLegend | NoMenus | NoBoxSelect | NoFrame
+local ImPlotAxisFlags = { NoGridLines = 4, NoTickMarks = 8, NoTickLabels = 16, NoLabel = 1 }
 local Keys = { CTRL_L = 224, CTRL_R = 228, V = 25, H = 11, X = 27, P = 19, O = 18, ESC = 41, ENTER = 40, UP = 82, DOWN = 81 }
 
 local state = {
@@ -99,9 +103,9 @@ local state = {
 
 local M = state
 local device, queue, graphics_family, sw, cb
-local pipe_layout, pipe_parse, pipe_render, pipe_line, layout_parse
+local pipe_layout, pipe_parse, pipe_render, pipe_line, pipe_line_no_depth, layout_parse
 local bindless_set, image_available_sem, frame_fence
-local raw_buffer, point_buffer, line_buffer, line_count, robot_buffer, robot_line_count
+local raw_buffer, point_buffer, line_buffer, line_count, robot_buffer, robot_line_count, depth_image
 
 -- 2. STATIC ARENA
 local static = {
@@ -117,6 +121,7 @@ local static = {
     pc_p = ffi.new("ParserPC"), pc_r = ffi.new("RenderPC"),
     viewport = ffi.new("VkViewport"), scissor = ffi.new("VkRect2D"),
     attachments = ffi.new("VkRenderingAttachmentInfo[1]"),
+    depth_attach = ffi.new("VkRenderingAttachmentInfo", { sType = vk.VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, imageLayout = vk.VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL, loadOp = vk.VK_ATTACHMENT_LOAD_OP_CLEAR, storeOp = vk.VK_ATTACHMENT_STORE_OP_STORE }),
     cb_begin = ffi.new("VkCommandBufferBeginInfo", { sType = vk.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO }),
     wait_stages = ffi.new("VkPipelineStageFlags[1]", {vk.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT}),
     mem_barrier = ffi.new("VkMemoryBarrier[1]", {{ sType = vk.VK_STRUCTURE_TYPE_MEMORY_BARRIER, srcAccessMask = vk.VK_ACCESS_SHADER_WRITE_BIT, dstAccessMask = vk.VK_ACCESS_SHADER_READ_BIT }}),
@@ -194,7 +199,7 @@ M.panels = {}
 function M.register_panel(id, name, render_func) M.panels[id] = { id = id, name = name, render = render_func } end
 
 M.register_panel("view3d", "3D Scene", function(gui, node_id)
-    if gui.igBeginChild_Str("SceneChild", static.v2_full, false, 0) then
+    if gui.igBeginChild_Str("Scene", static.v2_full, false, 0) then
         local p, s = gui.igGetWindowPos(), gui.igGetWindowSize()
         local data = callback_data_pool[callback_data_idx]; callback_data_idx = (callback_data_idx % 10) + 1
         data.x, data.y, data.w, data.h = p.x, p.y, s.x, s.y
@@ -204,13 +209,13 @@ M.register_panel("view3d", "3D Scene", function(gui, node_id)
 end)
 
 M.register_panel("lidar", "Lidar Cloud", function(gui, node_id)
-    if gui.ImPlot_BeginPlot("Lidar Cloud", static.v2_full, 8) then
-        local p, s = gui.ImPlot_GetPlotPos(), gui.ImPlot_GetPlotSize()
+    if gui.igBeginChild_Str("Lidar", static.v2_full, false, 0) then
+        local p, s = gui.igGetWindowPos(), gui.igGetWindowSize()
         local data = callback_data_pool[callback_data_idx]; callback_data_idx = (callback_data_idx % 10) + 1
         data.x, data.y, data.w, data.h = p.x, p.y, s.x, s.y
         gui.ImDrawList_AddCallback(gui.igGetWindowDrawList(), ffi.cast("ImDrawCallback", 1), data, ffi.sizeof("LidarCallbackData")) 
-        gui.ImPlot_EndPlot()
     end
+    gui.igEndChild()
 end)
 
 local function format_ts(ns, start_ns)
@@ -329,6 +334,10 @@ M.register_panel("perf", "Performance Stats", function(gui, node_id)
     gui.igText("FPS: %.1f", gui.igGetIO_Nil().Framerate)
     gui.igText("Frame Time: %.3f ms", 1000.0 / gui.igGetIO_Nil().Framerate)
     gui.igSeparator()
+    gui.igText("Robot Pose")
+    gui.igText("Pos: (%.2f, %.2f, %.2f)", state.robot_pose.x, state.robot_pose.y, state.robot_pose.z)
+    gui.igText("Yaw: %.2f", state.robot_pose.yaw)
+    gui.igSeparator()
     gui.igText("Lua Heap: %.2f MB", collectgarbage("count") / 1024)
     gui.igText("Active Streams: %d", #state.channels)
 end)
@@ -359,23 +368,41 @@ function M.init()
     raw_buffer = mc.buffer(M.points_count * 12, "storage", nil, true)
     point_buffer = mc.buffer(M.points_count * 16, "storage", nil, false)
     bindless_set = mc.gpu.get_bindless_set()
+    depth_image = mc.image(sw.extent.width, sw.extent.height, vk.VK_FORMAT_D32_SFLOAT, "depth")
+    static.depth_attach.imageView = depth_image.view
+    static.depth_attach.clearValue.depthStencil.depth = 1.0
     descriptors.update_buffer_set(device, bindless_set, 0, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, raw_buffer.handle, 0, raw_buffer.size, 10)
     descriptors.update_buffer_set(device, bindless_set, 0, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, point_buffer.handle, 0, point_buffer.size, 11)
     local bl_layout = mc.gpu.get_bindless_layout()
     layout_parse = pipeline.create_layout(device, {bl_layout}, ffi.new("VkPushConstantRange[1]", {{ stageFlags = vk.VK_SHADER_STAGE_COMPUTE_BIT, offset = 0, size = ffi.sizeof("ParserPC") }}))
     pipe_parse = pipeline.create_compute_pipeline(device, layout_parse, shader.create_module(device, shader.compile_glsl(io.open("examples/42_robot_visualizer/parser.comp"):read("*all"), vk.VK_SHADER_STAGE_COMPUTE_BIT)))
     pipe_layout = pipeline.create_layout(device, {bl_layout}, ffi.new("VkPushConstantRange[1]", {{ stageFlags = vk.VK_SHADER_STAGE_ALL_GRAPHICS, offset = 0, size = ffi.sizeof("RenderPC") }}))
-    pipe_render = pipeline.create_graphics_pipeline(device, pipe_layout, shader.create_module(device, shader.compile_glsl(io.open("examples/42_robot_visualizer/point.vert"):read("*all"), vk.VK_SHADER_STAGE_VERTEX_BIT)), shader.create_module(device, shader.compile_glsl(io.open("examples/42_robot_visualizer/point.frag"):read("*all"), vk.VK_SHADER_STAGE_FRAGMENT_BIT)), { topology = vk.VK_PRIMITIVE_TOPOLOGY_POINT_LIST, alpha_blend = true, color_formats = { vk.VK_FORMAT_B8G8R8A8_SRGB } })
+    pipe_render = pipeline.create_graphics_pipeline(device, pipe_layout, shader.create_module(device, shader.compile_glsl(io.open("examples/42_robot_visualizer/point.vert"):read("*all"), vk.VK_SHADER_STAGE_VERTEX_BIT)), shader.create_module(device, shader.compile_glsl(io.open("examples/42_robot_visualizer/point.frag"):read("*all"), vk.VK_SHADER_STAGE_FRAGMENT_BIT)), { topology = vk.VK_PRIMITIVE_TOPOLOGY_POINT_LIST, alpha_blend = true, color_formats = { vk.VK_FORMAT_B8G8R8A8_SRGB }, depth_test = true, depth_write = true })
     
     pipe_line = pipeline.create_graphics_pipeline(device, pipe_layout, shader.create_module(device, shader.compile_glsl(io.open("examples/42_robot_visualizer/line.vert"):read("*all"), vk.VK_SHADER_STAGE_VERTEX_BIT)), shader.create_module(device, shader.compile_glsl(io.open("examples/42_robot_visualizer/line.frag"):read("*all"), vk.VK_SHADER_STAGE_FRAGMENT_BIT)), { 
         topology = vk.VK_PRIMITIVE_TOPOLOGY_LINE_LIST, 
         alpha_blend = true, 
         color_formats = { vk.VK_FORMAT_B8G8R8A8_SRGB },
-        vertex_binding_descriptions = { { binding = 0, stride = ffi.sizeof("LineVertex"), inputRate = vk.VK_VERTEX_INPUT_RATE_VERTEX } },
-        vertex_attribute_descriptions = { 
+        depth_test = true, depth_write = true,
+        vertex_binding = ffi.new("VkVertexInputBindingDescription[1]", { { binding = 0, stride = ffi.sizeof("LineVertex"), inputRate = vk.VK_VERTEX_INPUT_RATE_VERTEX } }),
+        vertex_attribute_count = 2,
+        vertex_attributes = ffi.new("VkVertexInputAttributeDescription[2]", { 
             { location = 0, binding = 0, format = vk.VK_FORMAT_R32G32B32_SFLOAT, offset = 0 },
             { location = 1, binding = 0, format = vk.VK_FORMAT_R32G32B32A32_SFLOAT, offset = 12 }
-        }
+        })
+    })
+
+    pipe_line_no_depth = pipeline.create_graphics_pipeline(device, pipe_layout, shader.create_module(device, shader.compile_glsl(io.open("examples/42_robot_visualizer/line.vert"):read("*all"), vk.VK_SHADER_STAGE_VERTEX_BIT)), shader.create_module(device, shader.compile_glsl(io.open("examples/42_robot_visualizer/line.frag"):read("*all"), vk.VK_SHADER_STAGE_FRAGMENT_BIT)), { 
+        topology = vk.VK_PRIMITIVE_TOPOLOGY_LINE_LIST, 
+        alpha_blend = true, 
+        color_formats = { vk.VK_FORMAT_B8G8R8A8_SRGB },
+        depth_test = false, depth_write = false,
+        vertex_binding = ffi.new("VkVertexInputBindingDescription[1]", { { binding = 0, stride = ffi.sizeof("LineVertex"), inputRate = vk.VK_VERTEX_INPUT_RATE_VERTEX } }),
+        vertex_attribute_count = 2,
+        vertex_attributes = ffi.new("VkVertexInputAttributeDescription[2]", { 
+            { location = 0, binding = 0, format = vk.VK_FORMAT_R32G32B32_SFLOAT, offset = 0 },
+            { location = 1, binding = 0, format = vk.VK_FORMAT_R32G32B32A32_SFLOAT, offset = 12 }
+        })
     })
 
     -- Generate Grid (20x20, 1m)
@@ -386,17 +413,42 @@ function M.init()
     end
     for i = -10, 10 do
         local alpha = (i == 0) and 0.5 or 0.2
-        add_line(i, -10, 0, i, 10, 0, 1, 1, 1, alpha)
-        add_line(-10, i, 0, 10, i, 0, 1, 1, 1, alpha)
+        add_line(i, -10, -0.01, i, 10, -0.01, 1, 1, 1, alpha)
+        add_line(-10, i, -0.01, 10, i, -0.01, 1, 1, 1, alpha)
     end
-    -- Axis Triad
+
+    -- Add some cubes at the origin
+    local function add_cube(x,y,z, sz, r,g,b,a)
+        local s = sz/2
+        add_line(x-s,y-s,z-s, x+s,y-s,z-s, r,g,b,a)
+        add_line(x+s,y-s,z-s, x+s,y+s,z-s, r,g,b,a)
+        add_line(x+s,y+s,z-s, x-s,y+s,z-s, r,g,b,a)
+        add_line(x-s,y+s,z-s, x-s,y-s,z-s, r,g,b,a)
+        add_line(x-s,y-s,z+s, x+s,y-s,z+s, r,g,b,a)
+        add_line(x+s,y-s,z+s, x+s,y+s,z+s, r,g,b,a)
+        add_line(x+s,y+s,z+s, x-s,y+s,z+s, r,g,b,a)
+        add_line(x-s,y+s,z+s, x-s,y-s,z+s, r,g,b,a)
+        add_line(x-s,y-s,z-s, x-s,y-s,z+s, r,g,b,a)
+        add_line(x+s,y-s,z-s, x+s,y-s,z+s, r,g,b,a)
+        add_line(x+s,y+s,z-s, x+s,y+s,z+s, r,g,b,a)
+        add_line(x-s,y+s,z-s, x-s,y+s,z+s, r,g,b,a)
+    end
+    add_cube(1, 0, 0.5, 1.0, 1, 0, 1, 1)
+    add_cube(0, 1, 0.5, 1.0, 0, 1, 1, 1)
+    add_cube(0, 0, 0.5, 1.0, 1, 1, 0, 1)
+
+    -- Axis Triad (Keep at end for gizmo)
     add_line(0,0,0, 2,0,0, 1,0,0,1) -- X=Red
     add_line(0,0,0, 0,2,0, 0,1,0,1) -- Y=Green
     add_line(0,0,0, 0,0,2, 0,0,1,1) -- Z=Blue
+
     line_count = #verts
     line_buffer = mc.buffer(line_count * ffi.sizeof("LineVertex"), "vertex", nil, true)
     local p_verts = ffi.cast("LineVertex*", line_buffer.allocation.ptr)
-    for i, v in ipairs(verts) do p_verts[i-1] = v end
+    for i, v in ipairs(verts) do 
+        p_verts[i-1].x, p_verts[i-1].y, p_verts[i-1].z = v.x, v.y, v.z
+        p_verts[i-1].r, p_verts[i-1].g, p_verts[i-1].b, p_verts[i-1].a = v.r, v.g, v.b, v.a
+    end
 
     robot_line_count = 24 -- 12 lines for a box
     robot_buffer = mc.buffer(robot_line_count * ffi.sizeof("LineVertex"), "vertex", nil, true)
@@ -430,6 +482,11 @@ function M.init()
         vk.vkCmdSetViewport(cb_handle, 0, 1, static.viewport); static.scissor.offset.x, static.scissor.offset.y, static.scissor.extent.width, static.scissor.extent.height = data.x*sx, data.y*sy, data.w*sx, data.h*sy
         vk.vkCmdSetScissor(cb_handle, 0, 1, static.scissor)
 
+        -- Clear Depth for this viewport (Important for correct 3D)
+        local clear_depth = ffi.new("VkClearAttachment[1]", {{ aspectMask = vk.VK_IMAGE_ASPECT_DEPTH_BIT, clearValue = { depthStencil = { depth = 1.0 } } }})
+        local clear_rect = ffi.new("VkClearRect[1]", {{ rect = static.scissor, layerCount = 1 }})
+        vk.vkCmdClearAttachments(cb_handle, 1, clear_depth, 1, clear_rect)
+
         -- 1. Draw Grid and Axes
         vk.vkCmdBindPipeline(cb_handle, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe_line)
         vk.vkCmdPushConstants(cb_handle, pipe_layout, vk.VK_SHADER_STAGE_ALL_GRAPHICS, 0, ffi.sizeof("RenderPC"), static.pc_r)
@@ -454,16 +511,16 @@ function M.init()
         static.scissor.offset.x, static.scissor.offset.y, static.scissor.extent.width, static.scissor.extent.height = static.viewport.x, static.viewport.y, static.viewport.width, static.viewport.height
         vk.vkCmdSetScissor(cb_handle, 0, 1, static.scissor)
 
-        local gp = mc.mat4_ortho(-2, 2, -2, 2, -10, 10)
+        local gp = mc.mat4_ortho(-1.5, 1.5, -1.5, 1.5, -10, 10)
         local gv = mc.mat4_look_at({static.cam_pos.x - static.cam_target.x, static.cam_pos.y - static.cam_target.y, static.cam_pos.z - static.cam_target.z}, {0,0,0}, {0,0,1})
         local gmvp = mc.mat4_multiply(gp, gv)
         for i=0,15 do static.pc_r.view_proj[i] = gmvp.m[i] end
         
-        vk.vkCmdBindPipeline(cb_handle, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe_line)
+        vk.vkCmdBindPipeline(cb_handle, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe_line_no_depth)
         vk.vkCmdPushConstants(cb_handle, pipe_layout, vk.VK_SHADER_STAGE_ALL_GRAPHICS, 0, ffi.sizeof("RenderPC"), static.pc_r)
         static.v_buffs[0] = line_buffer.handle
         vk.vkCmdBindVertexBuffers(cb_handle, 0, 1, static.v_buffs, static.v_offs)
-        vk.vkCmdDraw(cb_handle, 6, 1, 84, 0) -- Draw only the 3 axis lines (last 6 verts)
+        vk.vkCmdDraw(cb_handle, 6, 1, line_count - 6, 0) -- Draw only the 3 axis lines (last 6 verts)
 
         -- 4. Restore ImGui State
         vk.vkCmdBindPipeline(cb_handle, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, imgui_renderer.pipeline)
@@ -548,6 +605,11 @@ function M.update()
         state.cam.target[1] = state.cam.target[1] - right_x * rmx * scale
         state.cam.target[2] = state.cam.target[2] - right_y * rmx * scale
         state.cam.target[3] = state.cam.target[3] + rmy * scale
+    else
+        -- Follow robot
+        state.cam.target[1] = state.robot_pose.x
+        state.cam.target[2] = state.robot_pose.y
+        state.cam.target[3] = state.robot_pose.z + 0.5
     end
     -- Scroll Zoom
     if not io.WantCaptureMouse then
@@ -619,6 +681,7 @@ function M.update()
     cur_i = add_robot_line(cur_i,  0.5,-0.5,0,  0.5,-0.5,0.5, 1,1,0,1)
     cur_i = add_robot_line(cur_i,  0.5, 0.5,0,  0.5, 0.5,0.5, 1,1,0,1)
     cur_i = add_robot_line(cur_i, -0.5, 0.5,0, -0.5, 0.5,0.5, 1,1,0,1)
+    
     callback_data_idx = 1; imgui.new_frame(); render_node(state.layout, 0, 0, _G._WIN_LW, _G._WIN_LH, gui)
     vk.vkResetCommandBuffer(cb, 0); vk.vkBeginCommandBuffer(cb, static.cb_begin)
     static.pc_p.in_buf_idx, static.pc_p.in_offset_u32, static.pc_p.out_buf_idx, static.pc_p.count = 10, 0, 11, M.points_count
@@ -626,9 +689,18 @@ function M.update()
     vk.vkCmdPipelineBarrier(cb, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, vk.VK_PIPELINE_STAGE_VERTEX_SHADER_BIT, 0, 1, static.mem_barrier, 0, nil, 0, nil)
     static.img_barrier[0].oldLayout, static.img_barrier[0].newLayout, static.img_barrier[0].image, static.img_barrier[0].dstAccessMask = vk.VK_IMAGE_LAYOUT_UNDEFINED, vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, ffi.cast("VkImage", sw.images[img_idx]), vk.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT
     vk.vkCmdPipelineBarrier(cb, vk.VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, vk.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, nil, 0, nil, 1, static.img_barrier)
+    
+    static.img_barrier[0].image = depth_image.handle
+    static.img_barrier[0].oldLayout, static.img_barrier[0].newLayout = vk.VK_IMAGE_LAYOUT_UNDEFINED, vk.VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL
+    static.img_barrier[0].subresourceRange.aspectMask = vk.VK_IMAGE_ASPECT_DEPTH_BIT
+    static.img_barrier[0].dstAccessMask = vk.VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT
+    vk.vkCmdPipelineBarrier(cb, vk.VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, vk.VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT, 0, 0, nil, 0, nil, 1, static.img_barrier)
+
     static.attachments[0].sType, static.attachments[0].imageView, static.attachments[0].imageLayout, static.attachments[0].loadOp, static.attachments[0].storeOp = vk.VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, ffi.cast("VkImageView", sw.views[img_idx]), vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, vk.VK_ATTACHMENT_LOAD_OP_CLEAR, vk.VK_ATTACHMENT_STORE_OP_STORE
     static.attachments[0].clearValue.color.float32[0], static.attachments[0].clearValue.color.float32[1], static.attachments[0].clearValue.color.float32[2], static.attachments[0].clearValue.color.float32[3] = 0.05, 0.05, 0.07, 1.0
-    static.render_info.renderArea.extent = sw.extent; static.render_info.pColorAttachments = static.attachments; vk.vkCmdBeginRendering(cb, static.render_info)
+    static.render_info.renderArea.extent = sw.extent; static.render_info.pColorAttachments = static.attachments
+    static.render_info.pDepthAttachment = static.depth_attach
+    vk.vkCmdBeginRendering(cb, static.render_info)
     static.viewport.x, static.viewport.y, static.viewport.width, static.viewport.height, static.viewport.minDepth, static.viewport.maxDepth = 0, 0, _G._WIN_PW, _G._WIN_PH, 0, 1; vk.vkCmdSetViewport(cb, 0, 1, static.viewport)
     static.scissor.offset.x, static.scissor.offset.y, static.scissor.extent.width, static.scissor.extent.height = 0, 0, sw.extent.width, sw.extent.height; vk.vkCmdSetScissor(cb, 0, 1, static.scissor); imgui.render(cb); vk.vkCmdEndRendering(cb)
     static.img_barrier[0].oldLayout, static.img_barrier[0].newLayout = vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, vk.VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
