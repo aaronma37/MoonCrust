@@ -240,12 +240,21 @@ function M.update()
 
     -- Camera navigation
     local gui, io = imgui.gui, imgui.gui.igGetIO_Nil()
-    if input.mouse_down(3) and not io.WantCaptureMouse then 
+    
+    if view_3d.is_hovered and (input.mouse_down(2) or input.mouse_down(3)) then
+        view_3d.is_dragging = true
+    elseif not (input.mouse_down(2) or input.mouse_down(3)) then
+        view_3d.is_dragging = false
+    end
+    
+    local can_move = view_3d.is_hovered or view_3d.is_dragging
+
+    if input.mouse_down(3) and can_move then 
         local rmx, rmy = input.mouse_delta()
         view_3d.cam.orbit_x = view_3d.cam.orbit_x + rmx * 0.2
         view_3d.cam.orbit_y = math.max(-89, math.min(89, view_3d.cam.orbit_y - rmy * 0.2))
     end
-    if input.mouse_down(2) and not io.WantCaptureMouse then
+    if input.mouse_down(2) and can_move then
         local rmx, rmy = input.mouse_delta()
         local rx = mc.rad(view_3d.cam.orbit_x)
         local right_x, right_y = -math.sin(rx), math.cos(rx)
@@ -258,7 +267,7 @@ function M.update()
     --     view_3d.cam.target[2] = playback.robot_pose.y
     --     view_3d.cam.target[3] = playback.robot_pose.z + 0.5
     end
-    if not io.WantCaptureMouse then
+    if view_3d.is_hovered then
         local wheel = _G._MOUSE_WHEEL or 0
         if wheel ~= 0 then view_3d.cam.dist = math.max(1, view_3d.cam.dist - wheel * view_3d.cam.dist * 0.1); _G._MOUSE_WHEEL = 0 end
     end
@@ -274,6 +283,7 @@ function M.update()
     view_3d.render_deferred(cb)
     
     static.img_barrier[0].oldLayout, static.img_barrier[0].newLayout, static.img_barrier[0].image, static.img_barrier[0].dstAccessMask = vk.VK_IMAGE_LAYOUT_UNDEFINED, vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, ffi.cast("VkImage", sw.images[img_idx]), vk.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT
+    static.img_barrier[0].srcAccessMask = 0
     static.img_barrier[0].subresourceRange.aspectMask = vk.VK_IMAGE_ASPECT_COLOR_BIT
     vk.vkCmdPipelineBarrier(cb, vk.VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, vk.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, nil, 0, nil, 1, static.img_barrier)
 

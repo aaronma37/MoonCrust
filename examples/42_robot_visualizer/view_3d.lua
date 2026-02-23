@@ -171,12 +171,18 @@ end
 function M.reset_frame()
 end
 
+local igImage_hack = nil
+
 function M.register_panels()
     panels.register("view3d", "3D Scene", function(gui, node_id)
+        if not igImage_hack then
+            igImage_hack = ffi.cast("void(*)(void*, uint64_t, ImVec2_c, ImVec2_c, ImVec2_c)", gui.igImage)
+        end
+        
         local p = gui.igGetWindowPos()
         local s = gui.igGetContentRegionAvail()
         gui.igInvisibleButton("##scene_hit", s, 0)
-        local tex_ref = ffi.new("ImTextureRef_c", { nil, ffi.cast("ImTextureID", M.final_color_idx) })
+        M.is_hovered = gui.igIsItemHovered(0)
         
         local aspect = M.w / M.h
         local avail_aspect = s.x / s.y
@@ -191,8 +197,6 @@ function M.register_panels()
         
         gui.igSetCursorPos(ffi.new("ImVec2_c", {gui.igGetCursorPosX() + offset_x, gui.igGetCursorPosY() - s.y + offset_y}))
         
-        -- ABI Hack: Call igImage by decomposing the ImTextureRef_c struct to avoid LuaJIT by-value bugs
-        local igImage_hack = ffi.cast("void(*)(void*, uint64_t, ImVec2_c, ImVec2_c, ImVec2_c)", gui.igImage)
         igImage_hack(nil, M.final_color_idx, img_s, ffi.new("ImVec2_c", {0,0}), ffi.new("ImVec2_c", {1,1}))
     end)
     panels.register("lidar", "Lidar Cloud", function(gui, node_id)

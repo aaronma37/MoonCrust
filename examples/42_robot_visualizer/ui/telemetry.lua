@@ -17,7 +17,7 @@ panels.register("telemetry", "Playback Controls", function(gui, node_id)
     local total_ns = playback.end_time - playback.start_time
     gui.igTextColored(playback.paused and v4_paused or v4_live, playback.paused and "PAUSED" or "LIVE")
     gui.igSameLine(0, -1)
-    gui.igText(" | %s / %s", format_ts(playback.current_time_ns, playback.start_time), format_ts(playback.end_time, playback.start_time))
+    gui.igText(string.format(" | %s / %s", format_ts(playback.current_time_ns, playback.start_time), format_ts(playback.end_time, playback.start_time)))
     
     local progress = (total_ns > 0) and tonumber(playback.current_time_ns - playback.start_time) / tonumber(total_ns) or 0
     local p_ptr = ffi.new("float[1]", progress)
@@ -30,7 +30,7 @@ panels.register("telemetry", "Playback Controls", function(gui, node_id)
     gui.igSameLine(0, -1)
     if gui.igButton("Rewind", ffi.new("ImVec2_c", {100, 0})) then playback.seek_to = playback.start_time end
     gui.igSameLine(0, 10)
-    gui.igText("Speed: %.1fx", playback.speed)
+    gui.igText(string.format("Speed: %.1fx", playback.speed))
     gui.igSameLine(0, -1)
     for _, s in ipairs({0.5, 1, 2, 5, 10}) do
         if gui.igButton(tostring(s).."x", ffi.new("ImVec2_c", {40, 0})) then playback.speed = s end

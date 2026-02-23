@@ -50,10 +50,10 @@ panels.register("pretty_viewer", "Pretty Message Viewer", function(gui, node_id)
                         local f = ffi.cast("float*", buf.data)
                         for i=0, 49 do 
                             gui.igTableNextRow(0, 0)
-                            gui.igTableNextColumn(); gui.igText("%d", i)
-                            gui.igTableNextColumn(); gui.igText("%.3f", f[i*3])
-                            gui.igTableNextColumn(); gui.igText("%.3f", f[i*3+1])
-                            gui.igTableNextColumn(); gui.igText("%.3f", f[i*3+2])
+                            gui.igTableNextColumn(); gui.igText(tostring(i))
+                            gui.igTableNextColumn(); gui.igText(string.format("%.3f", f[i*3]))
+                            gui.igTableNextColumn(); gui.igText(string.format("%.3f", f[i*3+1]))
+                            gui.igTableNextColumn(); gui.igText(string.format("%.3f", f[i*3+2]))
                         end
                         gui.igEndTable()
                     end
@@ -61,10 +61,10 @@ panels.register("pretty_viewer", "Pretty Message Viewer", function(gui, node_id)
                 end
             elseif ch.topic == "pose" then
                 local p = ffi.cast("Pose*", buf.data)
-                gui.igTextColored(v4_val, "Position: (%.3f, %.3f, %.3f)", p.x, p.y, p.z)
-                gui.igTextColored(v4_val, "Orientation (Yaw): %.3f rad", p.yaw)
+                gui.igTextColored(v4_val, string.format("Position: (%.3f, %.3f, %.3f)", p.x, p.y, p.z))
+                gui.igTextColored(v4_val, string.format("Orientation (Yaw): %.3f rad", p.yaw))
             elseif buf.size >= 4 then 
-                gui.igTextColored(v4_val, "Numeric Value: %.4f", ffi.cast("float*", buf.data)[0]) 
+                gui.igTextColored(v4_val, string.format("Numeric Value: %.4f", ffi.cast("float*", buf.data)[0])) 
             end
         else 
             gui.igTextDisabled("(No data received yet)") 
