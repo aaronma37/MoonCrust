@@ -1,0 +1,104 @@
+local ffi = require("ffi")
+require("examples.42_robot_visualizer.types")
+local robot = require("mc.robot")
+
+local M = {
+    mcap_path = "test_robot.mcap",
+    bridge = nil,
+    start_time = 0ULL,
+    end_time = 0ULL,
+    current_time_ns = 0ULL,
+    playback_time_ns = 0ULL,
+    paused = false,
+    seek_to = nil,
+    speed = 1.0,
+    current_msg = ffi.new("McapMessage"),
+    channels = {},
+    lidar_ch_id = 0,
+    pose_ch_id = 0,
+    robot_pose = { x = 0, y = 0, z = 0, yaw = 0 },
+    message_buffers = {},
+    plot_history = {},
+}
+
+function M.init()
+    os.execute("rm -f " .. M.mcap_path)
+    robot.lib.mcap_generate_test_file(M.mcap_path)
+    M.bridge = robot.lib.mcap_open(M.mcap_path)
+    if M.bridge == nil then error("Playback: Failed to open MCAP") end
+    
+    M.start_time = robot.lib.mcap_get_start_time(M.bridge)
+    M.end_time = robot.lib.mcap_get_end_time(M.bridge)
+    M.current_time_ns = M.start_time
+    M.playback_time_ns = M.start_time
+    
+    M.discover_topics()
+    robot.lib.mcap_next(M.bridge, M.current_msg)
+end
+
+function M.discover_topics()
+    local count = robot.lib.mcap_get_channel_count(M.bridge)
+    M.channels = {}
+    local info = ffi.new("McapChannelInfo")
+    for i=0, count-1 do
+        if robot.lib.mcap_get_channel_info(M.bridge, i, info) then
+            if info.topic == nil then break end
+            local t = ffi.string(info.topic)
+            if t == "lidar" then M.lidar_ch_id = info.id end
+            if t == "pose" then M.pose_ch_id = info.id end
+            table.insert(M.channels, { id = info.id, topic = t, encoding = ffi.string(info.message_encoding), schema = ffi.string(info.schema_name), active = true })
+        end
+    end
+end
+
+function M.update(dt, raw_buffer)
+    if M.seek_to then
+        robot.lib.mcap_seek(M.bridge, M.seek_to)
+        M.playback_time_ns = M.seek_to
+        M.seek_to = nil
+        robot.lib.mcap_next(M.bridge, M.current_msg)
+    elseif not M.paused then
+        M.playback_time_ns = M.playback_time_ns + ffi.cast("uint64_t", dt * 1e9 * M.speed)
+    end
+
+    while (not M.paused or M.seek_to) and M.current_msg.log_time < M.playback_time_ns do
+        local ch_id = M.current_msg.channel_id
+        if M.current_msg.data ~= nil then 
+            local buf = M.message_buffers[ch_id]
+            if not buf then 
+                buf = { data = ffi.new("uint8_t[4096]"), size = 0 }
+                M.message_buffers[ch_id] = buf 
+            end
+            local sz = math.min(tonumber(M.current_msg.data_size), 4096)
+            ffi.copy(buf.data, M.current_msg.data, sz)
+            buf.size = sz
+            
+            -- Basic history for plotter
+            if sz >= 4 then 
+                local h = M.plot_history[ch_id]
+                if not h then h = ffi.new("float[1000]"); M.plot_history[ch_id] = h end
+                for i=0, 998 do h[i] = h[i+1] end
+                h[999] = ffi.cast("float*", M.current_msg.data)[0] 
+            end
+            
+            if ch_id == M.pose_ch_id then
+                local p = ffi.cast("Pose*", M.current_msg.data)
+                M.robot_pose.x, M.robot_pose.y, M.robot_pose.z, M.robot_pose.yaw = p.x, p.y, p.z, p.yaw
+            end
+        end
+        
+        if ch_id == M.lidar_ch_id and raw_buffer and raw_buffer.allocation.ptr ~= nil then 
+            ffi.copy(raw_buffer.allocation.ptr, M.current_msg.data, math.min(tonumber(M.current_msg.data_size), raw_buffer.size)) 
+        end
+        
+        if not robot.lib.mcap_next(M.bridge, M.current_msg) then
+            robot.lib.mcap_rewind(M.bridge)
+            M.playback_time_ns = M.start_time
+            robot.lib.mcap_next(M.bridge, M.current_msg)
+            break
+        end
+    end
+    M.current_time_ns = M.playback_time_ns
+end
+
+return M
