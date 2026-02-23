@@ -24,3 +24,4 @@ compile_commands.json
 
 # Tool specific
 vinfo.txt
+*.mcap
