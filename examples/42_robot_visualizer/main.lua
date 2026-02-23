@@ -16,6 +16,8 @@ local imgui_renderer
 
 -- 1. FFI DEFINITIONS
 ffi.cdef[[
+    typedef struct LineVertex { float x, y, z; float r, g, b, a; } LineVertex;
+    typedef struct Pose { float x, y, z, yaw; } Pose;
     typedef struct ParserPC { uint32_t in_buf_idx; uint32_t in_offset_u32; uint32_t out_buf_idx; uint32_t count; } ParserPC;
     typedef struct RenderPC { float view_proj[16]; uint32_t buf_idx; float point_size; } RenderPC;
     typedef struct LidarCallbackData { float x, y, w, h; } LidarCallbackData;
@@ -54,28 +56,52 @@ ffi.cdef[[
     bool igTableNextColumn(void);
     void igTableSetupColumn(const char* label, int flags, float init_width_or_weight, ImGuiID user_id);
     void igTableHeadersRow(void);
+    void igSetNextItemWidth(float item_width);
+    ImVec2_c igGetWindowPos(void);
+    ImVec2_c igGetWindowSize(void);
+    uint64_t SDL_GetTicks(void);
     void ImPlot_SetupAxes(const char* x_label, const char* y_label, ImPlotFlags x_flags, ImPlotFlags y_flags);
     void ImPlot_PlotLine_FloatPtrInt(const char* label_id, const float* values, int count, double xscale, double x0, const ImPlotSpec_c spec);
 ]]
 
 local Flags = { NoDecoration = 43, AlwaysAutoResize = 64, AlwaysOnTop = 262144, TableBorders = 3, TableResizable = 16 }
-local Keys = { CTRL_L = 224, CTRL_R = 228, V = 25, H = 11, X = 27, P = 19, ESC = 41, ENTER = 40, UP = 82, DOWN = 81 }
+local Keys = { CTRL_L = 224, CTRL_R = 228, V = 25, H = 11, X = 27, P = 19, O = 18, ESC = 41, ENTER = 40, UP = 82, DOWN = 81 }
 
 local state = {
-    mcap_path = "test_robot.mcap", points_count = 10000, paused = false,
+    mcap_path = "test_robot.mcap", points_count = 10000, paused = false, seek_to = nil, speed = 1.0,
     current_msg = ffi.new("McapMessage"), bridge = nil,
-    start_time = 0ULL, end_time = 0ULL, current_time_ns = 0ULL,
-    cam = { orbit_x = 45, orbit_y = 45, dist = 50, target = {0, 0, 5} },
-    channels = {}, lidar_ch_id = 0, message_buffers = {}, plot_history = {}, 
-    layout = { type = "view", view_type = "lidar", id = 1, title = "View 1###1" }, next_id = 2, focused_id = 1, panel_states = {},
+    start_time = 0ULL, end_time = 0ULL, current_time_ns = 0ULL, playback_time_ns = 0ULL,
+    last_ticks = 0ULL, dt = 0,
+    cam = { orbit_x = 45, orbit_y = 45, dist = 50, target = {0, 0, 5}, ortho = false },
+    robot_pose = { x = 0, y = 0, z = 0, yaw = 0 },
+    channels = {}, lidar_ch_id = 0, pose_ch_id = 0, message_buffers = {}, plot_history = {}, 
+    layout = { 
+        type = "split", direction = "h", ratio = 0.8,
+        children = {
+            {
+                type = "split", direction = "v", ratio = 0.7,
+                children = {
+                    { type = "view", view_type = "view3d", id = 1, title = "3D Lidar###1" },
+                    {
+                        type = "split", direction = "h", ratio = 0.6,
+                        children = {
+                            { type = "view", view_type = "pretty_viewer", id = 2, title = "Message Inspector###2" },
+                            { type = "view", view_type = "perf", id = 3, title = "Performance###3" }
+                        }
+                    }
+                }
+            },
+            { type = "view", view_type = "telemetry", id = 4, title = "Playback Controls###4" }
+        }
+    }, next_id = 5, focused_id = 1, panel_states = {},
     picker = { trigger = false, title = "", query = ffi.new("char[128]"), selected_idx = 0, items = {}, results = {}, on_select = nil }
 }
 
 local M = state
 local device, queue, graphics_family, sw, cb
-local pipe_layout, pipe_parse, pipe_render, layout_parse
+local pipe_layout, pipe_parse, pipe_render, pipe_line, layout_parse
 local bindless_set, image_available_sem, frame_fence
-local raw_buffer, point_buffer
+local raw_buffer, point_buffer, line_buffer, line_count, robot_buffer, robot_line_count
 
 -- 2. STATIC ARENA
 local static = {
@@ -157,6 +183,7 @@ local function discover_topics()
             if info.topic == nil then break end
             local t = ffi.string(info.topic)
             if t == "lidar" then state.lidar_ch_id = info.id end
+            if t == "pose" then state.pose_ch_id = info.id end
             table.insert(state.channels, { id = info.id, topic = t, encoding = ffi.string(info.message_encoding), schema = ffi.string(info.schema_name), active = true })
         end
     end
@@ -165,6 +192,16 @@ end
 -- PANEL RENDERERS
 M.panels = {}
 function M.register_panel(id, name, render_func) M.panels[id] = { id = id, name = name, render = render_func } end
+
+M.register_panel("view3d", "3D Scene", function(gui, node_id)
+    if gui.igBeginChild_Str("SceneChild", static.v2_full, false, 0) then
+        local p, s = gui.igGetWindowPos(), gui.igGetWindowSize()
+        local data = callback_data_pool[callback_data_idx]; callback_data_idx = (callback_data_idx % 10) + 1
+        data.x, data.y, data.w, data.h = p.x, p.y, s.x, s.y
+        gui.ImDrawList_AddCallback(gui.igGetWindowDrawList(), ffi.cast("ImDrawCallback", 1), data, ffi.sizeof("LidarCallbackData")) 
+    end
+    gui.igEndChild()
+end)
 
 M.register_panel("lidar", "Lidar Cloud", function(gui, node_id)
     if gui.ImPlot_BeginPlot("Lidar Cloud", static.v2_full, 8) then
@@ -176,15 +213,36 @@ M.register_panel("lidar", "Lidar Cloud", function(gui, node_id)
     end
 end)
 
+local function format_ts(ns, start_ns)
+    local d = tonumber(ns - (start_ns or 0)) / 1e9
+    local m = math.floor(d / 60)
+    local s = d % 60
+    return string.format("%02d:%05.2f", m, s)
+end
+
 M.register_panel("telemetry", "Playback Controls", function(gui, node_id)
-    if not state.paused then gui.igTextColored(static.v4_live, "LIVE") else gui.igTextColored(static.v4_paused, "PAUSED") end
-    gui.igText("Time: %llu ns", state.current_time_ns)
-    local progress = (state.end_time > state.start_time) and tonumber(state.current_time_ns - state.start_time) / tonumber(state.end_time - state.start_time) or 0
+    local total_ns = state.end_time - state.start_time
+    gui.igTextColored(state.paused and static.v4_paused or static.v4_live, state.paused and "PAUSED" or "LIVE")
+    gui.igSameLine(0, -1)
+    gui.igText(" | %s / %s", format_ts(state.current_time_ns, state.start_time), format_ts(state.end_time, state.start_time))
+    
+    local progress = (total_ns > 0) and tonumber(state.current_time_ns - state.start_time) / tonumber(total_ns) or 0
     local p_ptr = ffi.new("float[1]", progress)
-    if gui.igSliderFloat("Timeline", p_ptr, 0.0, 1.0, "%.2f", 0) then
-        state.paused = true; robot.lib.mcap_seek(state.bridge, state.start_time + ffi.cast("uint64_t", p_ptr[0] * tonumber(state.end_time - state.start_time)))
+    gui.igSetNextItemWidth(-1)
+    if gui.igSliderFloat("##Timeline", p_ptr, 0.0, 1.0, "", 0) then
+        state.seek_to = state.start_time + ffi.cast("uint64_t", p_ptr[0] * tonumber(total_ns))
     end
-    if gui.igButton(state.paused and "Resume" or "Pause", static.v2_zero) then state.paused = not state.paused end
+    
+    if gui.igButton(state.paused and "Resume" or "Pause", ffi.new("ImVec2_c", {100, 0})) then state.paused = not state.paused end
+    gui.igSameLine(0, -1)
+    if gui.igButton("Rewind", ffi.new("ImVec2_c", {100, 0})) then state.seek_to = state.start_time end
+    gui.igSameLine(0, 10)
+    gui.igText("Speed: %.1fx", state.speed)
+    gui.igSameLine(0, -1)
+    for _, s in ipairs({0.5, 1, 2, 5, 10}) do
+        if gui.igButton(tostring(s).."x", ffi.new("ImVec2_c", {40, 0})) then state.speed = s end
+        gui.igSameLine(0, -1)
+    end
 end)
 
 M.register_panel("msg_viewer", "Raw Stream Viewer", function(gui, node_id)
@@ -256,6 +314,10 @@ M.register_panel("pretty_viewer", "Pretty Message Viewer", function(gui, node_id
                         gui.igEndTable()
                     end; gui.igTreePop()
                 end
+            elseif ch.topic == "pose" then
+                local p = ffi.cast("Pose*", buf.data)
+                gui.igTextColored(static.v4_val, "Position: (%.3f, %.3f, %.3f)", p.x, p.y, p.z)
+                gui.igTextColored(static.v4_val, "Orientation (Yaw): %.3f rad", p.yaw)
             elseif buf.size >= 4 then gui.igTextColored(static.v4_val, "Numeric Value: %.4f", ffi.cast("float*", buf.data)[0]) end
         else gui.igTextDisabled("(No data received yet)") end
     end
@@ -291,7 +353,9 @@ function M.init()
     os.execute("rm -f test_robot.mcap"); robot.lib.mcap_generate_test_file(state.mcap_path)
     state.bridge = robot.lib.mcap_open(state.mcap_path); if state.bridge == nil then error("Bridge fail") end
     state.start_time, state.end_time = robot.lib.mcap_get_start_time(state.bridge), robot.lib.mcap_get_end_time(state.bridge)
-    state.current_time_ns = state.start_time; discover_topics()
+    state.current_time_ns = state.start_time; state.playback_time_ns = state.start_time; discover_topics()
+    state.last_ticks = ffi.C.SDL_GetTicks()
+    robot.lib.mcap_next(state.bridge, state.current_msg) -- Get first baseline message
     raw_buffer = mc.buffer(M.points_count * 12, "storage", nil, true)
     point_buffer = mc.buffer(M.points_count * 16, "storage", nil, false)
     bindless_set = mc.gpu.get_bindless_set()
@@ -302,6 +366,41 @@ function M.init()
     pipe_parse = pipeline.create_compute_pipeline(device, layout_parse, shader.create_module(device, shader.compile_glsl(io.open("examples/42_robot_visualizer/parser.comp"):read("*all"), vk.VK_SHADER_STAGE_COMPUTE_BIT)))
     pipe_layout = pipeline.create_layout(device, {bl_layout}, ffi.new("VkPushConstantRange[1]", {{ stageFlags = vk.VK_SHADER_STAGE_ALL_GRAPHICS, offset = 0, size = ffi.sizeof("RenderPC") }}))
     pipe_render = pipeline.create_graphics_pipeline(device, pipe_layout, shader.create_module(device, shader.compile_glsl(io.open("examples/42_robot_visualizer/point.vert"):read("*all"), vk.VK_SHADER_STAGE_VERTEX_BIT)), shader.create_module(device, shader.compile_glsl(io.open("examples/42_robot_visualizer/point.frag"):read("*all"), vk.VK_SHADER_STAGE_FRAGMENT_BIT)), { topology = vk.VK_PRIMITIVE_TOPOLOGY_POINT_LIST, alpha_blend = true, color_formats = { vk.VK_FORMAT_B8G8R8A8_SRGB } })
+    
+    pipe_line = pipeline.create_graphics_pipeline(device, pipe_layout, shader.create_module(device, shader.compile_glsl(io.open("examples/42_robot_visualizer/line.vert"):read("*all"), vk.VK_SHADER_STAGE_VERTEX_BIT)), shader.create_module(device, shader.compile_glsl(io.open("examples/42_robot_visualizer/line.frag"):read("*all"), vk.VK_SHADER_STAGE_FRAGMENT_BIT)), { 
+        topology = vk.VK_PRIMITIVE_TOPOLOGY_LINE_LIST, 
+        alpha_blend = true, 
+        color_formats = { vk.VK_FORMAT_B8G8R8A8_SRGB },
+        vertex_binding_descriptions = { { binding = 0, stride = ffi.sizeof("LineVertex"), inputRate = vk.VK_VERTEX_INPUT_RATE_VERTEX } },
+        vertex_attribute_descriptions = { 
+            { location = 0, binding = 0, format = vk.VK_FORMAT_R32G32B32_SFLOAT, offset = 0 },
+            { location = 1, binding = 0, format = vk.VK_FORMAT_R32G32B32A32_SFLOAT, offset = 12 }
+        }
+    })
+
+    -- Generate Grid (20x20, 1m)
+    local verts = {}
+    local function add_line(x1,y1,z1, x2,y2,z2, r,g,b,a)
+        table.insert(verts, {x=x1,y=y1,z=z1, r=r,g=g,b=b,a=a})
+        table.insert(verts, {x=x2,y=y2,z=z2, r=r,g=g,b=b,a=a})
+    end
+    for i = -10, 10 do
+        local alpha = (i == 0) and 0.5 or 0.2
+        add_line(i, -10, 0, i, 10, 0, 1, 1, 1, alpha)
+        add_line(-10, i, 0, 10, i, 0, 1, 1, 1, alpha)
+    end
+    -- Axis Triad
+    add_line(0,0,0, 2,0,0, 1,0,0,1) -- X=Red
+    add_line(0,0,0, 0,2,0, 0,1,0,1) -- Y=Green
+    add_line(0,0,0, 0,0,2, 0,0,1,1) -- Z=Blue
+    line_count = #verts
+    line_buffer = mc.buffer(line_count * ffi.sizeof("LineVertex"), "vertex", nil, true)
+    local p_verts = ffi.cast("LineVertex*", line_buffer.allocation.ptr)
+    for i, v in ipairs(verts) do p_verts[i-1] = v end
+
+    robot_line_count = 24 -- 12 lines for a box
+    robot_buffer = mc.buffer(robot_line_count * ffi.sizeof("LineVertex"), "vertex", nil, true)
+
     local pool = command.create_pool(device, graphics_family); cb = command.allocate_buffers(device, pool, 1)[1]
     local pF = ffi.new("VkFence[1]"); vk.vkCreateFence(device, ffi.new("VkFenceCreateInfo", { sType=vk.VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, flags=vk.VK_FENCE_CREATE_SIGNALED_BIT }), nil, pF); frame_fence = pF[0]
     local pS = ffi.new("VkSemaphore[1]"); vk.vkCreateSemaphore(device, ffi.new("VkSemaphoreCreateInfo", { sType = vk.VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO }), nil, pS); image_available_sem = pS[0]
@@ -313,18 +412,65 @@ function M.init()
         static.cam_pos.x = static.cam_target.x + state.cam.dist * math.cos(ry) * math.cos(rx)
         static.cam_pos.y = static.cam_target.y + state.cam.dist * math.cos(ry) * math.sin(rx)
         static.cam_pos.z = static.cam_target.z + state.cam.dist * math.sin(ry)
-        local p = mc.mat4_perspective(mc.rad(45), data.w/data.h, 0.1, 1000.0)
+        local p
+        if state.cam.ortho then
+            local h = state.cam.dist * 0.5
+            local w = h * (data.w / data.h)
+            p = mc.mat4_ortho(-w, w, -h, h, -1000.0, 1000.0)
+        else
+            p = mc.mat4_perspective(mc.rad(45), data.w/data.h, 0.1, 1000.0)
+        end
         local v = mc.mat4_look_at({static.cam_pos.x, static.cam_pos.y, static.cam_pos.z}, {static.cam_target.x, static.cam_target.y, static.cam_target.z}, {0,0,1})
         local mvp = mc.mat4_multiply(p, v)
         for i=0,15 do static.pc_r.view_proj[i] = mvp.m[i] end
         static.pc_r.buf_idx, static.pc_r.point_size = 11, 3.0
-        vk.vkCmdBindPipeline(cb_handle, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe_render)
-        vk.vkCmdPushConstants(cb_handle, pipe_layout, vk.VK_SHADER_STAGE_ALL_GRAPHICS, 0, ffi.sizeof("RenderPC"), static.pc_r)
+        
         local sx, sy = _G._WIN_PW / _G._WIN_LW, _G._WIN_PH / _G._WIN_LH
         static.viewport.x, static.viewport.y, static.viewport.width, static.viewport.height, static.viewport.minDepth, static.viewport.maxDepth = data.x*sx, data.y*sy, data.w*sx, data.h*sy, 0, 1
         vk.vkCmdSetViewport(cb_handle, 0, 1, static.viewport); static.scissor.offset.x, static.scissor.offset.y, static.scissor.extent.width, static.scissor.extent.height = data.x*sx, data.y*sy, data.w*sx, data.h*sy
-        vk.vkCmdSetScissor(cb_handle, 0, 1, static.scissor); vk.vkCmdDraw(cb_handle, M.points_count, 1, 0, 0)
+        vk.vkCmdSetScissor(cb_handle, 0, 1, static.scissor)
+
+        -- 1. Draw Grid and Axes
+        vk.vkCmdBindPipeline(cb_handle, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe_line)
+        vk.vkCmdPushConstants(cb_handle, pipe_layout, vk.VK_SHADER_STAGE_ALL_GRAPHICS, 0, ffi.sizeof("RenderPC"), static.pc_r)
+        static.v_buffs[0] = line_buffer.handle
+        vk.vkCmdBindVertexBuffers(cb_handle, 0, 1, static.v_buffs, static.v_offs)
+        vk.vkCmdDraw(cb_handle, line_count, 1, 0, 0)
+
+        -- 1b. Draw Robot
+        static.v_buffs[0] = robot_buffer.handle
+        vk.vkCmdBindVertexBuffers(cb_handle, 0, 1, static.v_buffs, static.v_offs)
+        vk.vkCmdDraw(cb_handle, robot_line_count, 1, 0, 0)
+
+        -- 2. Draw Lidar
+        vk.vkCmdBindPipeline(cb_handle, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe_render)
+        vk.vkCmdPushConstants(cb_handle, pipe_layout, vk.VK_SHADER_STAGE_ALL_GRAPHICS, 0, ffi.sizeof("RenderPC"), static.pc_r)
+        vk.vkCmdDraw(cb_handle, M.points_count, 1, 0, 0)
+
+        -- 3. Draw Orientation Gizmo (Bottom Right)
+        local gz_size = 80 * sx
+        static.viewport.x, static.viewport.y, static.viewport.width, static.viewport.height = (data.x + data.w)*sx - gz_size - 10*sx, (data.y + data.h)*sy - gz_size - 10*sy, gz_size, gz_size
+        vk.vkCmdSetViewport(cb_handle, 0, 1, static.viewport)
+        static.scissor.offset.x, static.scissor.offset.y, static.scissor.extent.width, static.scissor.extent.height = static.viewport.x, static.viewport.y, static.viewport.width, static.viewport.height
+        vk.vkCmdSetScissor(cb_handle, 0, 1, static.scissor)
+
+        local gp = mc.mat4_ortho(-2, 2, -2, 2, -10, 10)
+        local gv = mc.mat4_look_at({static.cam_pos.x - static.cam_target.x, static.cam_pos.y - static.cam_target.y, static.cam_pos.z - static.cam_target.z}, {0,0,0}, {0,0,1})
+        local gmvp = mc.mat4_multiply(gp, gv)
+        for i=0,15 do static.pc_r.view_proj[i] = gmvp.m[i] end
+        
+        vk.vkCmdBindPipeline(cb_handle, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe_line)
+        vk.vkCmdPushConstants(cb_handle, pipe_layout, vk.VK_SHADER_STAGE_ALL_GRAPHICS, 0, ffi.sizeof("RenderPC"), static.pc_r)
+        static.v_buffs[0] = line_buffer.handle
+        vk.vkCmdBindVertexBuffers(cb_handle, 0, 1, static.v_buffs, static.v_offs)
+        vk.vkCmdDraw(cb_handle, 6, 1, 84, 0) -- Draw only the 3 axis lines (last 6 verts)
+
+        -- 4. Restore ImGui State
         vk.vkCmdBindPipeline(cb_handle, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, imgui_renderer.pipeline)
+        static.viewport.x, static.viewport.y, static.viewport.width, static.viewport.height = 0, 0, _G._WIN_PW, _G._WIN_PH
+        vk.vkCmdSetViewport(cb_handle, 0, 1, static.viewport)
+        static.scissor.offset.x, static.scissor.offset.y, static.scissor.extent.width, static.scissor.extent.height = 0, 0, _G._WIN_PW, _G._WIN_PH
+        vk.vkCmdSetScissor(cb_handle, 0, 1, static.scissor)
         static.viewport.x, static.viewport.y, static.viewport.width, static.viewport.height = 0, 0, _G._WIN_PW, _G._WIN_PH
         vk.vkCmdSetViewport(cb_handle, 0, 1, static.viewport); static.sets[0] = mc.gpu.get_bindless_set()
         vk.vkCmdBindDescriptorSets(cb_handle, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, imgui_renderer.layout, 0, 1, static.sets, 0, nil)
@@ -375,6 +521,11 @@ function M.update()
     static.fences[0] = frame_fence; vk.vkWaitForFences(device, 1, static.fences, vk.VK_TRUE, 0xFFFFFFFFFFFFFFFFULL); vk.vkResetFences(device, 1, static.fences)
     local img_idx = sw:acquire_next_image(image_available_sem); if img_idx == nil then return end
     collectgarbage("step", 100); local ctrl = input.key_down(Keys.CTRL_L) or input.key_down(Keys.CTRL_R)
+
+    local ticks = ffi.C.SDL_GetTicks()
+    state.dt = tonumber(ticks - state.last_ticks) / 1000.0
+    state.last_ticks = ticks
+
     if ctrl then
         if input.key_pressed(Keys.V) then split_focused("v") end
         if input.key_pressed(Keys.H) then split_focused("h") end
@@ -388,16 +539,86 @@ function M.update()
     if input.mouse_down(3) and not io.WantCaptureMouse then 
         local rmx, rmy = input.mouse_delta(); state.cam.orbit_x, state.cam.orbit_y = state.cam.orbit_x + rmx * 0.2, math.max(-89, math.min(89, state.cam.orbit_y - rmy * 0.2))
     end
-    if not state.paused then
-        if not robot.lib.mcap_next(state.bridge, state.current_msg) then robot.lib.mcap_rewind(state.bridge); robot.lib.mcap_next(state.bridge, state.current_msg) end
-        state.current_time_ns = state.current_msg.log_time; local ch_id = state.current_msg.channel_id
+    -- Middle-click Pan
+    if input.mouse_down(2) and not io.WantCaptureMouse then
+        local rmx, rmy = input.mouse_delta()
+        local rx = mc.rad(state.cam.orbit_x)
+        local right_x, right_y = -math.sin(rx), math.cos(rx)
+        local scale = state.cam.dist * 0.001
+        state.cam.target[1] = state.cam.target[1] - right_x * rmx * scale
+        state.cam.target[2] = state.cam.target[2] - right_y * rmx * scale
+        state.cam.target[3] = state.cam.target[3] + rmy * scale
+    end
+    -- Scroll Zoom
+    if not io.WantCaptureMouse then
+        local wheel = _G._MOUSE_WHEEL or 0
+        if wheel ~= 0 then
+            state.cam.dist = math.max(1, state.cam.dist - wheel * state.cam.dist * 0.1)
+            _G._MOUSE_WHEEL = 0 -- Consume wheel
+        end
+    end
+    -- Toggle Ortho
+    if input.key_pressed(Keys.O) and ctrl then state.cam.ortho = not state.cam.ortho end
+
+    if state.seek_to then
+        robot.lib.mcap_seek(state.bridge, state.seek_to)
+        state.playback_time_ns = state.seek_to
+        state.seek_to = nil
+        robot.lib.mcap_next(state.bridge, state.current_msg)
+    elseif not state.paused then
+        state.playback_time_ns = state.playback_time_ns + ffi.cast("uint64_t", state.dt * 1e9 * state.speed)
+    end
+
+    -- Loop through messages until the bag time catches up to our playback clock
+    while (not state.paused or state.seek_to) and state.current_msg.log_time < state.playback_time_ns do
+        local ch_id = state.current_msg.channel_id
         if state.current_msg.data ~= nil then 
             local buf = state.message_buffers[ch_id]; if not buf then buf = { data = ffi.new("uint8_t[4096]"), size = 0 }; state.message_buffers[ch_id] = buf end
             local sz = math.min(tonumber(state.current_msg.data_size), 4096); ffi.copy(buf.data, state.current_msg.data, sz); buf.size = sz
             if sz >= 4 then local h = state.plot_history[ch_id]; if not h then h = ffi.new("float[1000]"); state.plot_history[ch_id] = h end; for i=0, 998 do h[i] = h[i+1] end; h[999] = ffi.cast("float*", state.current_msg.data)[0] end
+            if ch_id == state.pose_ch_id then
+                local p = ffi.cast("Pose*", state.current_msg.data)
+                state.robot_pose.x, state.robot_pose.y, state.robot_pose.z, state.robot_pose.yaw = p.x, p.y, p.z, p.yaw
+            end
         end
         if ch_id == state.lidar_ch_id and raw_buffer.allocation.ptr ~= nil then ffi.copy(raw_buffer.allocation.ptr, state.current_msg.data, math.min(tonumber(state.current_msg.data_size), raw_buffer.size)) end
+        
+        if not robot.lib.mcap_next(state.bridge, state.current_msg) then
+            robot.lib.mcap_rewind(state.bridge)
+            state.playback_time_ns = state.start_time
+            robot.lib.mcap_next(state.bridge, state.current_msg)
+            break
+        end
     end
+    
+    state.current_time_ns = state.playback_time_ns
+
+    -- Update Robot Buffer (always do this based on latest state.robot_pose)
+    local rv = ffi.cast("LineVertex*", robot_buffer.allocation.ptr)
+    local px, py, pz, yaw = state.robot_pose.x, state.robot_pose.y, state.robot_pose.z, state.robot_pose.yaw
+    local s, c = math.sin(yaw), math.cos(yaw)
+    local function add_robot_line(idx, x1,y1,z1, x2,y2,z2, r,g,b,a)
+        local rx1, ry1 = x1*c - y1*s, x1*s + y1*c
+        local rx2, ry2 = x2*c - y2*s, x2*s + y2*c
+        rv[idx].x, rv[idx].y, rv[idx].z = px+rx1, py+ry1, pz+z1
+        rv[idx].r, rv[idx].g, rv[idx].b, rv[idx].a = r, g, b, a
+        rv[idx+1].x, rv[idx+1].y, rv[idx+1].z = px+rx2, py+ry2, pz+z2
+        rv[idx+1].r, rv[idx+1].g, rv[idx+1].b, rv[idx+1].a = r, g, b, a
+        return idx + 2
+    end
+    local cur_i = 0
+    cur_i = add_robot_line(cur_i, -0.5,-0.5,0,  0.5,-0.5,0, 1,1,0,1)
+    cur_i = add_robot_line(cur_i,  0.5,-0.5,0,  0.5, 0.5,0, 1,1,0,1)
+    cur_i = add_robot_line(cur_i,  0.5, 0.5,0, -0.5, 0.5,0, 1,1,0,1)
+    cur_i = add_robot_line(cur_i, -0.5, 0.5,0, -0.5,-0.5,0, 1,1,0,1)
+    cur_i = add_robot_line(cur_i, -0.5,-0.5,0.5,  0.5,-0.5,0.5, 1,1,0,1)
+    cur_i = add_robot_line(cur_i,  0.5,-0.5,0.5,  0.5, 0.5,0.5, 1,1,0,1)
+    cur_i = add_robot_line(cur_i,  0.5, 0.5,0.5, -0.5, 0.5,0.5, 1,1,0,1)
+    cur_i = add_robot_line(cur_i, -0.5, 0.5,0.5, -0.5,-0.5,0.5, 1,1,0,1)
+    cur_i = add_robot_line(cur_i, -0.5,-0.5,0, -0.5,-0.5,0.5, 1,1,0,1)
+    cur_i = add_robot_line(cur_i,  0.5,-0.5,0,  0.5,-0.5,0.5, 1,1,0,1)
+    cur_i = add_robot_line(cur_i,  0.5, 0.5,0,  0.5, 0.5,0.5, 1,1,0,1)
+    cur_i = add_robot_line(cur_i, -0.5, 0.5,0, -0.5, 0.5,0.5, 1,1,0,1)
     callback_data_idx = 1; imgui.new_frame(); render_node(state.layout, 0, 0, _G._WIN_LW, _G._WIN_LH, gui)
     vk.vkResetCommandBuffer(cb, 0); vk.vkBeginCommandBuffer(cb, static.cb_begin)
     static.pc_p.in_buf_idx, static.pc_p.in_offset_u32, static.pc_p.out_buf_idx, static.pc_p.count = 10, 0, 11, M.points_count

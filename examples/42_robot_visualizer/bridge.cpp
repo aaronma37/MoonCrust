@@ -32,6 +32,8 @@ struct McapBridge {
     std::unique_ptr<mcap::LinearMessageView> message_view;
     std::unique_ptr<mcap::LinearMessageView::Iterator> it;
     std::vector<McapChannelInfoInternal> channels;
+    uint64_t start_time = 0;
+    uint64_t end_time = 0;
 };
 
 EXPORT void mcap_generate_test_file(const char* path) {
@@ -47,10 +49,14 @@ EXPORT void mcap_generate_test_file(const char* path) {
     writer.addSchema(s_lidar);
     mcap::Schema s_float("Float32", "ros2msg", "binary");
     writer.addSchema(s_float);
+    mcap::Schema s_pose("Pose", "ros2msg", "binary");
+    writer.addSchema(s_pose);
 
     // 2. Channels (Explicitly link to schemas)
     mcap::Channel c_lidar("lidar", "ros2", s_lidar.id);
     writer.addChannel(c_lidar);
+    mcap::Channel c_pose("pose", "ros2", s_pose.id);
+    writer.addChannel(c_pose);
     mcap::Channel c_batt("battery_voltage", "ros2", s_float.id);
     writer.addChannel(c_batt);
     mcap::Channel c_vel("motor_velocity", "ros2", s_float.id);
@@ -72,6 +78,17 @@ EXPORT void mcap_generate_test_file(const char* path) {
         mcap::Message m1; m1.channelId = c_lidar.id; m1.logTime = t; m1.publishTime = t;
         m1.data = reinterpret_cast<const std::byte*>(points.data()); m1.dataSize = points.size() * sizeof(float);
         if (!writer.write(m1).ok()) std::cerr << "Write lidar failed" << std::endl;
+
+        // Pose (Circular path)
+        struct { float x, y, z, yaw; } val_pose;
+        float angle = (float)f * 0.05f;
+        val_pose.x = cos(angle) * 5.0f;
+        val_pose.y = sin(angle) * 5.0f;
+        val_pose.z = 0.0f;
+        val_pose.yaw = angle + 1.570796f;
+        mcap::Message m_pose; m_pose.channelId = c_pose.id; m_pose.logTime = t; m_pose.publishTime = t;
+        m_pose.data = reinterpret_cast<const std::byte*>(&val_pose); m_pose.dataSize = sizeof(val_pose);
+        writer.write(m_pose);
 
         // Battery
         float val_batt = 12.0f - (f * 0.005f);
@@ -110,7 +127,11 @@ EXPORT McapBridge* mcap_open(const char* path) {
     
     // Iterate once to populate metadata (inefficient but safe for test)
     // In real app we would use readSummary
-    for (auto const& msg : *b->message_view) { (void)msg; }
+    bool first = true;
+    for (auto const& msg : *b->message_view) { 
+        if (first) { b->start_time = msg.message.logTime; first = false; }
+        b->end_time = msg.message.logTime;
+    }
     
     // Now copy channels into stable storage
     const auto& channel_map = b->reader.channels();
@@ -162,16 +183,11 @@ EXPORT void mcap_rewind(McapBridge* b) {
 }
 
 EXPORT uint64_t mcap_get_start_time(McapBridge* b) {
-    if (!b) return 0;
-    auto it = b->message_view->begin();
-    if (it == b->message_view->end()) return 0;
-    return it->message.logTime;
+    return b ? b->start_time : 0;
 }
 
 EXPORT uint64_t mcap_get_end_time(McapBridge* b) {
-    if (!b) return 0;
-    auto stats = b->reader.statistics();
-    return stats ? stats->messageEndTime : 0;
+    return b ? b->end_time : 0;
 }
 
 EXPORT void mcap_seek(McapBridge* b, uint64_t timestamp) {
