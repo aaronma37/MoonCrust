@@ -49,7 +49,11 @@ ffi.cdef[[
     ImVec2_c igGetWindowPos(void);
     ImVec2_c igGetWindowSize(void);
     ImVec2_c igGetContentRegionAvail(void);
+    void igSetCursorPos(const ImVec2_c local_pos);
+    float igGetCursorPosX(void);
+    float igGetCursorPosY(void);
     bool igInvisibleButton(const char* str_id, const ImVec2_c size, int flags);
+    void igImage(ImTextureRef_c tex_ref, const ImVec2_c image_size, const ImVec2_c uv0, const ImVec2_c uv1);
     uint64_t SDL_GetTicks(void);
     void ImPlot_SetupAxis(int axis, const char* label, int flags);
     void ImPlot_SetupAxisLimits(int axis, double v_min, double v_max, int cond);

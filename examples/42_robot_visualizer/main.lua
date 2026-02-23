@@ -122,9 +122,7 @@ function M.init()
     local pS = ffi.new("VkSemaphore[1]"); vk.vkCreateSemaphore(device, ffi.new("VkSemaphoreCreateInfo", { sType = vk.VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO }), nil, pS); image_available_sem = pS[0]
 
     imgui.init(); imgui_renderer = require("imgui.renderer")
-    imgui.on_callback = function(cb_handle, callback_ptr, data_ptr)
-        view_3d.on_callback(cb_handle, data_ptr, imgui_renderer)
-    end
+    -- ImGui callback hijack removed for Deferred Rendering
     
     state.last_ticks = ffi.C.SDL_GetTicks()
 end
@@ -255,10 +253,10 @@ function M.update()
         view_3d.cam.target[1] = view_3d.cam.target[1] - right_x * rmx * scale
         view_3d.cam.target[2] = view_3d.cam.target[2] - right_y * rmx * scale
         view_3d.cam.target[3] = view_3d.cam.target[3] + rmy * scale
-    else
-        view_3d.cam.target[1] = playback.robot_pose.x
-        view_3d.cam.target[2] = playback.robot_pose.y
-        view_3d.cam.target[3] = playback.robot_pose.z + 0.5
+    -- else
+    --     view_3d.cam.target[1] = playback.robot_pose.x
+    --     view_3d.cam.target[2] = playback.robot_pose.y
+    --     view_3d.cam.target[3] = playback.robot_pose.z + 0.5
     end
     if not io.WantCaptureMouse then
         local wheel = _G._MOUSE_WHEEL or 0
@@ -273,24 +271,22 @@ function M.update()
     vk.vkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_parse); static.sets = ffi.new("VkDescriptorSet[1]", {bindless_set}); vk.vkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_COMPUTE, layout_parse, 0, 1, static.sets, 0, nil); vk.vkCmdPushConstants(cb, layout_parse, vk.VK_SHADER_STAGE_COMPUTE_BIT, 0, ffi.sizeof("ParserPC"), static.pc_p); vk.vkCmdDispatch(cb, math.ceil(view_3d.points_count / 256), 1, 1)
     vk.vkCmdPipelineBarrier(cb, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, vk.VK_PIPELINE_STAGE_VERTEX_SHADER_BIT, 0, 1, static.mem_barrier, 0, nil, 0, nil)
     
+    view_3d.render_deferred(cb)
+    
     static.img_barrier[0].oldLayout, static.img_barrier[0].newLayout, static.img_barrier[0].image, static.img_barrier[0].dstAccessMask = vk.VK_IMAGE_LAYOUT_UNDEFINED, vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, ffi.cast("VkImage", sw.images[img_idx]), vk.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT
     static.img_barrier[0].subresourceRange.aspectMask = vk.VK_IMAGE_ASPECT_COLOR_BIT
     vk.vkCmdPipelineBarrier(cb, vk.VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, vk.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, nil, 0, nil, 1, static.img_barrier)
-    
-    static.img_barrier[0].image = view_3d.depth_image.handle
-    static.img_barrier[0].oldLayout, static.img_barrier[0].newLayout = vk.VK_IMAGE_LAYOUT_UNDEFINED, vk.VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL
-    static.img_barrier[0].subresourceRange.aspectMask = vk.VK_IMAGE_ASPECT_DEPTH_BIT
-    static.img_barrier[0].dstAccessMask = vk.VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT
-    vk.vkCmdPipelineBarrier(cb, vk.VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, vk.VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT, 0, 0, nil, 0, nil, 1, static.img_barrier)
 
     static.attachments[0].sType, static.attachments[0].imageView, static.attachments[0].imageLayout, static.attachments[0].loadOp, static.attachments[0].storeOp = vk.VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, ffi.cast("VkImageView", sw.views[img_idx]), vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, vk.VK_ATTACHMENT_LOAD_OP_CLEAR, vk.VK_ATTACHMENT_STORE_OP_STORE
     static.attachments[0].clearValue.color.float32[0], static.attachments[0].clearValue.color.float32[1], static.attachments[0].clearValue.color.float32[2], static.attachments[0].clearValue.color.float32[3] = 0.05, 0.05, 0.07, 1.0
-    static.render_info.renderArea.extent = sw.extent; static.render_info.pColorAttachments = static.attachments; static.render_info.pDepthAttachment = view_3d.depth_attach
+    static.render_info.renderArea.extent = sw.extent; static.render_info.pColorAttachments = static.attachments; static.render_info.pDepthAttachment = nil
     vk.vkCmdBeginRendering(cb, static.render_info)
     imgui.render(cb); vk.vkCmdEndRendering(cb)
     
     static.img_barrier[0].image = ffi.cast("VkImage", sw.images[img_idx])
     static.img_barrier[0].oldLayout, static.img_barrier[0].newLayout = vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, vk.VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
+    static.img_barrier[0].srcAccessMask = vk.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT
+    static.img_barrier[0].dstAccessMask = 0
     static.img_barrier[0].subresourceRange.aspectMask = vk.VK_IMAGE_ASPECT_COLOR_BIT
     vk.vkCmdPipelineBarrier(cb, vk.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, vk.VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nil, 0, nil, 1, static.img_barrier); vk.vkEndCommandBuffer(cb)
     

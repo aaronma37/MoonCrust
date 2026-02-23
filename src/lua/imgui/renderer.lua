@@ -168,7 +168,7 @@ function M.render(cb, draw_data)
         local cmd_buffer_data = ffi.cast("ImDrawCmd*", cmd_list.CmdBuffer.Data)
         for i = 0, cmd_list.CmdBuffer.Size - 1 do
             local cmd = cmd_buffer_data[i]
-            -- local tex_idx_debug = tonumber(ffi.cast("uintptr_t", cmd.TexRef._TexID))
+            -- local tex_idx_debug = tonumber(cmd.TexRef._TexID); if tex_idx_debug > 0 then print("DRAWING TEX:", tex_idx_debug) end
             -- print(string.format("Cmd: Elem=%d, CB=%s, Rect=%.1f,%.1f,%.1f,%.1f, Tex=%d", 
             --     cmd.ElemCount, tostring(cmd.UserCallback), 
             --     cmd.ClipRect.x, cmd.ClipRect.y, cmd.ClipRect.z, cmd.ClipRect.w, tex_idx_debug))

@@ -7,7 +7,7 @@ ffi.cdef[[
     typedef struct ImRect_c { ImVec2_c Min, Max; } ImRect_c;
     typedef unsigned short ImDrawIdx;
     typedef unsigned int ImGuiID;
-    typedef void* ImTextureID;
+    typedef unsigned long long ImTextureID;
     typedef unsigned char ImU8;
     typedef unsigned short ImU16;
     typedef unsigned int ImU32;
