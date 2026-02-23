@@ -12,7 +12,7 @@ local imgui = require("imgui")
 
 local M = {
     cam = { orbit_x = 45, orbit_y = 45, dist = 50, target = {0, 0, 5}, ortho = false },
-    points_count = 10000,
+    points_count = 10000000,
     -- Pipelines
     pipe_layout = nil, pipe_render_g = nil, pipe_line_g = nil,
     pipe_layout_light = nil, pipe_light = nil,
@@ -23,6 +23,8 @@ local M = {
     w = 1920, h = 1080,
     g_color = nil, g_normal = nil, g_pos = nil, final_color = nil, depth_image = nil,
     final_color_idx = 103,
+    is_hovered = false,
+    is_dragging = false,
 }
 
 local static = {

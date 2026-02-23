@@ -64,16 +64,17 @@ EXPORT void mcap_generate_test_file(const char* path) {
     mcap::Channel c_imu("imu_pitch", "ros2", s_float.id);
     writer.addChannel(c_imu);
 
-    std::vector<float> points(10000 * 3);
+    std::vector<float> points(10000000 * 3);
     for (int f = 0; f < 200; ++f) {
         uint64_t t = f * 100000000ULL;
         
         // Lidar
-        for (int i=0; i<10000; ++i) {
-            float a = (float)i / 10000.0f * 6.283185f;
-            points[i*3+0] = cos(a) * 10.0f; 
-            points[i*3+1] = sin(a) * 10.0f; 
-            points[i*3+2] = (float)f * 0.05f;
+        for (int i=0; i<10000000; ++i) {
+            float a = (float)i / 10000.0f * 6.283185f; // Wrap around to create thickness
+            float r = 10.0f + ((float)(i % 1000) / 1000.0f) * 2.0f - 1.0f; // Radial noise
+            points[i*3+0] = cos(a) * r; 
+            points[i*3+1] = sin(a) * r; 
+            points[i*3+2] = (float)f * 0.05f + ((float)(i % 100) / 100.0f) * 0.5f; // Vertical noise
         }
         mcap::Message m1; m1.channelId = c_lidar.id; m1.logTime = t; m1.publishTime = t;
         m1.data = reinterpret_cast<const std::byte*>(points.data()); m1.dataSize = points.size() * sizeof(float);

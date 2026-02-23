@@ -22,10 +22,17 @@ local M = {
 }
 
 function M.init()
-    os.execute("rm -f " .. M.mcap_path)
-    robot.lib.mcap_generate_test_file(M.mcap_path)
+    -- Start empty for instant boot
+end
+
+function M.load_mcap(path)
+    if M.bridge then robot.lib.mcap_close(M.bridge); M.bridge = nil end
+    M.mcap_path = path
     M.bridge = robot.lib.mcap_open(M.mcap_path)
-    if M.bridge == nil then error("Playback: Failed to open MCAP") end
+    if M.bridge == nil then 
+        print("Playback: Failed to open MCAP at " .. path)
+        return false 
+    end
     
     M.start_time = robot.lib.mcap_get_start_time(M.bridge)
     M.end_time = robot.lib.mcap_get_end_time(M.bridge)
@@ -34,6 +41,14 @@ function M.init()
     
     M.discover_topics()
     robot.lib.mcap_next(M.bridge, M.current_msg)
+    return true
+end
+
+function M.generate_test(path)
+    print("Generating MCAP at " .. path .. " ... (this may take a moment)")
+    os.execute("rm -f " .. path)
+    robot.lib.mcap_generate_test_file(path)
+    print("Generation complete!")
 end
 
 function M.discover_topics()
@@ -52,6 +67,7 @@ function M.discover_topics()
 end
 
 function M.update(dt, raw_buffer)
+    if not M.bridge then return end
     if M.seek_to then
         robot.lib.mcap_seek(M.bridge, M.seek_to)
         M.playback_time_ns = M.seek_to

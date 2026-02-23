@@ -62,7 +62,8 @@ local state = {
     layout = create_default_layout(),
     next_id = 5,
     last_ticks = 0ULL,
-    picker = { trigger = false, title = "", query = ffi.new("char[128]"), selected_idx = 0, items = {}, results = {}, on_select = nil }
+    picker = { trigger = false, title = "", query = ffi.new("char[128]"), selected_idx = 0, items = {}, results = {}, on_select = nil },
+    file_dialog = { trigger = false, path = ffi.new("char[256]", "test_robot.mcap") }
 }
 _G._PICKER_STATE = state.picker
 
@@ -152,6 +153,36 @@ local function render_fuzzy_picker(gui)
     end
 end
 
+local function render_file_dialog(gui)
+    if state.file_dialog.trigger then
+        gui.igOpenPopup_Str("File Operations", 0)
+        state.file_dialog.trigger = false
+    end
+    
+    gui.igSetNextWindowPos(ffi.new("ImVec2_c", {_G._WIN_LW/2, 100}), 0, ffi.new("ImVec2_c", {0.5, 0}))
+    if gui.igBeginPopupModal("File Operations", nil, bit.bor(panels.Flags.AlwaysAutoResize, panels.Flags.AlwaysOnTop)) then
+        gui.igInputText("File Path", state.file_dialog.path, 256, 0, nil, nil)
+        
+        if gui.igButton("Load File", ffi.new("ImVec2_c", {120, 0})) then
+            local path = ffi.string(state.file_dialog.path)
+            playback.load_mcap(path)
+            gui.igCloseCurrentPopup()
+        end
+        gui.igSameLine(0, 10)
+        if gui.igButton("Generate Test File", ffi.new("ImVec2_c", {150, 0})) then
+            local path = ffi.string(state.file_dialog.path)
+            playback.generate_test(path)
+            playback.load_mcap(path)
+            gui.igCloseCurrentPopup()
+        end
+        gui.igSameLine(0, 10)
+        if gui.igButton("Cancel", ffi.new("ImVec2_c", {80, 0})) then
+            gui.igCloseCurrentPopup()
+        end
+        gui.igEndPopup()
+    end
+end
+
 local function render_node(node, x, y, w, h, gui)
     -- print(string.format("Node: %s, x=%.1f, y=%.1f, w=%.1f, h=%.1f", node.type, x, y, w, h))
     if node.type == "split" then
@@ -166,6 +197,7 @@ local function render_node(node, x, y, w, h, gui)
             if gui.igIsWindowHovered(0) then panels.focused_id = node.id end
             if state.picker.trigger and panels.focused_id == node.id then gui.igOpenPopup_Str("FuzzyPicker", 0); state.picker.trigger = false end
             render_fuzzy_picker(gui)
+            render_file_dialog(gui)
             local p = panels.list[node.view_type]
             if p then 
                 local ok, err = pcall(p.render, gui, node.id) 
@@ -209,6 +241,7 @@ function M.update()
     end
 
     if ctrl then
+        if input.key_pressed(18) then state.file_dialog.trigger = true end -- O
         if input.key_pressed(25) then split_focused("v") end -- V
         if input.key_pressed(11) then split_focused("h") end -- H
         if input.key_pressed(27) then -- X
