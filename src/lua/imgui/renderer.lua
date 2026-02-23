@@ -114,7 +114,7 @@ end
 function M.render(cb, draw_data)
     if not draw_data or draw_data.CmdListsCount == 0 then return end
     
-    print(string.format("Renderer: Lists=%d, Vtx=%d, Idx=%d", draw_data.CmdListsCount, draw_data.TotalVtxCount, draw_data.TotalIdxCount))
+    -- print(string.format("Renderer: Lists=%d, Vtx=%d, Idx=%d", draw_data.CmdListsCount, draw_data.TotalVtxCount, draw_data.TotalIdxCount))
 
     -- 1. Update Buffers
     local v_offset = 0
@@ -168,10 +168,10 @@ function M.render(cb, draw_data)
         local cmd_buffer_data = ffi.cast("ImDrawCmd*", cmd_list.CmdBuffer.Data)
         for i = 0, cmd_list.CmdBuffer.Size - 1 do
             local cmd = cmd_buffer_data[i]
-            local tex_idx_debug = tonumber(ffi.cast("uintptr_t", cmd.TexRef._TexID))
-            print(string.format("Cmd: Elem=%d, CB=%s, Rect=%.1f,%.1f,%.1f,%.1f, Tex=%d", 
-                cmd.ElemCount, tostring(cmd.UserCallback), 
-                cmd.ClipRect.x, cmd.ClipRect.y, cmd.ClipRect.z, cmd.ClipRect.w, tex_idx_debug))
+            -- local tex_idx_debug = tonumber(ffi.cast("uintptr_t", cmd.TexRef._TexID))
+            -- print(string.format("Cmd: Elem=%d, CB=%s, Rect=%.1f,%.1f,%.1f,%.1f, Tex=%d", 
+            --     cmd.ElemCount, tostring(cmd.UserCallback), 
+            --     cmd.ClipRect.x, cmd.ClipRect.y, cmd.ClipRect.z, cmd.ClipRect.w, tex_idx_debug))
             
             if cmd.UserCallback ~= nil then
                 -- CALLBACK HIJACK: Execute the user callback

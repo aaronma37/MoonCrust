@@ -39,7 +39,7 @@ local function create_default_layout()
             {
                 type = "split", direction = "v", ratio = 0.7,
                 children = {
-                    { type = "view", view_type = "perf", id = 1, title = "Performance (Replaced)###1" },
+                    { type = "view", view_type = "view3d", id = 1, title = "3D Lidar###1" },
                     {
                         type = "split", direction = "h", ratio = 0.6,
                         children = {
@@ -155,7 +155,7 @@ local function render_fuzzy_picker(gui)
 end
 
 local function render_node(node, x, y, w, h, gui)
-    print(string.format("Node: %s, x=%.1f, y=%.1f, w=%.1f, h=%.1f", node.type, x, y, w, h))
+    -- print(string.format("Node: %s, x=%.1f, y=%.1f, w=%.1f, h=%.1f", node.type, x, y, w, h))
     if node.type == "split" then
         if node.direction == "v" then local w1 = w * node.ratio; render_node(node.children[1], x, y, w1, h, gui); render_node(node.children[2], x+w1, y, w-w1, h, gui)
         else local h1 = h * node.ratio; render_node(node.children[1], x, y, w, h1, gui); render_node(node.children[2], x, y+h1, w, h - h1, gui) end
@@ -163,7 +163,7 @@ local function render_node(node, x, y, w, h, gui)
         gui.igSetNextWindowPos(ffi.new("ImVec2_c", {x, y}), 0, ffi.new("ImVec2_c", {0,0}))
         gui.igSetNextWindowSize(ffi.new("ImVec2_c", {w, h}), 0)
         local visible = gui.igBegin(node.title, nil, bit.bor(panels.Flags.NoDecoration, panels.Flags.NoSavedSettings))
-        print(string.format("View '%s' (ID %d) Visible: %s", node.title, node.id, tostring(visible)))
+        -- print(string.format("View '%s' (ID %d) Visible: %s", node.title, node.id, tostring(visible)))
         if visible then
             if gui.igIsWindowHovered(0) then panels.focused_id = node.id end
             if state.picker.trigger and panels.focused_id == node.id then gui.igOpenPopup_Str("FuzzyPicker", 0); state.picker.trigger = false end
@@ -192,15 +192,15 @@ function M.update()
     -- Input Debug
     local ctrl = input.key_down(224) or input.key_down(228)
     if input.key_pressed(30) then -- 1
-        print("Key 1 Pressed! Ctrl:", ctrl)
+        -- print("Key 1 Pressed! Ctrl:", ctrl)
         state.layout = create_default_layout()
     end
     if input.key_pressed(31) then -- 2
-        print("Key 2 Pressed! Ctrl:", ctrl)
+        -- print("Key 2 Pressed! Ctrl:", ctrl)
         state.layout = create_full_3d_layout() 
     end
     if input.key_pressed(32) then -- 3
-        print("Key 3 Pressed! Ctrl:", ctrl)
+        -- print("Key 3 Pressed! Ctrl:", ctrl)
         state.layout = { 
             type = "split", direction = "h", ratio = 0.5,
             children = {
