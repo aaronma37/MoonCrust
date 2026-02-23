@@ -33,6 +33,8 @@ ffi.cdef[[
         float x, y, w, h;
     } LidarCallbackData;
 
+    typedef int ImGuiAxis;
+
     bool igSliderFloat(const char* label, float* v, float v_min, float v_max, const char* format, int flags);
     bool igCheckbox(const char* label, bool* v);
     void igSetNextWindowPos(const ImVec2_c pos, int cond, const ImVec2_c pivot);
@@ -52,11 +54,30 @@ ffi.cdef[[
     void igEnd(void);
     void igTextColored(const ImVec4_c col, const char* fmt, ...);
     void igSetNextWindowFocus(void);
+    void igSeparatorText(const char* label);
+    bool igBeginChild_Str(const char* str_id, const ImVec2_c size, bool border, ImGuiChildFlags flags);
+    void igEndChild(void);
+    void igTextWrapped(const char* fmt, ...);
+    void igTextDisabled(const char* fmt, ...);
+
+    bool igTreeNode_Str(const char* label);
+    void igTreePop(void);
+    bool igBeginTable(const char* str_id, int column, int flags, const ImVec2_c outer_size, float inner_width);
+    void igEndTable(void);
+    void igTableNextRow(int row_flags, float min_row_height);
+    bool igTableNextColumn(void);
+    void igTableSetupColumn(const char* label, int flags, float init_width_or_weight, ImGuiID user_id);
+    void igTableHeadersRow(void);
+
+    void ImPlot_SetupAxes(const char* x_label, const char* y_label, ImPlotFlags x_flags, ImPlotFlags y_flags);
+    void ImPlot_SetupAxis(ImGuiAxis axis, const char* label, ImPlotFlags flags);
+    void ImPlot_PlotLine_FloatPtrInt(const char* label_id, const float* values, int count, double xscale, double x0, const ImPlotSpec_c spec);
 ]]
 
 local Flags = {
     NoTitleBar = 1, NoResize = 2, NoMove = 4, NoScrollbar = 8, NoCollapse = 32, NoNav = 128, NoDecoration = 43, 
-    AlwaysAutoResize = 64, AlwaysOnTop = 262144
+    AlwaysAutoResize = 64, AlwaysOnTop = 262144,
+    TableBorders = 3, TableResizable = 16
 }
 
 local Keys = {
@@ -72,10 +93,14 @@ local state = {
     start_time = 0ULL, end_time = 0ULL, current_time_ns = 0ULL,
     cam = { orbit_x = 45, orbit_y = 45, dist = 50, target = {0, 0, 5} },
     channels = {},
+    lidar_channel_id = 0,
+    last_messages = {}, 
+    plot_history = {}, 
     layout = { type = "view", view_type = "lidar", id = 1 },
     next_id = 2,
     focused_id = 1,
-    fuzzy = { active = false, query = ffi.new("char[128]"), selected_idx = 0, results = {} }
+    panel_states = {},
+    picker = { trigger = false, title = "", query = ffi.new("char[128]"), selected_idx = 0, items = {}, results = {}, on_select = nil }
 }
 
 local M = state
@@ -84,17 +109,29 @@ local pipe_layout, pipe_parse, pipe_render, layout_parse
 local bindless_set, image_available_sem, frame_fence
 local raw_buffer, point_buffer
 
--- PERSISTENT FFI OBJECTS (Avoid GC crashes)
+-- PERSISTENT FFI OBJECTS
 local callback_data_pool = {}
 for i=1, 10 do table.insert(callback_data_pool, ffi.new("LidarCallbackData")) end
 local callback_data_idx = 1
+local default_plot_spec = ffi.new("ImPlotSpec_c")
+default_plot_spec.Stride = 4
 
 M.panels = {}
 function M.register_panel(id, name, render_func)
     M.panels[id] = { id = id, name = name, render = render_func }
 end
 
-local function render_lidar_view(gui)
+local function open_picker(title, items, on_select)
+    state.picker.trigger = true
+    state.picker.title = title
+    ffi.fill(state.picker.query, 128)
+    state.picker.items = items
+    state.picker.results = items
+    state.picker.selected_idx = 0
+    state.picker.on_select = on_select
+end
+
+local function render_lidar_view(gui, node_id)
     if gui.ImPlot_BeginPlot("Lidar Cloud", ffi.new("ImVec2_c", {-1, -1}), 8) then
         local p, s = gui.ImPlot_GetPlotPos(), gui.ImPlot_GetPlotSize()
         local data = callback_data_pool[callback_data_idx]
@@ -105,8 +142,8 @@ local function render_lidar_view(gui)
     end
 end
 
-local function render_telemetry_view(gui)
-    gui.igText("Telemetry Stream")
+local function render_telemetry_view(gui, node_id)
+    gui.igText("Playback Control")
     gui.igSeparator()
     if not state.paused then gui.igTextColored(ffi.new("ImVec4_c", {0, 1, 0, 1}), "LIVE")
     else gui.igTextColored(ffi.new("ImVec4_c", {1, 0, 0, 1}), "PAUSED") end
@@ -120,17 +157,13 @@ local function render_telemetry_view(gui)
         robot.lib.mcap_seek(state.bridge, seek_ns)
         if robot.lib.mcap_next(state.bridge, state.current_msg) then 
             state.current_time_ns = state.current_msg.log_time 
-            if raw_buffer.allocation.ptr ~= nil and state.current_msg.data ~= nil then
-                local copy_size = math.min(tonumber(state.current_msg.data_size), raw_buffer.size)
-                ffi.copy(raw_buffer.allocation.ptr, state.current_msg.data, copy_size)
-            end
         end
     end
     if gui.igButton(state.paused and "Resume" or "Pause", ffi.new("ImVec2_c", {0, 0})) then state.paused = not state.paused end
 end
 
-local function render_topic_explorer(gui)
-    gui.igText("Topic Explorer")
+local function render_topic_explorer(gui, node_id)
+    gui.igText("Streams")
     gui.igSeparator()
     for _, ch in ipairs(state.channels) do
         local active_ptr = ffi.new("bool[1]", ch.active)
@@ -138,16 +171,131 @@ local function render_topic_explorer(gui)
     end
 end
 
-local function render_log_view(gui)
-    gui.igText("Log Viewer")
+local function render_msg_viewer(gui, node_id)
+    local p_state = state.panel_states[node_id] or { selected_ch = nil }
+    state.panel_states[node_id] = p_state
+    local label = p_state.selected_ch and p_state.selected_ch.topic or "Select Topic..."
+    if gui.igButton(label, ffi.new("ImVec2_c", {-1, 25})) then
+        local items = {}
+        for _, ch in ipairs(state.channels) do table.insert(items, { name = ch.topic, id = ch.id, data = ch }) end
+        open_picker("Select Topic", items, function(item) p_state.selected_ch = item.data end)
+    end
+    if p_state.selected_ch then
+        local ch = p_state.selected_ch
+        local msg = state.last_messages[ch.id]
+        if msg then
+            gui.igBeginChild_Str("MsgScroll", ffi.new("ImVec2_c", {0, 0}), true, 0)
+            gui.igTextWrapped(msg)
+            gui.igEndChild()
+        else gui.igTextDisabled("(No data received yet)") end
+    end
+end
+
+local function render_hex_viewer(gui, node_id)
+    local p_state = state.panel_states[node_id] or { selected_ch = nil }
+    state.panel_states[node_id] = p_state
+    local label = p_state.selected_ch and p_state.selected_ch.topic or "Select Topic (Hex)..."
+    if gui.igButton(label, ffi.new("ImVec2_c", {-1, 25})) then
+        local items = {}
+        for _, ch in ipairs(state.channels) do table.insert(items, { name = ch.topic, id = ch.id, data = ch }) end
+        open_picker("Select Topic", items, function(item) p_state.selected_ch = item.data end)
+    end
+    if p_state.selected_ch then
+        local msg = state.last_messages[p_state.selected_ch.id]
+        if msg then
+            gui.igBeginChild_Str("HexScroll", ffi.new("ImVec2_c", {0, 0}), true, 0)
+            local bytes = {string.byte(msg, 1, math.min(#msg, 1024))}
+            for i=1, #bytes, 16 do
+                local line, hex, ascii = string.format("%04X: ", i-1), "", ""
+                for j=0, 15 do
+                    local b = bytes[i+j]
+                    if b then hex = hex .. string.format("%02X ", b); ascii = ascii .. ((b >= 32 and b <= 126) and string.char(b) or ".")
+                    else hex = hex .. "   " end
+                end
+                gui.igText("%s %s | %s", line, hex, ascii)
+            end
+            gui.igEndChild()
+        else gui.igTextDisabled("(No data received yet)") end
+    end
+end
+
+local function render_pretty_viewer(gui, node_id)
+    local p_state = state.panel_states[node_id] or { selected_ch = nil }
+    state.panel_states[node_id] = p_state
+    local label = p_state.selected_ch and p_state.selected_ch.topic or "Select Topic (Pretty)..."
+    if gui.igButton(label, ffi.new("ImVec2_c", {-1, 25})) then
+        local items = {}
+        for _, ch in ipairs(state.channels) do table.insert(items, { name = ch.topic, id = ch.id, data = ch }) end
+        open_picker("Select Topic", items, function(item) p_state.selected_ch = item.data end)
+    end
+    if p_state.selected_ch then
+        local ch = p_state.selected_ch
+        local msg = state.last_messages[ch.id]
+        if msg then
+            if gui.igTreeNode_Str("Metadata") then
+                gui.igText("Topic: %s", ch.topic); gui.igText("Encoding: %s", ch.encoding); gui.igText("Schema: %s", ch.schema); gui.igText("Size: %d bytes", #msg)
+                gui.igTreePop()
+            end
+            if ch.topic == "lidar" then
+                if gui.igTreeNode_Str("PointCloud2 Data") then
+                    local points = #msg / 12
+                    if gui.igBeginTable("PointsTable", 4, bit.bor(Flags.TableBorders, Flags.TableResizable), ffi.new("ImVec2_c", {0, 200}), 0) then
+                        gui.igTableSetupColumn("Index", 0, 0, 0); gui.igTableSetupColumn("X", 0, 0, 0); gui.igTableSetupColumn("Y", 0, 0, 0); gui.igTableSetupColumn("Z", 0, 0, 0)
+                        gui.igTableHeadersRow()
+                        local floats = ffi.cast("float*", msg)
+                        for i=0, math.min(points-1, 50) do
+                            gui.igTableNextRow(0, 0); gui.igTableNextColumn(); gui.igText("%d", i)
+                            gui.igTableNextColumn(); gui.igText("%.3f", floats[i*3+0]); gui.igTableNextColumn(); gui.igText("%.3f", floats[i*3+1]); gui.igTableNextColumn(); gui.igText("%.3f", floats[i*3+2])
+                        end
+                        gui.igEndTable()
+                    end
+                    gui.igTreePop()
+                end
+            else gui.igTextDisabled("(No pretty formatter for %s yet)", ch.schema) end
+        else gui.igTextDisabled("(No data received yet)") end
+    end
+end
+
+local function render_perf_view(gui, node_id)
+    local io = gui.igGetIO_Nil()
+    gui.igText("Application Performance")
     gui.igSeparator()
-    gui.igText("No logs in stream yet.")
+    gui.igTextColored(ffi.new("ImVec4_c", {0, 1, 1, 1}), "FPS: %.1f", io.Framerate)
+    gui.igText("Frame Time: %.3f ms", 1000.0 / io.Framerate)
+    gui.igSeparator()
+    gui.igText("Kernel: MoonCrust 1.4")
+    gui.igText("Vulkan: 1.4.0")
+end
+
+local function render_plotter_view(gui, node_id)
+    local p_state = state.panel_states[node_id] or { selected_ch = nil }
+    state.panel_states[node_id] = p_state
+    local label = p_state.selected_ch and p_state.selected_ch.topic or "Select Topic (Plot)..."
+    if gui.igButton(label, ffi.new("ImVec2_c", {-1, 25})) then
+        local items = {}
+        for _, ch in ipairs(state.channels) do table.insert(items, { name = ch.topic, id = ch.id, data = ch }) end
+        open_picker("Select Topic", items, function(item) p_state.selected_ch = item.data end)
+    end
+    if p_state.selected_ch then
+        local history = state.plot_history[p_state.selected_ch.id]
+        if history then
+            if gui.ImPlot_BeginPlot("Data Over Time", ffi.new("ImVec2_c", {-1, -1}), 0) then
+                gui.ImPlot_SetupAxes("Frame", "Value", 0, 0)
+                gui.ImPlot_PlotLine_FloatPtrInt("Raw Data", history, 1000, 1.0, 0, default_plot_spec)
+                gui.ImPlot_EndPlot()
+            end
+        else gui.igTextDisabled("(No numeric data received yet)") end
+    end
 end
 
 M.register_panel("lidar", "Lidar Cloud", render_lidar_view)
 M.register_panel("telemetry", "Telemetry Controls", render_telemetry_view)
 M.register_panel("topics", "Topic Explorer", render_topic_explorer)
-M.register_panel("log", "Log Viewer", render_log_view)
+M.register_panel("msg_viewer", "Raw Message Viewer", render_msg_viewer)
+M.register_panel("hex_viewer", "Hex Dump Viewer", render_hex_viewer)
+M.register_panel("pretty_viewer", "Pretty Message Viewer", render_pretty_viewer)
+M.register_panel("perf", "Performance Monitor", render_perf_view)
+M.register_panel("plotter", "2D Data Plotter", render_plotter_view)
 
 local pc_p_obj = ffi.new("ParserPC")
 local pc_r_obj = ffi.new("RenderPC")
@@ -159,11 +307,18 @@ local wait_stage_mask = ffi.new("VkPipelineStageFlags[1]", {vk.VK_PIPELINE_STAGE
 
 local function discover_topics()
     local count = robot.lib.mcap_get_channel_count(state.bridge)
+    print(string.format("[42] Bridge reported %d channels.", count))
     state.channels = {}
     local info = ffi.new("McapChannelInfo")
     for i=0, count-1 do
         if robot.lib.mcap_get_channel_info(state.bridge, i, info) then
-            table.insert(state.channels, { id = info.id, topic = ffi.string(info.topic), encoding = ffi.string(info.message_encoding), schema = ffi.string(info.schema_name), active = true })
+            local t = ffi.string(info.topic)
+            if t == "lidar" then state.lidar_channel_id = info.id end
+            table.insert(state.channels, { 
+                id = info.id, topic = t, 
+                encoding = ffi.string(info.message_encoding), 
+                schema = ffi.string(info.schema_name), active = true 
+            })
         end
     end
 end
@@ -176,13 +331,22 @@ function M.init()
     sw = swapchain.new(instance, physical_device, device, _G._SDL_WINDOW)
     robot.init_bridge()
     imgui.init()
-    local f = io.open(state.mcap_path, "r")
-    if not f then robot.lib.mcap_generate_test_file(state.mcap_path) else f:close() end
+    
+    os.execute("rm -f test_robot.mcap")
+    print("[42] Generating new test MCAP...")
+    robot.lib.mcap_generate_test_file(state.mcap_path)
+    
     state.bridge = robot.lib.mcap_open(state.mcap_path)
+    if state.bridge == nil then error("Failed to open " .. state.mcap_path) end
     state.start_time = robot.lib.mcap_get_start_time(state.bridge)
     state.end_time = robot.lib.mcap_get_end_time(state.bridge)
     state.current_time_ns = state.start_time
+    
+    print("[42] Discovering topics...")
     discover_topics()
+    for _, ch in ipairs(state.channels) do
+        print(string.format("  - Topic: %s (ID: %d)", ch.topic, ch.id))
+    end
 
     raw_buffer = mc.buffer(M.points_count * 12, "storage", nil, true)
     point_buffer = mc.buffer(M.points_count * 16, "storage", nil, false)
@@ -217,8 +381,6 @@ function M.init()
         local mvp = mc.mat4_multiply(proj, view)
         for i=0,15 do pc_r_obj.view_proj[i] = mvp.m[i] end
         pc_r_obj.buf_idx, pc_r_obj.point_size = 11, 3.0
-        
-        -- DRAW PAYLOAD
         vk.vkCmdBindPipeline(cb_handle, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe_render)
         vk.vkCmdPushConstants(cb_handle, pipe_layout, vk.VK_SHADER_STAGE_ALL_GRAPHICS, 0, ffi.sizeof("RenderPC"), pc_r_obj)
         local sx, sy = _G._WIN_PW / _G._WIN_LW, _G._WIN_PH / _G._WIN_LH
@@ -230,7 +392,6 @@ function M.init()
         vk.vkCmdSetScissor(cb_handle, 0, 1, scissor_obj)
         vk.vkCmdDraw(cb_handle, M.points_count, 1, 0, 0)
         
-        -- RESTORE STATE FOR IMGUI
         local imgui_renderer = require("imgui.renderer")
         vk.vkCmdBindPipeline(cb_handle, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, imgui_renderer.pipeline)
         viewport_obj.x, viewport_obj.y, viewport_obj.width, viewport_obj.height = 0, 0, _G._WIN_PW, _G._WIN_PH
@@ -284,42 +445,33 @@ local function replace_focused_view(new_type)
     find_and_replace(state.layout)
 end
 
-local function render_fuzzy_finder(gui)
-    if state.fuzzy.active then
-        gui.igOpenPopup_Str("FuzzyFinder", 0)
-        state.fuzzy.active = false
-    end
-
+local function render_fuzzy_picker(gui)
     local lw, lh = _G._WIN_LW or 1280, _G._WIN_LH or 720
     gui.igSetNextWindowPos(ffi.new("ImVec2_c", {lw/2, 100}), 0, ffi.new("ImVec2_c", {0.5, 0}))
     gui.igSetNextWindowSize(ffi.new("ImVec2_c", {400, 0}), 0)
-    
-    if gui.igBeginPopupModal("FuzzyFinder", nil, Flags.AlwaysAutoResize) then
-        if gui.igInputText("##Search", state.fuzzy.query, 128, 0, nil, nil) then
-            state.fuzzy.results = {}
-            local q = ffi.string(state.fuzzy.query):lower()
-            for _, p in pairs(M.panels) do if p.name:lower():find(q, 1, true) then table.insert(state.fuzzy.results, p) end end
-            state.fuzzy.selected_idx = 0
+    if gui.igBeginPopupModal("FuzzyPicker", nil, bit.bor(Flags.AlwaysAutoResize, Flags.AlwaysOnTop)) then
+        gui.igText(state.picker.title)
+        if gui.igInputText("##Search", state.picker.query, 128, 0, nil, nil) then
+            state.picker.results = {}
+            local q = ffi.string(state.picker.query):lower()
+            for _, item in ipairs(state.picker.items) do if item.name:lower():find(q, 1, true) then table.insert(state.picker.results, item) end end
+            state.picker.selected_idx = 0
         end
         gui.igSetKeyboardFocusHere(-1)
         
-        if #state.fuzzy.results == 0 and ffi.string(state.fuzzy.query) == "" then
-            for _, p in pairs(M.panels) do table.insert(state.fuzzy.results, p) end
-        end
-
-        for i, p in ipairs(state.fuzzy.results) do
-            local is_sel = (i-1 == state.fuzzy.selected_idx)
-            if gui.igSelectable_Bool(p.name, is_sel, 0, ffi.new("ImVec2_c", {0, 0})) then
-                replace_focused_view(p.id)
+        for i, item in ipairs(state.picker.results) do
+            local is_sel = (i-1 == state.picker.selected_idx)
+            if gui.igSelectable_Bool(item.name, is_sel, 0, ffi.new("ImVec2_c", {0, 0})) then
+                state.picker.on_select(item)
                 gui.igCloseCurrentPopup()
             end
         end
         
         if input.key_pressed(Keys.ESC) then gui.igCloseCurrentPopup() end
-        if input.key_pressed(Keys.DOWN) then state.fuzzy.selected_idx = (state.fuzzy.selected_idx + 1) % #state.fuzzy.results end
-        if input.key_pressed(Keys.UP) then state.fuzzy.selected_idx = (state.fuzzy.selected_idx - 1 + #state.fuzzy.results) % #state.fuzzy.results end
-        if input.key_pressed(Keys.ENTER) and state.fuzzy.results[state.fuzzy.selected_idx+1] then
-            replace_focused_view(state.fuzzy.results[state.fuzzy.selected_idx+1].id)
+        if input.key_pressed(Keys.DOWN) then state.picker.selected_idx = (state.picker.selected_idx + 1) % #state.picker.results end
+        if input.key_pressed(Keys.UP) then state.picker.selected_idx = (state.picker.selected_idx - 1 + #state.picker.results) % #state.picker.results end
+        if input.key_pressed(Keys.ENTER) and state.picker.results[state.picker.selected_idx+1] then
+            state.picker.on_select(state.picker.results[state.picker.selected_idx+1])
             gui.igCloseCurrentPopup()
         end
         gui.igEndPopup()
@@ -328,31 +480,20 @@ end
 
 local function render_node(node, x, y, w, h, gui)
     if node.type == "split" then
-        if node.direction == "v" then
-            local w1 = w * node.ratio
-            render_node(node.children[1], x, y, w1, h, gui)
-            render_node(node.children[2], x+w1, y, w-w1, h, gui)
-        else
-            local h1 = h * node.ratio
-            render_node(node.children[1], x, y, w, h1, gui)
-            render_node(node.children[2], x, y+h1, w, h - h1, gui)
-        end
+        if node.direction == "v" then local w1 = w * node.ratio render_node(node.children[1], x, y, w1, h, gui) render_node(node.children[2], x+w1, y, w-w1, h, gui)
+        else local h1 = h * node.ratio render_node(node.children[1], x, y, w, h1, gui) render_node(node.children[2], x, y+h1, w, h - h1, gui) end
     else
         gui.igSetNextWindowPos(ffi.new("ImVec2_c", {x, y}), 0, ffi.new("ImVec2_c", {0, 0}))
         gui.igSetNextWindowSize(ffi.new("ImVec2_c", {w, h}), 0)
         if gui.igBegin(string.format("View %d###%d", node.id, node.id), nil, Flags.NoDecoration) then
             if gui.igIsWindowHovered(0) then state.focused_id = node.id end
-            
-            -- Open popup in current window context
-            if state.fuzzy.active and state.focused_id == node.id then
-                gui.igOpenPopup_Str("FuzzyFinder", 0)
-                state.fuzzy.active = false
+            if state.picker.trigger and state.focused_id == node.id then
+                gui.igOpenPopup_Str("FuzzyPicker", 0)
+                state.picker.trigger = false
             end
-            
-            render_fuzzy_finder(gui)
-
+            render_fuzzy_picker(gui)
             local p = M.panels[node.view_type]
-            if p then p.render(gui)
+            if p then p.render(gui, node.id)
             else
                 gui.igText("Empty View (ID: %d)", node.id)
                 gui.igText("CTRL+P: Panel Menu")
@@ -374,24 +515,35 @@ function M.update()
         if input.key_pressed(Keys.H) then split_focused("h") end
         if input.key_pressed(Keys.X) then close_focused() end
         if input.key_pressed(Keys.P) then
-            state.fuzzy.active = true
-            ffi.fill(state.fuzzy.query, 128)
-            state.fuzzy.results = {}
-            for _, p in pairs(M.panels) do table.insert(state.fuzzy.results, p) end
-            state.fuzzy.selected_idx = 0
+            local items = {}
+            for id, p in pairs(M.panels) do table.insert(items, { name = p.name, id = id }) end
+            open_picker("Select Panel", items, function(item) replace_focused_view(item.id) end)
         end
     end
 
     local gui, io = imgui.gui, imgui.gui.igGetIO_Nil()
     if input.mouse_down(3) and not io.WantCaptureMouse then 
         local rmx, rmy = input.mouse_delta()
-        state.cam.orbit_x = state.cam.orbit_x + rmx * 0.2
-        state.cam.orbit_y = math.max(-89, math.min(89, state.cam.orbit_y - rmy * 0.2))
+        state.cam.orbit_x, state.cam.orbit_y = state.cam.orbit_x + rmx * 0.2, math.max(-89, math.min(89, state.cam.orbit_y - rmy * 0.2))
     end
     if not state.paused then
         if not robot.lib.mcap_next(state.bridge, state.current_msg) then robot.lib.mcap_rewind(state.bridge) robot.lib.mcap_next(state.bridge, state.current_msg) end
         state.current_time_ns = state.current_msg.log_time
-        if raw_buffer.allocation.ptr ~= nil and state.current_msg.data ~= nil then
+        
+        local ch_id = state.current_msg.channel_id
+        if state.current_msg.data ~= nil then 
+            local msg_len = math.min(tonumber(state.current_msg.data_size), 4096)
+            state.last_messages[ch_id] = ffi.string(state.current_msg.data, msg_len)
+            
+            if tonumber(state.current_msg.data_size) >= 4 then
+                local hist = state.plot_history[ch_id]
+                if not hist then hist = ffi.new("float[1000]") state.plot_history[ch_id] = hist end
+                for i=0, 998 do hist[i] = hist[i+1] end
+                hist[999] = ffi.cast("float*", state.current_msg.data)[0]
+            end
+        end
+
+        if ch_id == state.lidar_channel_id and raw_buffer.allocation.ptr ~= nil then
             local copy_size = math.min(tonumber(state.current_msg.data_size), raw_buffer.size)
             ffi.copy(raw_buffer.allocation.ptr, state.current_msg.data, copy_size)
         end
@@ -401,38 +553,19 @@ function M.update()
     imgui.new_frame()
     render_node(state.layout, 0, 0, _G._WIN_LW, _G._WIN_LH, gui)
 
-    vk.vkResetCommandBuffer(cb, 0)
-    vk.vkBeginCommandBuffer(cb, cb_begin_info)
+    vk.vkResetCommandBuffer(cb, 0); vk.vkBeginCommandBuffer(cb, cb_begin_info)
     pc_p_obj.in_buf_idx, pc_p_obj.in_offset_u32, pc_p_obj.out_buf_idx, pc_p_obj.count = 10, 0, 11, M.points_count
-    vk.vkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_parse)
-    vk.vkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_COMPUTE, layout_parse, 0, 1, ffi.new("VkDescriptorSet[1]", {bindless_set}), 0, nil)
-    vk.vkCmdPushConstants(cb, layout_parse, vk.VK_SHADER_STAGE_COMPUTE_BIT, 0, ffi.sizeof("ParserPC"), pc_p_obj)
-    vk.vkCmdDispatch(cb, math.ceil(M.points_count / 256), 1, 1)
+    vk.vkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_parse); vk.vkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_COMPUTE, layout_parse, 0, 1, ffi.new("VkDescriptorSet[1]", {bindless_set}), 0, nil); vk.vkCmdPushConstants(cb, layout_parse, vk.VK_SHADER_STAGE_COMPUTE_BIT, 0, ffi.sizeof("ParserPC"), pc_p_obj); vk.vkCmdDispatch(cb, math.ceil(M.points_count / 256), 1, 1)
     vk.vkCmdPipelineBarrier(cb, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, vk.VK_PIPELINE_STAGE_VERTEX_SHADER_BIT, 0, 1, ffi.new("VkMemoryBarrier[1]", {{ sType = vk.VK_STRUCTURE_TYPE_MEMORY_BARRIER, srcAccessMask = vk.VK_ACCESS_SHADER_WRITE_BIT, dstAccessMask = vk.VK_ACCESS_SHADER_READ_BIT }}), 0, nil, 0, nil)
-    local bar = ffi.new("VkImageMemoryBarrier[1]", {{ 
-        sType=vk.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, oldLayout=vk.VK_IMAGE_LAYOUT_UNDEFINED, newLayout=vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, image=ffi.cast("VkImage", sw.images[img_idx]), 
-        subresourceRange={ aspectMask = vk.VK_IMAGE_ASPECT_COLOR_BIT, levelCount = 1, layerCount = 1 }, dstAccessMask=vk.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT 
-    }})
+    local bar = ffi.new("VkImageMemoryBarrier[1]", {{ sType=vk.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, oldLayout=vk.VK_IMAGE_LAYOUT_UNDEFINED, newLayout=vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, image=ffi.cast("VkImage", sw.images[img_idx]), subresourceRange={ aspectMask = vk.VK_IMAGE_ASPECT_COLOR_BIT, levelCount = 1, layerCount = 1 }, dstAccessMask=vk.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT }})
     vk.vkCmdPipelineBarrier(cb, vk.VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, vk.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, nil, 0, nil, 1, bar)
-    attachment_info_obj[0].sType = vk.VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO
-    attachment_info_obj[0].imageView = ffi.cast("VkImageView", sw.views[img_idx])
-    attachment_info_obj[0].imageLayout = vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
-    attachment_info_obj[0].loadOp = vk.VK_ATTACHMENT_LOAD_OP_CLEAR
-    attachment_info_obj[0].storeOp = vk.VK_ATTACHMENT_STORE_OP_STORE
-    attachment_info_obj[0].clearValue.color.float32[0] = 0.05
-    attachment_info_obj[0].clearValue.color.float32[1] = 0.05
-    attachment_info_obj[0].clearValue.color.float32[2] = 0.07
-    attachment_info_obj[0].clearValue.color.float32[3] = 1.0
+    attachment_info_obj[0].sType, attachment_info_obj[0].imageView, attachment_info_obj[0].imageLayout, attachment_info_obj[0].loadOp, attachment_info_obj[0].storeOp = vk.VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, ffi.cast("VkImageView", sw.views[img_idx]), vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, vk.VK_ATTACHMENT_LOAD_OP_CLEAR, vk.VK_ATTACHMENT_STORE_OP_STORE
+    attachment_info_obj[0].clearValue.color.float32[0], attachment_info_obj[0].clearValue.color.float32[1], attachment_info_obj[0].clearValue.color.float32[2], attachment_info_obj[0].clearValue.color.float32[3] = 0.05, 0.05, 0.07, 1.0
     vk.vkCmdBeginRendering(cb, ffi.new("VkRenderingInfo", { sType=vk.VK_STRUCTURE_TYPE_RENDERING_INFO, renderArea={extent=sw.extent}, layerCount=1, colorAttachmentCount=1, pColorAttachments=attachment_info_obj }))
-    vk.vkCmdSetViewport(cb, 0, 1, ffi.new("VkViewport", { x=0, y=0, width=_G._WIN_PW, height=_G._WIN_PH, minDepth=0, maxDepth=1 }))
-    vk.vkCmdSetScissor(cb, 0, 1, ffi.new("VkRect2D", { offset={x=0, y=0}, extent=sw.extent }))
-    imgui.render(cb)
-    vk.vkCmdEndRendering(cb)
+    vk.vkCmdSetViewport(cb, 0, 1, ffi.new("VkViewport", { x=0, y=0, width=_G._WIN_PW, height=_G._WIN_PH, minDepth=0, maxDepth=1 })); vk.vkCmdSetScissor(cb, 0, 1, ffi.new("VkRect2D", { offset={x=0, y=0}, extent=sw.extent })); imgui.render(cb); vk.vkCmdEndRendering(cb)
     bar[0].oldLayout, bar[0].newLayout = vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, vk.VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
-    vk.vkCmdPipelineBarrier(cb, vk.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, vk.VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nil, 0, nil, 1, bar)
-    vk.vkEndCommandBuffer(cb)
-    vk.vkQueueSubmit(queue, 1, ffi.new("VkSubmitInfo", { sType=vk.VK_STRUCTURE_TYPE_SUBMIT_INFO, waitSemaphoreCount=1, pWaitSemaphores=ffi.new("VkSemaphore[1]", {image_available_sem}), pWaitDstStageMask=wait_stage_mask, commandBufferCount=1, pCommandBuffers=ffi.new("VkCommandBuffer[1]", {cb}), signalSemaphoreCount=1, pSignalSemaphores=ffi.new("VkSemaphore[1]", {sw.semaphores[img_idx]}) }), frame_fence)
-    sw:present(queue, img_idx, sw.semaphores[img_idx])
+    vk.vkCmdPipelineBarrier(cb, vk.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, vk.VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nil, 0, nil, 1, bar); vk.vkEndCommandBuffer(cb)
+    vk.vkQueueSubmit(queue, 1, ffi.new("VkSubmitInfo", { sType=vk.VK_STRUCTURE_TYPE_SUBMIT_INFO, waitSemaphoreCount=1, pWaitSemaphores=ffi.new("VkSemaphore[1]", {image_available_sem}), pWaitDstStageMask=wait_stage_mask, commandBufferCount=1, pCommandBuffers=ffi.new("VkCommandBuffer[1]", {cb}), signalSemaphoreCount=1, pSignalSemaphores=ffi.new("VkSemaphore[1]", {sw.semaphores[img_idx]}) }), frame_fence); sw:present(queue, img_idx, sw.semaphores[img_idx])
 end
 
 return M

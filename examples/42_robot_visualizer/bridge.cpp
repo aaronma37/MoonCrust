@@ -31,17 +31,34 @@ EXPORT void mcap_generate_test_file(const char* path) {
     auto status = writer.open(path, mcap::McapWriterOptions("ros2"));
     if (!status.ok()) return;
 
-    mcap::Schema schema("PointCloud2", "ros2msg", "binary");
-    writer.addSchema(schema);
+    // 1. Schemas
+    mcap::Schema lidar_schema("PointCloud2", "ros2msg", "binary");
+    writer.addSchema(lidar_schema);
+    
+    mcap::Schema float_schema("Float32", "ros2msg", "binary");
+    writer.addSchema(float_schema);
 
-    mcap::Channel channel("lidar", "ros2", schema.id);
-    writer.addChannel(channel);
+    // 2. Channels
+    mcap::Channel lidar_ch("lidar", "ros2", lidar_schema.id);
+    writer.addChannel(lidar_ch);
+
+    mcap::Channel battery_ch("battery_voltage", "ros2", float_schema.id);
+    writer.addChannel(battery_ch);
+
+    mcap::Channel velocity_ch("motor_velocity", "ros2", float_schema.id);
+    writer.addChannel(velocity_ch);
+
+    mcap::Channel imu_ch("imu_pitch", "ros2", float_schema.id);
+    writer.addChannel(imu_ch);
 
     const int frames = 1000;
     const int points_per_frame = 10000;
     std::vector<float> points(points_per_frame * 3);
 
     for (int f = 0; f < frames; ++f) {
+        uint64_t timestamp = f * 100000000; // 100ms
+
+        // Write Lidar
         for (int i = 0; i < points_per_frame; ++i) {
             float angle = (float)i / points_per_frame * 2.0f * M_PI;
             float rot = (float)f / frames * 2.0f * M_PI;
@@ -50,17 +67,46 @@ EXPORT void mcap_generate_test_file(const char* path) {
             points[i*3 + 1] = std::sin(angle + rot) * dist;
             points[i*3 + 2] = (float)f / 10.0f;
         }
-
         mcap::Message msg;
-        msg.channelId = channel.id;
-        msg.logTime = f * 100000000; // 100ms
-        msg.publishTime = msg.logTime;
+        msg.channelId = lidar_ch.id;
+        msg.logTime = timestamp;
+        msg.publishTime = timestamp;
         msg.data = reinterpret_cast<const std::byte*>(points.data());
         msg.dataSize = points.size() * sizeof(float);
         writer.write(msg);
+
+        // Write Battery (Sine wave 12V -> 11V)
+        float batt = 11.5f + std::sin((float)f * 0.05f) * 0.5f;
+        mcap::Message b_msg;
+        b_msg.channelId = battery_ch.id;
+        b_msg.logTime = timestamp;
+        b_msg.publishTime = timestamp;
+        b_msg.data = reinterpret_cast<const std::byte*>(&batt);
+        b_msg.dataSize = sizeof(float);
+        writer.write(b_msg);
+
+        // Write Velocity (Sawtooth)
+        float vel = (float)(f % 100) / 10.0f;
+        mcap::Message v_msg;
+        v_msg.channelId = velocity_ch.id;
+        v_msg.logTime = timestamp;
+        v_msg.publishTime = timestamp;
+        v_msg.data = reinterpret_cast<const std::byte*>(&vel);
+        v_msg.dataSize = sizeof(float);
+        writer.write(v_msg);
+
+        // Write IMU Pitch (Noise)
+        float pitch = std::sin((float)f * 0.2f) * 0.1f + ((float)(rand() % 100) / 1000.0f);
+        mcap::Message p_msg;
+        p_msg.channelId = imu_ch.id;
+        p_msg.logTime = timestamp;
+        p_msg.publishTime = timestamp;
+        p_msg.data = reinterpret_cast<const std::byte*>(&pitch);
+        p_msg.dataSize = sizeof(float);
+        writer.write(p_msg);
     }
     writer.close();
-    std::cout << "Generated test MCAP: " << path << std::endl;
+    std::cout << "Generated multi-topic test MCAP: " << path << std::endl;
 }
 
 EXPORT McapBridge* mcap_open(const char* path) {
