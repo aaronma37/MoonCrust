@@ -9,6 +9,7 @@ local M = {
     Flags = { 
         NoDecoration = 43, 
         AlwaysAutoResize = 64, 
+        NoSavedSettings = 65536,
         AlwaysOnTop = 262144, 
         TableBorders = 3, 
         TableResizable = 16 

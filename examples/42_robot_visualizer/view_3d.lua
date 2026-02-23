@@ -129,19 +129,23 @@ end
 function M.register_panels()
     panels.register("view3d", "3D Scene", function(gui, node_id)
         if gui.igBeginChild_Str("Scene", {0,0}, false, 0) then
-            local p, s = imgui.gui.igGetWindowPos(), imgui.gui.igGetWindowSize()
+            local p = gui.igGetWindowPos()
+            local s = gui.igGetContentRegionAvail()
             local data = callback_data_pool[callback_data_idx]; callback_data_idx = (callback_data_idx % 10) + 1
             data.x, data.y, data.w, data.h = p.x, p.y, s.x, s.y
-            imgui.gui.ImDrawList_AddCallback(imgui.gui.igGetWindowDrawList(), ffi.cast("ImDrawCallback", 1), data, ffi.sizeof("LidarCallbackData")) 
+            gui.igInvisibleButton("##scene_hit", s, 0)
+            imgui.gui.ImDrawList_AddCallback(imgui.gui.igGetWindowDrawList(), ffi.cast("ImDrawCallback", 1), data, ffi.sizeof("LidarCallbackData"))
         end
         gui.igEndChild()
     end)
     panels.register("lidar", "Lidar Cloud", function(gui, node_id)
         if gui.igBeginChild_Str("Lidar", {0,0}, false, 0) then
-            local p, s = imgui.gui.igGetWindowPos(), imgui.gui.igGetWindowSize()
+            local p = gui.igGetWindowPos()
+            local s = gui.igGetContentRegionAvail()
             local data = callback_data_pool[callback_data_idx]; callback_data_idx = (callback_data_idx % 10) + 1
             data.x, data.y, data.w, data.h = p.x, p.y, s.x, s.y
-            imgui.gui.ImDrawList_AddCallback(imgui.gui.igGetWindowDrawList(), ffi.cast("ImDrawCallback", 1), data, ffi.sizeof("LidarCallbackData")) 
+            gui.igInvisibleButton("##lidar_hit", s, 0)
+            imgui.gui.ImDrawList_AddCallback(imgui.gui.igGetWindowDrawList(), ffi.cast("ImDrawCallback", 1), data, ffi.sizeof("LidarCallbackData"))
         end
         gui.igEndChild()
     end)

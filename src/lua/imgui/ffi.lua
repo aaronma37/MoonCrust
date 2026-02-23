@@ -297,6 +297,17 @@ ffi.cdef[[
     void igBeginTooltip(void);
     void igEndTooltip(void);
 
+    // Window Info & Cursor
+    ImVec2_c igGetWindowPos(void);
+    ImVec2_c igGetWindowSize(void);
+    ImVec2_c igGetCursorScreenPos(void);
+    ImVec2_c igGetContentRegionAvail(void);
+    void igDummy(const ImVec2_c size);
+    
+    // Child Windows
+    bool igBeginChild_Str(const char* str_id, const ImVec2_c size, bool border, ImGuiWindowFlags flags);
+    void igEndChild(void);
+
     // Font Atlas
     void igImFontAtlasBuildMain(ImFontAtlas* atlas);
     void ImTextureData_SetTexID(ImTextureData* self, ImTextureID tex_id);

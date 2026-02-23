@@ -48,6 +48,8 @@ ffi.cdef[[
     void igSetNextItemWidth(float item_width);
     ImVec2_c igGetWindowPos(void);
     ImVec2_c igGetWindowSize(void);
+    ImVec2_c igGetContentRegionAvail(void);
+    bool igInvisibleButton(const char* str_id, const ImVec2_c size, int flags);
     uint64_t SDL_GetTicks(void);
     void ImPlot_SetupAxis(int axis, const char* label, int flags);
     void ImPlot_SetupAxisLimits(int axis, double v_min, double v_max, int cond);

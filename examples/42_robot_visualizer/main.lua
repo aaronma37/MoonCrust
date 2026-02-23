@@ -32,14 +32,14 @@ _G._OPEN_PICKER = function(title, items, on_select)
     ffi.fill(state.query, 128)
 end
 
-local state = {
-    layout = { 
+local function create_default_layout()
+    return { 
         type = "split", direction = "h", ratio = 0.8,
         children = {
             {
                 type = "split", direction = "v", ratio = 0.7,
                 children = {
-                    { type = "view", view_type = "view3d", id = 1, title = "3D Lidar###1" },
+                    { type = "view", view_type = "perf", id = 1, title = "Performance (Replaced)###1" },
                     {
                         type = "split", direction = "h", ratio = 0.6,
                         children = {
@@ -51,7 +51,15 @@ local state = {
             },
             { type = "view", view_type = "telemetry", id = 4, title = "Playback Controls###4" }
         }
-    },
+    }
+end
+
+local function create_full_3d_layout()
+    return { type = "view", view_type = "view3d", id = 1, title = "3D Lidar###1" }
+end
+
+local state = {
+    layout = create_default_layout(),
     next_id = 5,
     last_ticks = 0ULL,
     picker = { trigger = false, title = "", query = ffi.new("char[128]"), selected_idx = 0, items = {}, results = {}, on_select = nil }
@@ -147,13 +155,16 @@ local function render_fuzzy_picker(gui)
 end
 
 local function render_node(node, x, y, w, h, gui)
+    print(string.format("Node: %s, x=%.1f, y=%.1f, w=%.1f, h=%.1f", node.type, x, y, w, h))
     if node.type == "split" then
         if node.direction == "v" then local w1 = w * node.ratio; render_node(node.children[1], x, y, w1, h, gui); render_node(node.children[2], x+w1, y, w-w1, h, gui)
         else local h1 = h * node.ratio; render_node(node.children[1], x, y, w, h1, gui); render_node(node.children[2], x, y+h1, w, h - h1, gui) end
     else
         gui.igSetNextWindowPos(ffi.new("ImVec2_c", {x, y}), 0, ffi.new("ImVec2_c", {0,0}))
         gui.igSetNextWindowSize(ffi.new("ImVec2_c", {w, h}), 0)
-        if gui.igBegin(node.title, nil, panels.Flags.NoDecoration) then
+        local visible = gui.igBegin(node.title, nil, bit.bor(panels.Flags.NoDecoration, panels.Flags.NoSavedSettings))
+        print(string.format("View '%s' (ID %d) Visible: %s", node.title, node.id, tostring(visible)))
+        if visible then
             if gui.igIsWindowHovered(0) then panels.focused_id = node.id end
             if state.picker.trigger and panels.focused_id == node.id then gui.igOpenPopup_Str("FuzzyPicker", 0); state.picker.trigger = false end
             render_fuzzy_picker(gui)
@@ -177,7 +188,28 @@ function M.update()
 
     view_3d.reset_frame()
     collectgarbage("step", 100)
-    local ctrl = input.key_down(224) or input.key_down(228) -- LCTRL or RCTRL
+    
+    -- Input Debug
+    local ctrl = input.key_down(224) or input.key_down(228)
+    if input.key_pressed(30) then -- 1
+        print("Key 1 Pressed! Ctrl:", ctrl)
+        state.layout = create_default_layout()
+    end
+    if input.key_pressed(31) then -- 2
+        print("Key 2 Pressed! Ctrl:", ctrl)
+        state.layout = create_full_3d_layout() 
+    end
+    if input.key_pressed(32) then -- 3
+        print("Key 3 Pressed! Ctrl:", ctrl)
+        state.layout = { 
+            type = "split", direction = "h", ratio = 0.5,
+            children = {
+                { type = "view", view_type = "pretty_viewer", id = 2, title = "Message Inspector###2" },
+                { type = "view", view_type = "telemetry", id = 4, title = "Playback Controls###4" }
+            }
+        }
+    end
+
     if ctrl then
         if input.key_pressed(25) then split_focused("v") end -- V
         if input.key_pressed(11) then split_focused("h") end -- H
@@ -233,7 +265,8 @@ function M.update()
         if wheel ~= 0 then view_3d.cam.dist = math.max(1, view_3d.cam.dist - wheel * view_3d.cam.dist * 0.1); _G._MOUSE_WHEEL = 0 end
     end
 
-    imgui.new_frame(); render_node(state.layout, 0, 0, _G._WIN_LW, _G._WIN_LH, gui)
+    local win_w, win_h = _G._WIN_LW or 1280, _G._WIN_LH or 720
+    imgui.new_frame(); render_node(state.layout, 0, 0, win_w, win_h, gui)
     
     vk.vkResetCommandBuffer(cb, 0); vk.vkBeginCommandBuffer(cb, static.cb_begin)
     static.pc_p.in_buf_idx, static.pc_p.in_offset_u32, static.pc_p.out_buf_idx, static.pc_p.count = 10, 0, 11, view_3d.points_count

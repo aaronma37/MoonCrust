@@ -95,6 +95,9 @@ function M.init()
         vertex_attribute_count = 3,
         topology = vk.VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
         alpha_blend = true,
+        depth_test = false,
+        depth_write = false,
+        cull_mode = vk.VK_CULL_MODE_NONE,
         color_formats = { vk.VK_FORMAT_B8G8R8A8_SRGB } -- Swapchain format
     })
     M.layout = layout
@@ -111,6 +114,8 @@ end
 function M.render(cb, draw_data)
     if not draw_data or draw_data.CmdListsCount == 0 then return end
     
+    print(string.format("Renderer: Lists=%d, Vtx=%d, Idx=%d", draw_data.CmdListsCount, draw_data.TotalVtxCount, draw_data.TotalIdxCount))
+
     -- 1. Update Buffers
     local v_offset = 0
     local i_offset = 0
@@ -130,6 +135,15 @@ function M.render(cb, draw_data)
     
     -- 2. Bind Pipeline
     vk.vkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, M.pipeline)
+    
+    local viewport = ffi.new("VkViewport", {
+        x = 0, y = 0,
+        width = draw_data.DisplaySize.x,
+        height = draw_data.DisplaySize.y,
+        minDepth = 0.0,
+        maxDepth = 1.0
+    })
+    vk.vkCmdSetViewport(cb, 0, 1, viewport)
     
     local sets = ffi.new("VkDescriptorSet[1]", {gpu.get_bindless_set()})
     vk.vkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, M.layout, 0, 1, sets, 0, nil)
@@ -154,6 +168,11 @@ function M.render(cb, draw_data)
         local cmd_buffer_data = ffi.cast("ImDrawCmd*", cmd_list.CmdBuffer.Data)
         for i = 0, cmd_list.CmdBuffer.Size - 1 do
             local cmd = cmd_buffer_data[i]
+            local tex_idx_debug = tonumber(ffi.cast("uintptr_t", cmd.TexRef._TexID))
+            print(string.format("Cmd: Elem=%d, CB=%s, Rect=%.1f,%.1f,%.1f,%.1f, Tex=%d", 
+                cmd.ElemCount, tostring(cmd.UserCallback), 
+                cmd.ClipRect.x, cmd.ClipRect.y, cmd.ClipRect.z, cmd.ClipRect.w, tex_idx_debug))
+            
             if cmd.UserCallback ~= nil then
                 -- CALLBACK HIJACK: Execute the user callback
                 -- We pass the command buffer and the user data
