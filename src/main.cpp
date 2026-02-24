@@ -184,6 +184,14 @@ int main(int argc, char* argv[]) {
     lua_pushinteger(L, graphicsFamily); lua_setglobal(L, "_VK_GRAPHICS_FAMILY");
     lua_pushlightuserdata(L, (void*)SDL_Vulkan_GetVkGetInstanceProcAddr()); lua_setglobal(L, "_VK_GET_INSTANCE_PROC_ADDR");
 
+    // Push all CLI args into a global _ARGS table
+    lua_newtable(L);
+    for (int i = 0; i < argc; ++i) {
+        lua_pushstring(L, argv[i]);
+        lua_rawseti(L, -2, i); // Using 0-based indexing to match argv
+    }
+    lua_setglobal(L, "_ARGS");
+
     if (argc > 1) { lua_pushstring(L, argv[1]); lua_setglobal(L, "_STARTUP_ARG"); }
     if (luaL_dofile(L, "src/lua/init.lua")) {
         std::cerr << "Lua Error: " << lua_tostring(L, -1) << std::endl;

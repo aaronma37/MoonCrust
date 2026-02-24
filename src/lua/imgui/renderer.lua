@@ -98,7 +98,7 @@ function M.init()
         depth_test = false,
         depth_write = false,
         cull_mode = vk.VK_CULL_MODE_NONE,
-        color_formats = { vk.VK_FORMAT_B8G8R8A8_SRGB } -- Swapchain format
+        color_formats = { vk.VK_FORMAT_B8G8R8A8_UNORM } -- Match linear swapchain
     })
     M.layout = layout
     

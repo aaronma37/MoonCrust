@@ -6,9 +6,10 @@ local M = {}
 local Swapchain = {}
 Swapchain.__index = Swapchain
 
-function M.new(instance, physical_device, device, window, existing_surface)
+function M.new(instance, physical_device, device, window, existing_surface, use_srgb)
     local self = setmetatable({}, Swapchain)
     self.device = device
+    local format = (use_srgb == false) and vk.VK_FORMAT_B8G8R8A8_UNORM or vk.VK_FORMAT_B8G8R8A8_SRGB
 
     -- 1. Use existing surface or create new one
     if existing_surface then
@@ -52,7 +53,7 @@ function M.new(instance, physical_device, device, window, existing_surface)
         sType = vk.VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
         surface = ffi.cast("VkSurfaceKHR", self.surface),
         minImageCount = 3,
-        imageFormat = vk.VK_FORMAT_B8G8R8A8_SRGB,
+        imageFormat = format,
         imageColorSpace = vk.VK_COLOR_SPACE_SRGB_NONLINEAR_KHR,
         imageExtent = { width = width, height = height },
         imageArrayLayers = 1,
@@ -93,7 +94,7 @@ function M.new(instance, physical_device, device, window, existing_surface)
             sType = vk.VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
             image = pImgs[i],
             viewType = vk.VK_IMAGE_VIEW_TYPE_2D,
-            format = vk.VK_FORMAT_B8G8R8A8_SRGB,
+            format = format,
             subresourceRange = {
                 aspectMask = vk.VK_IMAGE_ASPECT_COLOR_BIT,
                 baseMipLevel = 0, levelCount = 1,

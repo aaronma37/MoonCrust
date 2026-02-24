@@ -1,3 +1,4 @@
+_G.IMGUI_LIB_PATH = "examples/42_robot_visualizer/build/mooncrust_robot.so"
 local ffi = require("ffi")
 local vk = require("vulkan.ffi")
 local descriptors = require("vulkan.descriptors")
@@ -9,7 +10,6 @@ local input = require("mc.input")
 local mc = require("mc")
 local bit = require("bit")
 
-_G.IMGUI_LIB_PATH = "examples/42_robot_visualizer/build/mooncrust_robot.so"
 local imgui = require("imgui")
 
 -- Load FFI types (now that imgui has defined core types)
@@ -20,6 +20,7 @@ local playback = require("examples.42_robot_visualizer.playback")
 local view_3d = require("examples.42_robot_visualizer.view_3d")
 local panels = require("examples.42_robot_visualizer.ui.panels")
 local config = require("examples.42_robot_visualizer.config")
+local theme = require("examples.42_robot_visualizer.ui.theme")
 require("examples.42_robot_visualizer.ui.telemetry")
 require("examples.42_robot_visualizer.ui.inspector")
 require("examples.42_robot_visualizer.ui.perf")
@@ -113,7 +114,8 @@ end
 function M.init()
     local instance, phys = vulkan.get_instance(), vulkan.get_physical_device()
     device, queue, graphics_family = vulkan.get_device(), vulkan.get_queue()
-    sw = swapchain.new(instance, phys, device, _G._SDL_WINDOW)
+    -- Request UNORM (use_srgb = false) for high-precision theme colors
+    sw = swapchain.new(instance, phys, device, _G._SDL_WINDOW, nil, false)
     surface = sw.surface -- Capture the surface for reuse
     
     local robot = require("mc.robot")
@@ -156,7 +158,15 @@ function M.init()
     end
 
     imgui.init(); imgui_renderer = require("imgui.renderer")
+    theme.apply(imgui.gui)
     state.last_perf = ffi.C.SDL_GetPerformanceCounter()
+    
+    -- Auto-load file from CLI arg if provided
+    if _ARGS and _ARGS[2] then
+        local path = _ARGS[2]
+        print("Auto-loading file from CLI:", path)
+        playback.load_mcap(path)
+    end
 end
 
 local function render_fuzzy_picker(gui)
@@ -325,7 +335,7 @@ function M.update()
             vk.vkDeviceWaitIdle(device) -- Wait for ALL frames to finish
             sw:cleanup()
             local instance, phys = vulkan.get_instance(), vulkan.get_physical_device()
-            sw = swapchain.new(instance, phys, device, _G._SDL_WINDOW, surface)
+            sw = swapchain.new(instance, phys, device, _G._SDL_WINDOW, surface, false)
         end
         return -- Skip this frame without resetting the fence
     end
@@ -363,6 +373,10 @@ function M.update()
             if ok then
                 config = new_config
                 state.layout = config.layout
+                -- Re-apply theme in case style constants changed
+                package.loaded["examples.42_robot_visualizer.ui.theme"] = nil
+                theme = require("examples.42_robot_visualizer.ui.theme")
+                theme.apply(imgui.gui)
                 print("Config: Hot-reload successful!")
             else
                 print("Config: Hot-reload FAILED:", new_config)
@@ -445,7 +459,9 @@ function M.update()
     end
 
     local win_w, win_h = _G._WIN_LW or 1280, _G._WIN_LH or 720
-    imgui.new_frame(); render_node(state.layout, 0, 0, win_w, win_h, gui)
+    imgui.new_frame()
+    theme.apply(imgui.gui) -- Force theme every frame for now
+    render_node(state.layout, 0, 0, win_w, win_h, gui)
     
     local cb = command_buffers[frame_idx]
     vk.vkResetCommandBuffer(cb, 0); vk.vkBeginCommandBuffer(cb, static.cb_begin)
@@ -476,7 +492,13 @@ function M.update()
     vk.vkCmdPipelineBarrier(cb, vk.VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, vk.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, nil, 0, nil, 1, static.img_barrier)
 
     static.attachments[0].sType, static.attachments[0].imageView, static.attachments[0].imageLayout, static.attachments[0].loadOp, static.attachments[0].storeOp = vk.VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, ffi.cast("VkImageView", sw.views[img_idx]), vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, vk.VK_ATTACHMENT_LOAD_OP_CLEAR, vk.VK_ATTACHMENT_STORE_OP_STORE
-    static.attachments[0].clearValue.color.float32[0], static.attachments[0].clearValue.color.float32[1], static.attachments[0].clearValue.color.float32[2], static.attachments[0].clearValue.color.float32[3] = 0.05, 0.05, 0.07, 1.0
+    
+    -- Force Deep Lunar Black background (independent of potentially misaligned FFI)
+    static.attachments[0].clearValue.color.float32[0] = 0.02
+    static.attachments[0].clearValue.color.float32[1] = 0.02
+    static.attachments[0].clearValue.color.float32[2] = 0.03
+    static.attachments[0].clearValue.color.float32[3] = 1.0
+    
     static.render_info.renderArea.extent = sw.extent; static.render_info.pColorAttachments = static.attachments; static.render_info.pDepthAttachment = nil
     vk.vkCmdBeginRendering(cb, static.render_info)
     imgui.render(cb); vk.vkCmdEndRendering(cb)

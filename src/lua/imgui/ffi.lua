@@ -267,10 +267,81 @@ ffi.cdef[[
 
     typedef void (*ImDrawCallback)(const ImDrawList* parent_list, const ImDrawCmd* cmd);
 
+    typedef struct ImGuiStyle {
+        float       FontSizeBase;
+        float       FontScaleMain;
+        float       FontScaleDpi;
+        float       Alpha;
+        float       DisabledAlpha;
+        ImVec2_c    WindowPadding;
+        float       WindowRounding;
+        float       WindowBorderSize;
+        float       WindowBorderHoverPadding;
+        ImVec2_c    WindowMinSize;
+        ImVec2_c    WindowTitleAlign;
+        int         WindowMenuButtonPosition;
+        float       ChildRounding;
+        float       ChildBorderSize;
+        float       PopupRounding;
+        float       PopupBorderSize;
+        ImVec2_c    FramePadding;
+        float       FrameRounding;
+        float       FrameBorderSize;
+        ImVec2_c    ItemSpacing;
+        ImVec2_c    ItemInnerSpacing;
+        ImVec2_c    CellPadding;
+        ImVec2_c    TouchExtraPadding;
+        float       IndentSpacing;
+        float       ColumnsMinSpacing;
+        float       ScrollbarSize;
+        float       ScrollbarRounding;
+        float       ScrollbarPadding;
+        float       GrabMinSize;
+        float       GrabRounding;
+        float       LogSliderDeadzone;
+        float       ImageRounding;
+        float       ImageBorderSize;
+        float       TabRounding;
+        float       TabBorderSize;
+        float       TabMinWidthBase;
+        float       TabMinWidthShrink;
+        float       TabCloseButtonMinWidthSelected;
+        float       TabCloseButtonMinWidthUnselected;
+        float       TabBarBorderSize;
+        float       TabBarOverlineSize;
+        float       TableAngledHeadersAngle;
+        ImVec2_c    TableAngledHeadersTextAlign;
+        int         TreeLinesFlags;
+        float       TreeLinesSize;
+        float       TreeLinesRounding;
+        float       DragDropTargetRounding;
+        float       DragDropTargetBorderSize;
+        float       DragDropTargetPadding;
+        float       ColorMarkerSize;
+        int         ColorButtonPosition;
+        ImVec2_c    ButtonTextAlign;
+        ImVec2_c    SelectableTextAlign;
+        float       SeparatorTextBorderSize;
+        ImVec2_c    SeparatorTextAlign;
+        ImVec2_c    SeparatorTextPadding;
+        ImVec2_c    DisplayWindowPadding;
+        ImVec2_c    DisplaySafeAreaPadding;
+        bool        DockingNodeHasCloseButton;
+        float       DockingSeparatorSize;
+        float       MouseCursorScale;
+        bool        AntiAliasedLines;
+        bool        AntiAliasedLinesUseTex;
+        bool        AntiAliasedFill;
+        float       CurveTessellationTol;
+        float       CircleTessellationMaxError;
+        ImVec4_c    Colors[55];
+    } ImGuiStyle;
+
     // Functions
     void* igCreateContext(void* shared_font_atlas);
     void igDestroyContext(void* ctx);
     ImGuiIO* igGetIO_Nil(void);
+    ImGuiStyle* igGetStyle(void);
     
     // Modern Event API
     void ImGuiIO_AddKeyEvent(ImGuiIO* self, ImGuiKey key, bool down);
@@ -355,6 +426,6 @@ ffi.cdef[[
     void ImPlot3D_PlotLine_FloatPtr(const char* label_id, const float* xs, const float* ys, const float* zs, int count, const ImPlot3DSpec_c spec);
 ]]
 
-local lib_path = _G.IMGUI_LIB_PATH or "examples/41_imgui_visualizer/build/mooncrust_imgui.so"
+local lib_path = _G.IMGUI_LIB_PATH or "examples/42_robot_visualizer/build/mooncrust_robot.so"
 local M = ffi.load(lib_path)
 return M
