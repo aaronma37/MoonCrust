@@ -405,6 +405,7 @@ ffi.cdef[[
     // Font Atlas
     void igImFontAtlasBuildMain(ImFontAtlas* atlas);
     void ImTextureData_SetTexID(ImTextureData* self, ImTextureID tex_id);
+    void* ImFontAtlas_AddFontFromFileTTF(ImFontAtlas* self, const char* filename, float size_pixels, const void* font_cfg, const ImWchar* glyph_ranges);
 
     // DrawList
     void ImDrawList_AddCallback(ImDrawList* self, ImDrawCallback callback, void* userdata, size_t userdata_size);

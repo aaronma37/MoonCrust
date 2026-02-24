@@ -42,6 +42,44 @@ local char_map = {
     [36]=55, [37]=56, [38]=57, [39]=48, [44]=32
 }
 
+function M.build_and_upload_fonts()
+    local io = ffi_lib.igGetIO_Nil()
+    
+    -- Clear current texture if it exists
+    -- (In a more complex engine we might want to manage this better, but for now we'll just re-upload)
+    
+    ffi_lib.igImFontAtlasBuildMain(io.Fonts)
+    local tex_data = io.Fonts.TexData
+    local w, h, pixels = tex_data.Width, tex_data.Height, tex_data.Pixels
+    
+    print(string.format("[ImGui] Building Font Atlas: %dx%d", w, h))
+    
+    local img = gpu.image(w, h, vk.VK_FORMAT_R8G8B8A8_UNORM, "sampled")
+    local pd, d, q, family = vulkan.get_physical_device(), vulkan.get_device(), vulkan.get_queue()
+    local staging = require("vulkan.staging")
+    local size = w * h * 4
+    local st = staging.new(pd, d, gpu.heaps.host, size + 1024)
+    st:upload_image(img.handle, w, h, pixels, q, family, size)
+    
+    local descriptors = require("vulkan.descriptors")
+    descriptors.update_image_set(d, gpu.get_bindless_set(), 1, vk.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, img.view, gpu.sampler(), vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0)
+    
+    ffi_lib.ImTextureData_SetTexID(io.Fonts.TexData, ffi.cast("ImTextureID", 0))
+    M.font_image = img
+end
+
+function M.add_font(path, size)
+    local io = ffi_lib.igGetIO_Nil()
+    print(string.format("[ImGui] Loading Font: %s (%.1fpx)", path, size))
+    local font = ffi_lib.ImFontAtlas_AddFontFromFileTTF(io.Fonts, path, size, nil, nil)
+    if font == nil then
+        print("[ImGui] ERROR: Failed to load font: " .. path)
+        return nil
+    end
+    M.build_and_upload_fonts()
+    return font
+end
+
 function M.init()
     M.ctx = ffi_lib.igCreateContext(nil)
     M.plot_ctx = ffi_lib.ImPlot_CreateContext()
@@ -49,19 +87,7 @@ function M.init()
     local io = ffi_lib.igGetIO_Nil()
     io.DisplaySize.x, io.DisplaySize.y = 1280, 720
     renderer.init()
-    if not io.Fonts.TexIsBuilt then ffi_lib.igImFontAtlasBuildMain(io.Fonts) end
-    local tex_data = io.Fonts.TexData
-    local w, h, pixels = tex_data.Width, tex_data.Height, tex_data.Pixels
-    local img = gpu.image(w, h, vk.VK_FORMAT_R8G8B8A8_UNORM, "sampled")
-    local pd, d, q, family = vulkan.get_physical_device(), vulkan.get_device(), vulkan.get_queue()
-    local staging = require("vulkan.staging")
-    local size = w * h * 4
-    local st = staging.new(pd, d, gpu.heaps.host, size + 1024)
-    st:upload_image(img.handle, w, h, pixels, q, family, size)
-    local descriptors = require("vulkan.descriptors")
-    descriptors.update_image_set(d, gpu.get_bindless_set(), 1, vk.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, img.view, gpu.sampler(), vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0)
-    ffi_lib.ImTextureData_SetTexID(io.Fonts.TexData, ffi.cast("ImTextureID", 0))
-    M.font_image = img
+    M.build_and_upload_fonts()
 end
 
 function M.new_frame()

@@ -158,6 +158,7 @@ function M.init()
     end
 
     imgui.init(); imgui_renderer = require("imgui.renderer")
+    imgui.add_font("examples/41_imgui_visualizer/cimgui/imgui/misc/fonts/Roboto-Medium.ttf", 18.0)
     theme.apply(imgui.gui)
     state.last_perf = ffi.C.SDL_GetPerformanceCounter()
     
