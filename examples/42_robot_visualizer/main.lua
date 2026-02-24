@@ -6,6 +6,7 @@ local command = require("vulkan.command")
 local shader = require("vulkan.shader")
 local pipeline = require("vulkan.pipeline")
 local swapchain = require("vulkan.swapchain")
+local sdl = require("vulkan.sdl")
 local input = require("mc.input")
 local mc = require("mc")
 local bit = require("bit")
@@ -176,11 +177,19 @@ function M.init()
     
     M.header = require("examples.42_robot_visualizer.ui.header")
     
-    -- Auto-load file from CLI arg if provided
-    if _ARGS and _ARGS[2] then
-        local path = _ARGS[2]
-        print("Auto-loading file from CLI:", path)
-        playback.load_mcap(path)
+    -- CLI Argument Handling
+    if _ARGS then
+        for i=2, 10 do -- Scan a reasonable range of args
+            local arg = _ARGS[i]
+            if not arg then break end
+            if arg == "--maximized" then
+                print("CLI: Maximizing window")
+                sdl.SDL_MaximizeWindow(_G._SDL_WINDOW)
+            elseif not arg:find("^--") then
+                print("CLI: Auto-loading file:", arg)
+                playback.load_mcap(arg)
+            end
+        end
     end
 end
 
