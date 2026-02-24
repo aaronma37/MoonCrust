@@ -1,6 +1,7 @@
 local ffi = require("ffi")
 require("examples.42_robot_visualizer.types")
 local robot = require("mc.robot")
+local mc = require("mc")
 
 local M = {
     mcap_path = "test_robot.mcap",
@@ -18,15 +19,23 @@ local M = {
     pose_ch_id = 0,
     robot_pose = { x = 0, y = 0, z = 0, yaw = 0 },
     message_buffers = {},
-    plot_history = {}, -- [topic_id][field_offset] = { data, head, count }
+    plot_history = {}, 
     last_lidar_points = 0,
+    
+    -- GTB (Global Telemetry Buffer)
+    -- Increased to 512MB to handle 1000-message history for 64 channels
+    gtb = nil,
+    HISTORY_MAX = 1000, 
+    MSG_SIZE_MAX = 8192, -- 8KB max per telemetry msg
 }
 
 function M.init()
-    -- Start empty for instant boot
+    if not M.gtb then
+        print("Playback: Allocating Global Telemetry Buffer (512MB)...")
+        M.gtb = mc.buffer(512 * 1024 * 1024, "storage", nil, true)
+    end
 end
 
--- Request tracking for a specific byte offset in a channel
 function M.request_field_history(ch_id, offset, is_double)
     if not M.plot_history[ch_id] then M.plot_history[ch_id] = {} end
     if not M.plot_history[ch_id][offset] then
@@ -41,32 +50,24 @@ function M.request_field_history(ch_id, offset, is_double)
 end
 
 function M.load_mcap(path)
+    M.init()
     print("Playback: Attempting to load MCAP: " .. path)
     if M.bridge then robot.lib.mcap_close(M.bridge); M.bridge = nil end
     M.mcap_path = path
     M.bridge = robot.lib.mcap_open(M.mcap_path)
-    if M.bridge == nil then 
-        print("Playback: FAILED to open MCAP at " .. path)
-        return false 
-    end
-    print("Playback: Successfully opened MCAP. Scanning metadata...")
+    if M.bridge == nil then return false end
+    
+    robot.lib.mcap_set_gtb(M.bridge, ffi.cast("uint8_t*", M.gtb.allocation.ptr), M.gtb.size)
     
     M.start_time = robot.lib.mcap_get_start_time(M.bridge)
     M.end_time = robot.lib.mcap_get_end_time(M.bridge)
     M.current_time_ns = M.start_time
     M.playback_time_ns = M.start_time
-    M.paused = true -- Always pause on load to prevent jumping/lag
+    M.paused = true 
     
     M.discover_topics()
     robot.lib.mcap_next(M.bridge, M.current_msg)
     return true
-end
-
-function M.generate_test(path)
-    print("Generating MCAP at " .. path .. " ... (this may take a moment)")
-    os.execute("rm -f " .. path)
-    robot.lib.mcap_generate_test_file(path)
-    print("Generation complete!")
 end
 
 function M.discover_topics()
@@ -74,6 +75,8 @@ function M.discover_topics()
     print("Playback: Discovered " .. count .. " channels in bridge.")
     M.channels = {}
     local info = ffi.new("McapChannelInfo")
+    local slot_size = M.MSG_SIZE_MAX * M.HISTORY_MAX
+    
     for i=0, count-1 do
         if robot.lib.mcap_get_channel_info(M.bridge, i, info) then
             if info.topic ~= nil then
@@ -81,12 +84,23 @@ function M.discover_topics()
                 local enc = info.message_encoding ~= nil and ffi.string(info.message_encoding) or "unknown"
                 local sch = info.schema_name ~= nil and ffi.string(info.schema_name) or "unknown"
                 table.insert(M.channels, { id = info.id, topic = t, encoding = enc, schema = sch, active = true })
+                
+                -- Configure Circular GTB Slot
+                local offset = i * slot_size
+                if offset + slot_size <= M.gtb.size then
+                    robot.lib.mcap_set_gtb(M.bridge, ffi.cast("uint8_t*", M.gtb.allocation.ptr), M.gtb.size)
+                    robot.lib.mcap_configure_gtb_slot(M.bridge, info.id, offset, M.MSG_SIZE_MAX, M.HISTORY_MAX)
+                end
             end
         end
     end
 end
 
-local HISTORY_SIZE = 1000
+function M.get_gtb_slot_index(ch_id)
+    if not M.bridge then return 0 end
+    return robot.lib.mcap_get_gtb_slot_index(M.bridge, ch_id)
+end
+
 function M.update(dt, raw_buffer)
     if not M.bridge then return end
     if M.seek_to then
@@ -103,18 +117,16 @@ function M.update(dt, raw_buffer)
         if M.current_msg.data ~= nil then 
             local buf = M.message_buffers[ch_id]
             if not buf then 
-                buf = { data = ffi.new("uint8_t[1048576]"), size = 0 } -- 1MB Buffer
+                buf = { data = ffi.new("uint8_t[1048576]"), size = 0 } 
                 M.message_buffers[ch_id] = buf 
             end
             local sz = math.min(tonumber(M.current_msg.data_size), 1048576)
             ffi.copy(buf.data, M.current_msg.data, sz)
             buf.size = sz
             
-            -- Record history for all requested offsets in this channel
             local channel_history = M.plot_history[ch_id]
             if channel_history then
                 for offset, h in pairs(channel_history) do
-                    -- We store everything as float in the history buffer for ImPlot
                     if sz >= offset + (h.is_double and 8 or 4) then
                         local ptr = ffi.cast(h.is_double and "double*" or "float*", M.current_msg.data + offset)
                         h.data[h.head] = tonumber(ptr[0])
@@ -128,10 +140,7 @@ function M.update(dt, raw_buffer)
         if ch_id == M.lidar_ch_id and raw_buffer and raw_buffer.allocation.ptr ~= nil then 
             local sz = math.min(tonumber(M.current_msg.data_size), raw_buffer.size)
             ffi.copy(raw_buffer.allocation.ptr, M.current_msg.data, sz)
-            
-            -- LIVOX CUSTOM DETECTION
             if M.current_msg.data_size > 32 and ffi.string(M.current_msg.data + 4, 5) == "livox" then
-                -- The point count is at a specific offset in the Livox header (around byte 24-28)
                 M.last_lidar_points = ffi.cast("uint32_t*", M.current_msg.data + 24)[0]
             else
                 M.last_lidar_points = math.floor(sz / 12)

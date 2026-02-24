@@ -260,9 +260,12 @@ function M.update_robot_buffer(frame_idx, params)
                         if M.pose_schema then
                             local vals = require("examples.42_robot_visualizer.decoder").decode(buf.data, buf.size, M.pose_schema)
                             for _, v in ipairs(vals) do
-                                if v.name:find("%.x$") or v.name == "x" then px = tonumber(v.value) end
-                                if v.name:find("%.y$") or v.name == "y" then py = tonumber(v.value) end
-                                if v.name:find("%.z$") or v.name == "z" then pz = tonumber(v.value) end
+                                local is_pos = v.name:lower():find("position") or v.name:lower():find("point")
+                                if is_pos then
+                                    if v.name:find("%.x$") or v.name == "x" then px = tonumber(v.value) end
+                                    if v.name:find("%.y$") or v.name == "y" then py = tonumber(v.value) end
+                                    if v.name:find("%.z$") or v.name == "z" then pz = tonumber(v.value) end
+                                end
                                 if v.name:find("yaw") or v.name:find("heading") then yaw = tonumber(v.value) end
                             end
                         end

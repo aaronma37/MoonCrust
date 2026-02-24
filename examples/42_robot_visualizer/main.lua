@@ -125,6 +125,9 @@ function M.init()
     playback.init()
     bindless_set = mc.gpu.get_bindless_set()
     
+    -- Bind GTB to slot 50
+    descriptors.update_buffer_set(device, bindless_set, 0, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, playback.gtb.handle, 0, playback.gtb.size, 50)
+    
     -- Double-buffer raw inputs for FIF
     raw_buffers = {
         mc.buffer(view_3d.points_count * 12, "storage", nil, true),

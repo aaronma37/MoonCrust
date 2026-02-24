@@ -41,7 +41,7 @@ local function ensure_init()
     
     -- Default Heaps (Vulkan Page sizes are usually big, 256MB/128MB is a safe starting point)
     M.heaps.device = heap.new(pd, d, heap.find_memory_type(pd, 0xFFFFFFFF, vk.VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT), 1024 * 1024 * 1024)
-    M.heaps.host = heap.new(pd, d, heap.find_memory_type(pd, 0xFFFFFFFF, bit.bor(vk.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, vk.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)), 256 * 1024 * 1024)
+    M.heaps.host = heap.new(pd, d, heap.find_memory_type(pd, 0xFFFFFFFF, bit.bor(vk.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, vk.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)), 1024 * 1024 * 1024)
     
     resource.init(d)
     state.initialized = true

@@ -8,6 +8,7 @@
 #include <memory>
 #include <cmath>
 #include <algorithm>
+#include <cstring>
 
 #define EXPORT extern "C" __attribute__((visibility("default")))
 
@@ -27,6 +28,13 @@ struct McapChannelInfoInternal {
     std::string schema;
 };
 
+struct GtbSlot {
+    uint64_t base_offset;
+    uint32_t msg_size;
+    uint32_t history_max;
+    uint32_t current_index;
+};
+
 struct McapBridge {
     mcap::McapReader reader;
     std::unique_ptr<mcap::LinearMessageView> message_view;
@@ -34,6 +42,11 @@ struct McapBridge {
     std::vector<McapChannelInfoInternal> channels;
     uint64_t start_time = 0;
     uint64_t end_time = 0;
+
+    // GTB (Global Telemetry Buffer)
+    uint8_t* gtb_ptr = nullptr;
+    uint64_t gtb_size = 0;
+    std::map<uint32_t, GtbSlot> slots;
 };
 
 EXPORT void mcap_generate_test_file(const char* path) {
@@ -64,21 +77,21 @@ EXPORT void mcap_generate_test_file(const char* path) {
     mcap::Channel c_imu("imu_pitch", "ros2", s_float.id);
     writer.addChannel(c_imu);
 
-    std::vector<float> points(10000000 * 3);
+    std::vector<float> points(1000000 * 3); // Reduced size for faster generation in test
     for (int f = 0; f < 200; ++f) {
         uint64_t t = f * 100000000ULL;
         
         // Lidar
-        for (int i=0; i<10000000; ++i) {
-            float a = (float)i / 10000.0f * 6.283185f; // Wrap around to create thickness
-            float r = 10.0f + ((float)(i % 1000) / 1000.0f) * 2.0f - 1.0f; // Radial noise
+        for (int i=0; i<1000000; ++i) {
+            float a = (float)i / 1000.0f * 6.283185f; 
+            float r = 10.0f + ((float)(i % 100) / 100.0f) * 2.0f - 1.0f;
             points[i*3+0] = cos(a) * r; 
             points[i*3+1] = sin(a) * r; 
-            points[i*3+2] = (float)f * 0.05f + ((float)(i % 100) / 100.0f) * 0.5f; // Vertical noise
+            points[i*3+2] = (float)f * 0.05f + ((float)(i % 10) / 10.0f) * 0.5f;
         }
         mcap::Message m1; m1.channelId = c_lidar.id; m1.logTime = t; m1.publishTime = t;
         m1.data = reinterpret_cast<const std::byte*>(points.data()); m1.dataSize = points.size() * sizeof(float);
-        if (!writer.write(m1).ok()) std::cerr << "Write lidar failed" << std::endl;
+        writer.write(m1);
 
         // Pose (Circular path)
         struct { float x, y, z, yaw; } val_pose;
@@ -122,19 +135,15 @@ EXPORT McapBridge* mcap_open(const char* path) {
         return nullptr;
     }
 
-    // Force scan to discover all channels
     b->message_view = std::make_unique<mcap::LinearMessageView>(b->reader.readMessages());
     b->it = std::make_unique<mcap::LinearMessageView::Iterator>(b->message_view->begin());
     
-    // Iterate once to populate metadata (inefficient but safe for test)
-    // In real app we would use readSummary
     bool first = true;
     for (auto const& msg : *b->message_view) { 
         if (first) { b->start_time = msg.message.logTime; first = false; }
         b->end_time = msg.message.logTime;
     }
     
-    // Now copy channels into stable storage
     const auto& channel_map = b->reader.channels();
     const auto& schema_map = b->reader.schemas();
     
@@ -151,9 +160,7 @@ EXPORT McapBridge* mcap_open(const char* path) {
         b->channels.push_back(info);
     }
     
-    // Reset iterator for Lua usage
     b->it = std::make_unique<mcap::LinearMessageView::Iterator>(b->message_view->begin());
-    
     return b;
 }
 
@@ -173,6 +180,20 @@ EXPORT bool mcap_next(McapBridge* b, McapMessage* out) {
     out->sequence = m.message.sequence;
     out->data = reinterpret_cast<const uint8_t*>(m.message.data);
     out->data_size = m.message.dataSize;
+
+    // GTB CIRCULAR BLIT LOGIC
+    if (b->gtb_ptr && b->slots.count(m.message.channelId)) {
+        auto& slot = b->slots[m.message.channelId];
+        uint64_t write_offset = slot.base_offset + (static_cast<uint64_t>(slot.current_index) * slot.msg_size);
+        uint64_t sz = std::min(static_cast<uint64_t>(m.message.dataSize), static_cast<uint64_t>(slot.msg_size));
+        
+        if (write_offset + sz <= b->gtb_size) {
+            std::memcpy(b->gtb_ptr + write_offset, m.message.data, sz);
+            // Advance head
+            slot.current_index = (slot.current_index + 1) % slot.history_max;
+        }
+    }
+
     ++(*b->it);
     return true;
 }
@@ -183,23 +204,15 @@ EXPORT void mcap_rewind(McapBridge* b) {
     }
 }
 
-EXPORT uint64_t mcap_get_start_time(McapBridge* b) {
-    return b ? b->start_time : 0;
-}
-
-EXPORT uint64_t mcap_get_end_time(McapBridge* b) {
-    return b ? b->end_time : 0;
-}
-
 EXPORT void mcap_seek(McapBridge* b, uint64_t timestamp) {
     if (!b) return;
     b->message_view = std::make_unique<mcap::LinearMessageView>(b->reader.readMessages(timestamp));
     b->it = std::make_unique<mcap::LinearMessageView::Iterator>(b->message_view->begin());
 }
 
-EXPORT uint32_t mcap_get_channel_count(McapBridge* b) {
-    return b ? static_cast<uint32_t>(b->channels.size()) : 0;
-}
+EXPORT uint64_t mcap_get_start_time(McapBridge* b) { return b ? b->start_time : 0; }
+EXPORT uint64_t mcap_get_end_time(McapBridge* b) { return b ? b->end_time : 0; }
+EXPORT uint32_t mcap_get_channel_count(McapBridge* b) { return b ? static_cast<uint32_t>(b->channels.size()) : 0; }
 
 struct McapChannelInfo {
     uint32_t id;
@@ -229,4 +242,25 @@ EXPORT const char* mcap_get_schema_content(McapBridge* b, uint32_t channel_id) {
         }
     }
     return nullptr;
+}
+
+EXPORT void mcap_set_gtb(McapBridge* b, uint8_t* ptr, uint64_t size) {
+    if (!b) return;
+    b->gtb_ptr = ptr;
+    b->gtb_size = size;
+}
+
+EXPORT void mcap_configure_gtb_slot(McapBridge* b, uint32_t channel_id, uint64_t base_offset, uint32_t msg_size, uint32_t history_max) {
+    if (!b) return;
+    GtbSlot slot;
+    slot.base_offset = base_offset;
+    slot.msg_size = msg_size;
+    slot.history_max = history_max;
+    slot.current_index = 0;
+    b->slots[channel_id] = slot;
+}
+
+EXPORT uint32_t mcap_get_gtb_slot_index(McapBridge* b, uint32_t channel_id) {
+    if (!b || !b->slots.count(channel_id)) return 0;
+    return b->slots[channel_id].current_index;
 }
