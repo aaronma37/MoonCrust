@@ -227,14 +227,19 @@ panels.register("plotter", "Topic Plotter", function(gui, node_id, params)
     
     if p_state.selected_ch and p_state.field_name then
         local target_offset = -1
+        local is_double = false
         if p_state.schema_fields then
             for _, f in ipairs(p_state.schema_fields) do
-                if f.name == p_state.field_name then target_offset = f.offset; break end
+                if f.name == p_state.field_name then 
+                    target_offset = f.offset
+                    is_double = (f.type == "float64" or f.type == "double")
+                    break 
+                end
             end
         end
         
         if target_offset ~= -1 then
-            local h = playback.request_field_history(p_state.selected_ch.id, target_offset)
+            local h = playback.request_field_history(p_state.selected_ch.id, target_offset, is_double)
             
             gui.igSameLine(0, 5)
             if gui.igButton("Fit", ffi.new("ImVec2_c", {40, 0})) then

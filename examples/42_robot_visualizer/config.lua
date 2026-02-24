@@ -19,7 +19,7 @@ M.facets = {
         panel = "plotter",
         params = { 
             topic_name = "/livox/imu",
-            field_name = "x" 
+            field_name = "angular_velocity.x" 
         }
     },
     MarsFlightStatus = {

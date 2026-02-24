@@ -27,13 +27,14 @@ function M.init()
 end
 
 -- Request tracking for a specific byte offset in a channel
-function M.request_field_history(ch_id, offset)
+function M.request_field_history(ch_id, offset, is_double)
     if not M.plot_history[ch_id] then M.plot_history[ch_id] = {} end
     if not M.plot_history[ch_id][offset] then
         M.plot_history[ch_id][offset] = { 
             data = ffi.new("float[1000]"), 
             head = 0, 
-            count = 0 
+            count = 0,
+            is_double = is_double or false
         }
     end
     return M.plot_history[ch_id][offset]
@@ -120,8 +121,10 @@ function M.update(dt, raw_buffer)
             local channel_history = M.plot_history[ch_id]
             if channel_history then
                 for offset, h in pairs(channel_history) do
-                    if sz >= offset + 4 then
-                        h.data[h.head] = ffi.cast("float*", M.current_msg.data + offset)[0]
+                    -- We store everything as float in the history buffer for ImPlot
+                    if sz >= offset + (h.is_double and 8 or 4) then
+                        local ptr = ffi.cast(h.is_double and "double*" or "float*", M.current_msg.data + offset)
+                        h.data[h.head] = tonumber(ptr[0])
                         h.head = (h.head + 1) % 1000
                         if h.count < 1000 then h.count = h.count + 1 end
                     end
