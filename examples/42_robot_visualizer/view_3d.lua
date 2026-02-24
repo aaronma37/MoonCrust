@@ -11,7 +11,7 @@ local playback = require("examples.42_robot_visualizer.playback")
 local imgui = require("imgui")
 
 local M = {
-    cam = { orbit_x = 45, orbit_y = 45, dist = 50, target = {0, 0, 5}, ortho = false },
+    cam = { orbit_x = 45, orbit_y = 45, dist = 50, target = {0, 0, 5}, ortho = false, follow = true },
     points_count = 10000000,
     -- Pipelines
     pipe_layout = nil, pipe_render_g = nil, pipe_line_g = nil,
@@ -196,16 +196,11 @@ function M.register_panels()
         local aspect = M.w / M.h
         local avail_aspect = s.x / s.y
         local img_s = ffi.new("ImVec2_c", {s.x, s.y})
-        if avail_aspect > aspect then
-            img_s.x = s.y * aspect
-        else
-            img_s.y = s.x / aspect
-        end
+        if avail_aspect > aspect then img_s.x = s.y * aspect else img_s.y = s.x / aspect end
+        
         local offset_x = (s.x - img_s.x) * 0.5
         local offset_y = (s.y - img_s.y) * 0.5
-        
         gui.igSetCursorPos(ffi.new("ImVec2_c", {gui.igGetCursorPosX() + offset_x, gui.igGetCursorPosY() - s.y + offset_y}))
-        
         igImage_hack(nil, M.final_color_idx, img_s, ffi.new("ImVec2_c", {0,0}), ffi.new("ImVec2_c", {1,1}))
     end)
     panels.register("lidar", "Lidar Cloud", function(gui, node_id)
@@ -242,6 +237,12 @@ function M.update_robot_buffer(frame_idx)
 end
 
 function M.render_deferred(cb_handle, point_buf_idx, frame_idx, point_count)
+    if M.cam.follow then
+        M.cam.target[1] = playback.robot_pose.x
+        M.cam.target[2] = playback.robot_pose.y
+        M.cam.target[3] = playback.robot_pose.z + 0.5
+    end
+
     local rx, ry = mc.rad(M.cam.orbit_x), mc.rad(M.cam.orbit_y)
     static.cam_target.x, static.cam_target.y, static.cam_target.z = M.cam.target[1], M.cam.target[2], M.cam.target[3]
     static.cam_pos.x = static.cam_target.x + M.cam.dist * math.cos(ry) * math.cos(rx)

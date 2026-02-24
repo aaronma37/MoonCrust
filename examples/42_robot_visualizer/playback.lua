@@ -27,13 +27,15 @@ function M.init()
 end
 
 function M.load_mcap(path)
+    print("Playback: Attempting to load MCAP: " .. path)
     if M.bridge then robot.lib.mcap_close(M.bridge); M.bridge = nil end
     M.mcap_path = path
     M.bridge = robot.lib.mcap_open(M.mcap_path)
     if M.bridge == nil then 
-        print("Playback: Failed to open MCAP at " .. path)
+        print("Playback: FAILED to open MCAP at " .. path)
         return false 
     end
+    print("Playback: Successfully opened MCAP. Scanning metadata...")
     
     M.start_time = robot.lib.mcap_get_start_time(M.bridge)
     M.end_time = robot.lib.mcap_get_end_time(M.bridge)
@@ -55,17 +57,26 @@ end
 
 function M.discover_topics()
     local count = robot.lib.mcap_get_channel_count(M.bridge)
+    print("Playback: Discovered " .. count .. " channels in bridge.")
     M.channels = {}
+    local found_lidar, found_pose = false, false
     local info = ffi.new("McapChannelInfo")
     for i=0, count-1 do
         if robot.lib.mcap_get_channel_info(M.bridge, i, info) then
-            if info.topic == nil then break end
-            local t = ffi.string(info.topic)
-            if t == "lidar" then M.lidar_ch_id = info.id end
-            if t == "pose" then M.pose_ch_id = info.id end
-            table.insert(M.channels, { id = info.id, topic = t, encoding = ffi.string(info.message_encoding), schema = ffi.string(info.schema_name), active = true })
+            if info.topic ~= nil then
+                local t = ffi.string(info.topic)
+                local enc = info.message_encoding ~= nil and ffi.string(info.message_encoding) or "unknown"
+                local sch = info.schema_name ~= nil and ffi.string(info.schema_name) or "unknown"
+                
+                if t == "lidar" then M.lidar_ch_id = info.id; found_lidar = true end
+                if t == "pose" then M.pose_ch_id = info.id; found_pose = true end
+                
+                table.insert(M.channels, { id = info.id, topic = t, encoding = enc, schema = sch, active = true })
+            end
         end
     end
+    if not found_lidar then M.lidar_ch_id = -1 end
+    if not found_pose then M.pose_ch_id = -1 end
 end
 
 local HISTORY_SIZE = 1000

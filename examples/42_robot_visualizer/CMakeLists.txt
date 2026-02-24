@@ -55,8 +55,20 @@ target_include_directories(robot_all PUBLIC
 
 target_compile_definitions(robot_all PUBLIC 
     IMGUI_DISABLE_OBSOLETE_FUNCTIONS
-    MCAP_COMPRESSION_NO_LZ4
-    MCAP_COMPRESSION_NO_ZSTD
+)
+
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(ZSTD REQUIRED libzstd)
+pkg_check_modules(LZ4 REQUIRED liblz4)
+
+target_link_libraries(robot_all PRIVATE
+    ${ZSTD_LIBRARIES}
+    ${LZ4_LIBRARIES}
+)
+
+target_include_directories(robot_all PUBLIC
+    ${ZSTD_INCLUDE_DIRS}
+    ${LZ4_INCLUDE_DIRS}
 )
 
 set_target_properties(robot_all PROPERTIES 

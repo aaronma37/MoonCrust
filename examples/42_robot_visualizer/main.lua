@@ -19,6 +19,7 @@ require("examples.42_robot_visualizer.types")
 local playback = require("examples.42_robot_visualizer.playback")
 local view_3d = require("examples.42_robot_visualizer.view_3d")
 local panels = require("examples.42_robot_visualizer.ui.panels")
+local config = require("examples.42_robot_visualizer.config")
 require("examples.42_robot_visualizer.ui.telemetry")
 require("examples.42_robot_visualizer.ui.inspector")
 require("examples.42_robot_visualizer.ui.perf")
@@ -32,49 +33,37 @@ _G._OPEN_PICKER = function(title, items, on_select)
     ffi.fill(state.query, 128)
 end
 
-local function create_default_layout()
-    return { 
-        type = "split", direction = "h", ratio = 0.8,
-        children = {
-            {
-                type = "split", direction = "v", ratio = 0.7,
-                children = {
-                    { type = "view", view_type = "view3d", id = 1, title = "3D Lidar###1" },
-                    {
-                        type = "split", direction = "h", ratio = 0.5,
-                        children = {
-                            { type = "view", view_type = "pretty_viewer", id = 2, title = "Message Inspector###2" },
-                            { type = "view", view_type = "plotter", id = 5, title = "Telemetry Plot###5" }
-                        }
-                    }
-                }
-            },
-            {
-                type = "split", direction = "h", ratio = 0.6,
-                children = {
-                    { type = "view", view_type = "telemetry", id = 4, title = "Playback Controls###4" },
-                    { type = "view", view_type = "perf", id = 3, title = "Performance###3" }
-                }
-            }
-        }
-    }
+local function get_file_mtime(path)
+    local f = io.popen('stat -c %Y "' .. path .. '" 2>/dev/null')
+    if not f then return 0 end
+    local mtime = f:read("*n")
+    f:close()
+    return mtime or 0
 end
 
-local function create_full_3d_layout()
-    return { type = "view", view_type = "view3d", id = 1, title = "3D Lidar###1" }
-end
-
+local config_path = "examples/42_robot_visualizer/config.lua"
 local state = {
-    layout = create_default_layout(),
-    next_id = 5,
+    layout = config.layout,
+    next_id = 10, -- Start higher to avoid ID collisions with config
     last_perf = 0ULL,
     perf_freq = tonumber(ffi.C.SDL_GetPerformanceFrequency()),
+    config_mtime = get_file_mtime(config_path),
+    config_timer = 0,
     real_fps = 0,
     frame_times = {}, -- Sliding window
     frame_times_idx = 1,
     picker = { trigger = false, title = "", query = ffi.new("char[128]"), selected_idx = 0, items = {}, results = {}, on_select = nil },
-    file_dialog = { trigger = false, path = ffi.new("char[256]", "test_robot.mcap") }
+    file_dialog = { trigger = false, path = ffi.new("char[256]", "."), files = {}, current_dir = "." }
 }
+function state.refresh_files()
+    local p = io.popen('ls -ap "' .. state.file_dialog.current_dir .. '"')
+    state.file_dialog.files = {}
+    if p then 
+        for line in p:lines() do table.insert(state.file_dialog.files, line) end
+        p:close()
+    end
+end
+state.refresh_files()
 for i=1, 60 do state.frame_times[i] = 0.0166 end -- Initialize with 60fps
 _G._PICKER_STATE = state.picker
 _G._PERF_STATS = state -- Expose for perf.lua
@@ -198,28 +187,51 @@ local function render_file_dialog(gui)
     if state.file_dialog.trigger then
         gui.igOpenPopup_Str("File Operations", 0)
         state.file_dialog.trigger = false
+        state.refresh_files()
     end
     
     gui.igSetNextWindowPos(ffi.new("ImVec2_c", {_G._WIN_LW/2, 100}), 0, ffi.new("ImVec2_c", {0.5, 0}))
-    if gui.igBeginPopupModal("File Operations", nil, bit.bor(panels.Flags.AlwaysAutoResize, panels.Flags.AlwaysOnTop)) then
-        gui.igInputText("File Path", state.file_dialog.path, 256, 0, nil, nil)
+    gui.igSetNextWindowSize(ffi.new("ImVec2_c", {500, 400}), 0)
+    if gui.igBeginPopupModal("File Operations", nil, 0) then
+        gui.igText("Current Dir: " .. state.file_dialog.current_dir)
+        gui.igSeparator()
         
-        if gui.igButton("Load File", ffi.new("ImVec2_c", {120, 0})) then
-            local path = ffi.string(state.file_dialog.path)
-            playback.load_mcap(path)
+        if gui.igBeginChild_Str("FileList", ffi.new("ImVec2_c", {0, -40}), true, 0) then
+            for _, f in ipairs(state.file_dialog.files) do
+                local is_dir = f:sub(-1) == "/"
+                if gui.igSelectable_Bool(f, false, 0, ffi.new("ImVec2_c", {0,0})) then
+                    if f == "./" then
+                        -- Do nothing
+                    elseif f == "../" then
+                        state.file_dialog.current_dir = state.file_dialog.current_dir:gsub("[^/]+/$", "")
+                        if state.file_dialog.current_dir == "" then state.file_dialog.current_dir = "." end
+                        state.refresh_files()
+                    elseif is_dir then
+                        state.file_dialog.current_dir = state.file_dialog.current_dir .. "/" .. f:sub(1, -2)
+                        state.refresh_files()
+                    else
+                        local full_path = state.file_dialog.current_dir .. "/" .. f
+                        ffi.copy(state.file_dialog.path, full_path)
+                    end
+                end
+            end
+            gui.igEndChild()
+        end
+        
+        gui.igInputText("Selected", state.file_dialog.path, 256, 0, nil, nil)
+        
+        if gui.igButton("Load", ffi.new("ImVec2_c", {80, 0})) then
+            playback.load_mcap(ffi.string(state.file_dialog.path))
             gui.igCloseCurrentPopup()
         end
         gui.igSameLine(0, 10)
-        if gui.igButton("Generate Test File", ffi.new("ImVec2_c", {150, 0})) then
-            local path = ffi.string(state.file_dialog.path)
-            playback.generate_test(path)
-            playback.load_mcap(path)
+        if gui.igButton("Generate Test", ffi.new("ImVec2_c", {120, 0})) then
+            playback.generate_test(ffi.string(state.file_dialog.path))
+            playback.load_mcap(ffi.string(state.file_dialog.path))
             gui.igCloseCurrentPopup()
         end
         gui.igSameLine(0, 10)
-        if gui.igButton("Cancel", ffi.new("ImVec2_c", {80, 0})) then
-            gui.igCloseCurrentPopup()
-        end
+        if gui.igButton("Cancel", ffi.new("ImVec2_c", {80, 0})) then gui.igCloseCurrentPopup() end
         gui.igEndPopup()
     end
 end
@@ -233,18 +245,19 @@ local function render_node(node, x, y, w, h, gui)
         gui.igSetNextWindowPos(ffi.new("ImVec2_c", {x, y}), 0, ffi.new("ImVec2_c", {0,0}))
         gui.igSetNextWindowSize(ffi.new("ImVec2_c", {w, h}), 0)
         local visible = gui.igBegin(node.title, nil, bit.bor(panels.Flags.NoDecoration, panels.Flags.NoSavedSettings))
-        -- print(string.format("View '%s' (ID %d) Visible: %s", node.title, node.id, tostring(visible)))
         if visible then
             if gui.igIsWindowHovered(0) then panels.focused_id = node.id end
             if state.picker.trigger and panels.focused_id == node.id then gui.igOpenPopup_Str("FuzzyPicker", 0); state.picker.trigger = false end
+            
             render_fuzzy_picker(gui)
             render_file_dialog(gui)
             local p = panels.list[node.view_type]
             if p then 
-                local ok, err = pcall(p.render, gui, node.id) 
+                local ok, err = pcall(p.render, gui, node.id)
                 if not ok then gui.igTextColored(ffi.new("ImVec4_c", {1,0,0,1}), "Render Error: %s", tostring(err)) end
             end
-        end; gui.igEnd()
+        end
+        gui.igEnd()
     end
 end
 
@@ -274,13 +287,33 @@ function M.update()
         state.real_fps = 1.0 / avg_dt
     end
 
+    -- Config Hot-Reloading (Check once per second)
+    state.config_timer = state.config_timer + dt
+    if state.config_timer > 1.0 then
+        state.config_timer = 0
+        local mtime = get_file_mtime(config_path)
+        if mtime > state.config_mtime then
+            print("Config: Change detected, reloading...")
+            state.config_mtime = mtime
+            package.loaded["examples.42_robot_visualizer.config"] = nil
+            local ok, new_config = pcall(require, "examples.42_robot_visualizer.config")
+            if ok then
+                config = new_config
+                state.layout = config.layout
+                print("Config: Hot-reload successful!")
+            else
+                print("Config: Hot-reload FAILED:", new_config)
+            end
+        end
+    end
+
     view_3d.reset_frame()
     collectgarbage("step", 100)
     
     -- Input Debug (unchanged)
     local ctrl = input.key_down(224) or input.key_down(228)
-    if input.key_pressed(30) then state.layout = create_default_layout() end
-    if input.key_pressed(31) then state.layout = create_full_3d_layout() end
+    if input.key_pressed(30) then state.layout = config.layout end
+    if input.key_pressed(31) then state.layout = { type = "view", view_type = "view3d", id = 1, title = "3D Lidar###1" } end
     if input.key_pressed(32) then 
         state.layout = { 
             type = "split", direction = "h", ratio = 0.5,
