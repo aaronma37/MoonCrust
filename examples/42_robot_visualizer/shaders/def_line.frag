@@ -2,26 +2,27 @@
 
 layout(location = 0) in vec4 vColor;
 layout(location = 1) in vec3 vPos;
-layout(location = 2) in float vLineDist;
+layout(location = 2) in float vLineDist; // -expanded/orig to expanded/orig
+layout(location = 3) in float vLineWidth; // thickness in pixels
 
 layout(location = 0) out vec4 outColor;
 layout(location = 1) out vec4 outNormal;
 layout(location = 2) out vec4 outPosition;
 
 void main() {
-    // 1. Calculate AA Coverage
-    // vLineDist goes from -1 to 1 across the width of the line.
-    // distance is 0 at center, 1 at edge.
-    float dist = abs(vLineDist);
+    // Distance from center in pixels
+    float dist_pixels = abs(vLineDist) * (vLineWidth * 0.5);
     
-    // Smoothstep based on screen-space derivatives for pixel-perfect AA
-    float delta = fwidth(dist);
-    float alpha = smoothstep(1.0, 1.0 - delta, dist);
+    // Smooth AA over 1 pixel
+    float half_width = vLineWidth * 0.5;
+    float alpha = smoothstep(half_width + 1.0, half_width, dist_pixels);
     
     if (alpha < 0.01) discard;
 
-    // 2. Output with glow boost
-    outColor = vec4(vColor.rgb * 1.5, vColor.a * alpha);
+    // Emissive boost for thin lines
+    float emissive = 1.0 + (1.0 / max(1.0, vLineWidth));
+    
+    outColor = vec4(vColor.rgb * emissive, vColor.a * alpha);
     outNormal = vec4(0, 0, 1, 1.0);
     outPosition = vec4(vPos, 1.0);
 }

@@ -302,6 +302,8 @@ function M.render_deferred(cb_handle, point_buf_idx, frame_idx, point_count)
     end
     
     static.pc_r.point_size = lidar_obj and lidar_obj.point_size or 2.0
+    static.pc_r.viewport_size[0] = M.w
+    static.pc_r.viewport_size[1] = M.h
     
     local pose_offset = {0,0,0,0}
     if lidar_obj and lidar_obj.attach_to and M.poses and M.poses[lidar_obj.attach_to] then
@@ -330,24 +332,20 @@ function M.render_deferred(cb_handle, point_buf_idx, frame_idx, point_count)
     -- 1. Draw Procedural Grid
     vk.vkCmdBindPipeline(cb_handle, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, M.pipe_grid_g)
     
-    local grid_pc = ffi.new("struct { float view_proj[16]; float cam_xy[2]; }")
-    for i=0,15 do grid_pc.view_proj[i] = static.pc_r.view_proj[i] end
-    grid_pc.cam_xy[0] = M.cam.target[1]
-    grid_pc.cam_xy[1] = M.cam.target[2]
+    -- Using RenderPC for grid too to avoid confusion
+    static.pc_r.pose_offset[0] = M.cam.target[1]
+    static.pc_r.pose_offset[1] = M.cam.target[2]
     
-    vk.vkCmdPushConstants(cb_handle, M.pipe_layout, vk.VK_SHADER_STAGE_ALL_GRAPHICS, 0, 72, grid_pc)
+    vk.vkCmdPushConstants(cb_handle, M.pipe_layout, vk.VK_SHADER_STAGE_ALL_GRAPHICS, 0, ffi.sizeof("RenderPC"), static.pc_r)
     vk.vkCmdDraw(cb_handle, 4, 1, 0, 0)
 
     -- 2. Draw Robot Visuals (SOTA Poly-Lines)
     vk.vkCmdBindPipeline(cb_handle, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, M.pipe_line_g)
     
-    -- Use robot buffer index (we need to know this, it was double-buffered)
-    -- In M.init we set them to 11 and 13, but actually robot buffers weren't in descriptors!
-    -- Let's fix that first. 
-    
     static.pc_r.buf_idx = (frame_idx == 0) and 14 or 15
+    static.pc_r.point_size = 3.0 -- Fixed 3px lines for robot
     vk.vkCmdPushConstants(cb_handle, M.pipe_layout, vk.VK_SHADER_STAGE_ALL_GRAPHICS, 0, ffi.sizeof("RenderPC"), static.pc_r)
-    vk.vkCmdDraw(cb_handle, (M.active_robot_line_count or 0) * 3, 1, 0, 0)
+    vk.vkCmdDraw(cb_handle, (M.active_robot_line_count or 0) / 2 * 6, 1, 0, 0)
 
     -- 3. Draw Point Cloud
     vk.vkCmdBindPipeline(cb_handle, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, M.pipe_render_g)
