@@ -17,7 +17,10 @@ M.facets = {
     },
     MarsIMUPlot = {
         panel = "plotter",
-        params = { topic_name = "/livox/imu" }
+        params = { 
+            topic_name = "/livox/imu",
+            field_name = "x" 
+        }
     },
     MarsFlightStatus = {
         panel = "pretty_viewer",

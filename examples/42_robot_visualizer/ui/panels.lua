@@ -11,6 +11,7 @@ local M = {
         AlwaysAutoResize = 64, 
         NoSavedSettings = 65536,
         AlwaysOnTop = 262144, 
+        NoBackground = 128,
         TableBorders = 3, 
         TableResizable = 16 
     },

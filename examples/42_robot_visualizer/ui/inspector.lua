@@ -161,58 +161,106 @@ end)
 
 panels.register("plotter", "Topic Plotter", function(gui, node_id, params)
     if not panels.states[node_id] then
-        panels.states[node_id] = { selected_ch = nil, filter = ffi.new("char[128]") }
+        panels.states[node_id] = { selected_ch = nil, filter = ffi.new("char[128]"), field_name = nil, schema_fields = nil }
     end
     local p_state = panels.states[node_id]
     
     local requested_topic = params and params.topic_name
+    local requested_field = params and params.field_name
     local channels = playback.channels or {}
     
-    -- Sync selection with facet if needed
+    -- 1. Sync Topic
     if requested_topic and (not p_state.selected_ch or p_state.selected_ch.topic ~= requested_topic) then
         for _, ch in ipairs(channels) do
             if ch.topic == requested_topic then
                 p_state.selected_ch = ch
+                p_state.schema_fields = nil -- Reset schema cache
                 break
             end
         end
     end
     
-    -- Searchable Topic Selector
-    local current_topic = p_state.selected_ch and p_state.selected_ch.topic or (requested_topic and (requested_topic .. " [MISSING]") or "Select Topic to Plot...")
-    gui.igSetNextItemWidth(-1)
-    if gui.igBeginCombo("##PlotSelector", current_topic, 0) then
+    -- 2. Sync Field
+    if requested_field and not p_state.field_name then
+        p_state.field_name = requested_field
+    end
+    
+    -- Topic Selector
+    local current_topic = p_state.selected_ch and p_state.selected_ch.topic or "Select Topic..."
+    gui.igSetNextItemWidth(gui.igGetContentRegionAvail().x * 0.5)
+    if gui.igBeginCombo("##PlotTopic", current_topic, 0) then
         gui.igInputText("##Search", p_state.filter, 128, 0, nil, nil)
         local q = ffi.string(p_state.filter):lower()
         for _, ch in ipairs(channels) do
             if q == "" or ch.topic:lower():find(q, 1, true) then
-                local selected = (p_state.selected_ch ~= nil) and (ch.id == p_state.selected_ch.id)
-                if gui.igSelectable_Bool(ch.topic, selected, 0, ffi.new("ImVec2_c", {0,0})) then
+                if gui.igSelectable_Bool(ch.topic, p_state.selected_ch and ch.id == p_state.selected_ch.id, 0, ffi.new("ImVec2_c", {0,0})) then
                     p_state.selected_ch = ch
-                    gui.igCloseCurrentPopup()
+                    p_state.schema_fields = nil
                 end
             end
         end
         gui.igEndCombo()
     end
     
+    gui.igSameLine(0, 5)
+    
+    -- Field Selector
     if p_state.selected_ch then
-        local h = playback.plot_history[p_state.selected_ch.id]
-        if h and h.count > 0 then
-            if gui.ImPlot_BeginPlot("##History", ffi.new("ImVec2_c", {-1, -1}), 0) then
-                gui.ImPlot_SetupAxes("Sample", "Value", 0, 0)
-                gui.ImPlot_SetupAxisLimits(0, 0, 1000, 2) -- X Axis: 1000 samples
-                
-                local spec = ffi.new("ImPlotSpec_c")
-                spec.Stride = 4 -- Size of float
-                
-                -- Note: Minimal FFI doesn't support circular offset yet, 
-                -- so we just plot the raw buffer for now.
-                gui.ImPlot_PlotLine_FloatPtrInt("Data", h.data, h.count, 1.0, 0.0, spec)
-                gui.ImPlot_EndPlot()
+        if not p_state.schema_fields then
+            local raw = robot.lib.mcap_get_schema_content(playback.bridge, p_state.selected_ch.id)
+            if raw ~= nil then p_state.schema_fields = decoder.parse_schema(ffi.string(raw)) end
+        end
+        
+        local current_field = p_state.field_name or "Select Field..."
+        gui.igSetNextItemWidth(-1)
+        if gui.igBeginCombo("##PlotField", current_field, 0) then
+            if p_state.schema_fields then
+                for _, f in ipairs(p_state.schema_fields) do
+                    if gui.igSelectable_Bool(f.name, p_state.field_name == f.name, 0, ffi.new("ImVec2_c", {0,0})) then
+                        p_state.field_name = f.name
+                    end
+                end
             end
-        else
-            gui.igTextDisabled("(No numeric data for this topic)")
+            gui.igEndCombo()
+        end
+    end
+    
+    if p_state.selected_ch and p_state.field_name then
+        local target_offset = -1
+        if p_state.schema_fields then
+            for _, f in ipairs(p_state.schema_fields) do
+                if f.name == p_state.field_name then target_offset = f.offset; break end
+            end
+        end
+        
+        if target_offset ~= -1 then
+            local h = playback.request_field_history(p_state.selected_ch.id, target_offset)
+            
+            gui.igSameLine(0, 5)
+            if gui.igButton("Fit", ffi.new("ImVec2_c", {40, 0})) then
+                p_state.should_fit = true
+            end
+
+            if h and h.count > 0 then
+                local label = string.format("%s: %s", p_state.selected_ch.topic, p_state.field_name)
+                if gui.ImPlot_BeginPlot(label, ffi.new("ImVec2_c", {-1, -1}), 0) then
+                    -- Explicitly setup each axis to ensure they are enabled
+                    gui.ImPlot_SetupAxis(0, "Sample", 0) -- X Axis (ImAxis_X1)
+                    gui.ImPlot_SetupAxis(1, "Value", 0)  -- Y Axis (ImAxis_Y1)
+                    
+                    -- Auto-fit logic: 1 = Always (Fit now), 2 = Once (Default)
+                    local cond = p_state.should_fit and 1 or 2
+                    gui.ImPlot_SetupAxisLimits(0, 0, 1000, cond)
+                    gui.ImPlot_SetupAxisLimits(1, -1, 1, cond)
+                    p_state.should_fit = false
+                    
+                    local spec = ffi.new("ImPlotSpec_c", {Stride=4})
+                    gui.ImPlot_PlotLine_FloatPtrInt(p_state.field_name, h.data, h.count, 1.0, 0.0, spec)
+                    gui.ImPlot_EndPlot()
+                end
+            else
+                gui.igTextDisabled("(No data for this field)")
+            end
         end
     end
 end)

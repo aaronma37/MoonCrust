@@ -20,15 +20,18 @@ local TYPE_MAP = {
 function M.parse_schema(schema_text)
     if not schema_text then return nil end
     local fields = {}
-    -- Use a robust way to iterate lines that handles various line endings
+    local offset = 0
+    
     for line in schema_text:gmatch("([^\r\n]+)") do
-        -- Skip comments and empty lines
         line = line:gsub("#.*", ""):match("^%s*(.-)%s*$")
         if line ~= "" then
-            -- Match simple "type name" pattern
             local t, n = line:match("^([%w_]+)%s+([%w_]+)")
             if t and n and TYPE_MAP[t] then
-                table.insert(fields, { type = t, name = n, info = TYPE_MAP[t] })
+                local info = TYPE_MAP[t]
+                -- Apply alignment
+                offset = math.ceil(offset / info.size) * info.size
+                table.insert(fields, { type = t, name = n, info = info, offset = offset })
+                offset = offset + info.size
             end
         end
     end
@@ -39,14 +42,9 @@ end
 function M.decode(data_ptr, fields)
     if not data_ptr or not fields then return nil end
     local results = {}
-    local offset = 0
     
     for _, field in ipairs(fields) do
-        -- Basic alignment (simplified for now)
-        local align = field.info.size
-        offset = math.ceil(offset / align) * align
-        
-        local ptr = ffi.cast(field.info.ffi, data_ptr + offset)
+        local ptr = ffi.cast(field.info.ffi, data_ptr + field.offset)
         local val = ptr[0]
         
         if field.type == "bool" then
@@ -54,7 +52,6 @@ function M.decode(data_ptr, fields)
         end
         
         table.insert(results, { name = field.name, value = val, fmt = field.info.fmt })
-        offset = offset + field.info.size
     end
     
     return results

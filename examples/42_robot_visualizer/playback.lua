@@ -18,12 +18,25 @@ local M = {
     pose_ch_id = 0,
     robot_pose = { x = 0, y = 0, z = 0, yaw = 0 },
     message_buffers = {},
-    plot_history = {},
+    plot_history = {}, -- [topic_id][field_offset] = { data, head, count }
     last_lidar_points = 0,
 }
 
 function M.init()
     -- Start empty for instant boot
+end
+
+-- Request tracking for a specific byte offset in a channel
+function M.request_field_history(ch_id, offset)
+    if not M.plot_history[ch_id] then M.plot_history[ch_id] = {} end
+    if not M.plot_history[ch_id][offset] then
+        M.plot_history[ch_id][offset] = { 
+            data = ffi.new("float[1000]"), 
+            head = 0, 
+            count = 0 
+        }
+    end
+    return M.plot_history[ch_id][offset]
 end
 
 function M.load_mcap(path)
@@ -103,16 +116,16 @@ function M.update(dt, raw_buffer)
             ffi.copy(buf.data, M.current_msg.data, sz)
             buf.size = sz
             
-            -- O(1) Circular Buffer for plotter
-            if sz >= 4 then 
-                local h = M.plot_history[ch_id]
-                if not h then 
-                    h = { data = ffi.new("float[?]", HISTORY_SIZE), head = 0, count = 0 }
-                    M.plot_history[ch_id] = h 
+            -- Record history for all requested offsets in this channel
+            local channel_history = M.plot_history[ch_id]
+            if channel_history then
+                for offset, h in pairs(channel_history) do
+                    if sz >= offset + 4 then
+                        h.data[h.head] = ffi.cast("float*", M.current_msg.data + offset)[0]
+                        h.head = (h.head + 1) % 1000
+                        if h.count < 1000 then h.count = h.count + 1 end
+                    end
                 end
-                h.data[h.head] = ffi.cast("float*", M.current_msg.data)[0] 
-                h.head = (h.head + 1) % HISTORY_SIZE
-                if h.count < HISTORY_SIZE then h.count = h.count + 1 end
             end
             
             if ch_id == M.pose_ch_id then

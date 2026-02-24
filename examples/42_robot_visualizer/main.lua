@@ -236,11 +236,44 @@ local function render_file_dialog(gui)
     end
 end
 
-local function render_node(node, x, y, w, h, gui)
-    -- print(string.format("Node: %s, x=%.1f, y=%.1f, w=%.1f, h=%.1f", node.type, x, y, w, h))
+local function render_node(node, x, y, w, h, gui, id_path)
+    id_path = id_path or "root"
     if node.type == "split" then
-        if node.direction == "v" then local w1 = w * node.ratio; render_node(node.children[1], x, y, w1, h, gui); render_node(node.children[2], x+w1, y, w-w1, h, gui)
-        else local h1 = h * node.ratio; render_node(node.children[1], x, y, w, h1, gui); render_node(node.children[2], x, y+h1, w, h - h1, gui) end
+        local ratio = node.ratio
+        local split_x = x + (node.direction == "v" and w * ratio or 0)
+        local split_y = y + (node.direction == "h" and h * ratio or 0)
+        
+        if node.direction == "v" then
+            local w1 = w * ratio
+            render_node(node.children[1], x, y, w1, h, gui, id_path .. "1")
+            render_node(node.children[2], x+w1, y, w-w1, h, gui, id_path .. "2")
+        else
+            local h1 = h * ratio
+            render_node(node.children[1], x, y, w, h1, gui, id_path .. "1")
+            render_node(node.children[2], x, y+h1, w, h - h1, gui, id_path .. "2")
+        end
+
+        -- Draggable Splitter Handle
+        local sw = (node.direction == "v") and 8 or w
+        local sh = (node.direction == "v") and h or 8
+        local sx = (node.direction == "v") and (split_x - 4) or x
+        local sy = (node.direction == "v") and y or (split_y - 4)
+
+        gui.igSetNextWindowPos(ffi.new("ImVec2_c", {sx, sy}), 0, ffi.new("ImVec2_c", {0,0}))
+        gui.igSetNextWindowSize(ffi.new("ImVec2_c", {sw, sh}), 0)
+        
+        -- Use NoBackground and NoDecoration to make it invisible but interactive
+        if gui.igBegin("split" .. id_path, nil, bit.bor(panels.Flags.NoDecoration, panels.Flags.NoSavedSettings, panels.Flags.NoBackground)) then
+            local io = gui.igGetIO_Nil()
+            if gui.igIsWindowFocused(0) and io.MouseDown[0] then
+                if node.direction == "v" then
+                    node.ratio = math.max(0.05, math.min(0.95, (io.MousePos.x - x) / w))
+                else
+                    node.ratio = math.max(0.05, math.min(0.95, (io.MousePos.y - y) / h))
+                end
+            end
+        end
+        gui.igEnd()
     else
         gui.igSetNextWindowPos(ffi.new("ImVec2_c", {x, y}), 0, ffi.new("ImVec2_c", {0,0}))
         gui.igSetNextWindowSize(ffi.new("ImVec2_c", {w, h}), 0)
