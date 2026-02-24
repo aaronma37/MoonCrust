@@ -21,7 +21,6 @@ local Col = {
 function M.apply(gui)
     local style = gui.igGetStyle()
     
-    -- "Luna" Geometric Profile: Deeply rounded, smooth arcs
     style.WindowRounding = 10.0
     style.ChildRounding = 6.0
     style.FrameRounding = 4.0
@@ -40,23 +39,23 @@ function M.apply(gui)
     style.FrameBorderSize = 0.0
     style.PopupBorderSize = 1.0
     
-    -- "Deep Space" Palette: The Void & The Supernova
     local colors = style.Colors
     local function set_col(idx, r, g, b, a)
         colors[idx].x, colors[idx].y, colors[idx].z, colors[idx].w = r, g, b, a or 1.0
     end
 
-    -- Core Void (Near Black but with a cold blue tint)
     local void_black = {0.05, 0.05, 0.07} 
     local deep_navy  = {0.08, 0.08, 0.12}
     local slate_grey = {0.15, 0.15, 0.20}
     
-    -- Accents (The "Supernova Glow")
     local star_white = {1.00, 1.00, 1.00}
-    local electric_blue = {0.00, 0.60, 1.00} -- Pure energetic blue
-    local deep_glow  = {0.10, 0.30, 0.50} -- Muted blue for states
+    local electric_blue = {0.00, 0.60, 1.00}
+    local deep_glow  = {0.10, 0.30, 0.50}
 
-    -- Backgrounds
+    -- Text must be SOLID (1.0 alpha) to avoid colliding with Glassmorphism heuristic
+    set_col(Col.Text,         star_white[1], star_white[2], star_white[3], 1.00)
+    set_col(Col.TextDisabled, 0.40, 0.42, 0.50, 1.00)
+    
     set_col(Col.WindowBg, void_black[1], void_black[2], void_black[3], 0.70)
     set_col(Col.ChildBg,  0, 0, 0, 0)
     set_col(Col.PopupBg,  void_black[1], void_black[2], void_black[3], 0.85)
@@ -64,11 +63,6 @@ function M.apply(gui)
     set_col(Col.Border, 0.20, 0.20, 0.25, 0.50)
     set_col(Col.BorderShadow, 0, 0, 0, 0)
     
-    -- Text (Crisp Starlight)
-    set_col(Col.Text,         star_white[1], star_white[2], star_white[3], 0.95)
-    set_col(Col.TextDisabled, 0.40, 0.42, 0.50, 1.00)
-    
-    -- Interactive Elements
     set_col(Col.FrameBg,        deep_navy[1], deep_navy[2], deep_navy[3], 1.00)
     set_col(Col.FrameBgHovered, slate_grey[1], slate_grey[2], slate_grey[3], 1.00)
     set_col(Col.FrameBgActive,  electric_blue[1], electric_blue[2], electric_blue[3], 0.30)

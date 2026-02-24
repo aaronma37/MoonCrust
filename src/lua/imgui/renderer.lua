@@ -189,8 +189,8 @@ function M.render(cb, draw_data)
     pc.blur_tex_idx = M.blur_tex_idx or 0
     pc.screen_size[0] = draw_data.DisplaySize.x
     pc.screen_size[1] = draw_data.DisplaySize.y
-    pc.white_uv[0] = M.white_uv[1] or 0
-    pc.white_uv[1] = M.white_uv[2] or 0
+    pc.white_uv[0] = (M.white_uv and M.white_uv[1]) or 0
+    pc.white_uv[1] = (M.white_uv and M.white_uv[2]) or 0
     
     local global_v_offset = 0
     local global_i_offset = 0

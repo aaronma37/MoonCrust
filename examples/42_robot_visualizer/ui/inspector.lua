@@ -5,6 +5,7 @@ local panels = require("examples.42_robot_visualizer.ui.panels")
 local playback = require("examples.42_robot_visualizer.playback")
 local robot = require("mc.robot")
 local decoder = require("examples.42_robot_visualizer.decoder")
+local icons = require("examples.42_robot_visualizer.ui.icons")
 
 local v4_val = ffi.new("ImVec4_c", {0.2, 0.8, 1, 1})
 local v2_zero = ffi.new("ImVec2_c", {0, 0})
@@ -55,7 +56,7 @@ panels.register("pretty_viewer", "Pretty Message Viewer", function(gui, node_id,
     local display_name = p_state.selected_ch and p_state.selected_ch.topic or (requested_topic and (requested_topic .. " [MISSING]") or "Select Topic...")
     
     gui.igSetNextItemWidth(-1)
-    if gui.igBeginCombo("##TopicSelector", display_name, 0) then
+    if gui.igBeginCombo("##TopicSelector", icons.SEARCH .. "  " .. display_name, 0) then
         gui.igInputText("##Search", p_state.filter, 128, 0, nil, nil)
         local q = ffi.string(p_state.filter):lower()
         
@@ -73,7 +74,7 @@ panels.register("pretty_viewer", "Pretty Message Viewer", function(gui, node_id,
     end
     
     if not current_exists and requested_topic then
-        gui.igTextColored(ffi.new("ImVec4_c", {1, 0.2, 0.2, 1}), "Target topic '%s' not found.", requested_topic)
+        gui.igTextColored(ffi.new("ImVec4_c", {1, 0.2, 0.2, 1}), icons.XMARK .. " Target topic '%s' not found.", requested_topic)
     end
     
     if current_exists and p_state.selected_ch then
@@ -89,14 +90,14 @@ panels.register("pretty_viewer", "Pretty Message Viewer", function(gui, node_id,
         end
 
         if buf and buf.size > 0 then
-            if gui.igTreeNode_Str("Metadata") then 
+            if gui.igTreeNode_Str(icons.LIST .. " Metadata") then 
                 gui.igText("Topic: %s", ch.topic)
                 gui.igText("Type: %s", ch.schema)
                 gui.igText("Size: %d bytes", buf.size)
                 
                 local schema_raw = robot.lib.mcap_get_schema_content(playback.bridge, ch.id)
                 if schema_raw ~= nil then
-                    if gui.igTreeNode_Str("Schema Definition") then
+                    if gui.igTreeNode_Str(icons.GEAR .. " Schema Definition") then
                         gui.igTextWrapped(ffi.string(schema_raw))
                         gui.igTreePop()
                     end
@@ -107,7 +108,7 @@ panels.register("pretty_viewer", "Pretty Message Viewer", function(gui, node_id,
             
             -- AUTO-VALUES SECTION
             if p_state.schema_fields then
-                if gui.igTreeNode_Str("Live Values") then
+                if gui.igTreeNode_Str(icons.CHART .. " Live Values") then
                     local vals = decoder.decode(buf.data, p_state.schema_fields)
                     if vals then
                         if gui.igBeginTable("ValuesTable", 2, bit.bor(panels.Flags.TableBorders, panels.Flags.TableResizable), v2_zero, 0) then
@@ -127,7 +128,7 @@ panels.register("pretty_viewer", "Pretty Message Viewer", function(gui, node_id,
             end
 
             if ch.topic == "lidar" then
-                if gui.igTreeNode_Str("PointCloud2 Table") then
+                if gui.igTreeNode_Str(icons.EYE .. " PointCloud2 Table") then
                     if gui.igBeginTable("PtsTable", 4, bit.bor(panels.Flags.TableBorders, panels.Flags.TableResizable), v2_table, 0) then
                         gui.igTableSetupColumn("Idx", 0, 0, 0)
                         gui.igTableSetupColumn("X", 0, 0, 0)
@@ -148,10 +149,10 @@ panels.register("pretty_viewer", "Pretty Message Viewer", function(gui, node_id,
                 end
             elseif ch.topic == "pose" then
                 local p = ffi.cast("Pose*", buf.data)
-                gui.igTextColored(v4_val, string.format("Position: (%.3f, %.3f, %.3f)", p.x, p.y, p.z))
-                gui.igTextColored(v4_val, string.format("Orientation (Yaw): %.3f rad", p.yaw))
+                gui.igTextColored(v4_val, icons.LOCATION .. string.format(" Position: (%.3f, %.3f, %.3f)", p.x, p.y, p.z))
+                gui.igTextColored(v4_val, icons.LOCATION .. string.format(" Orientation (Yaw): %.3f rad", p.yaw))
             elseif buf.size >= 4 then 
-                gui.igTextColored(v4_val, string.format("Numeric Value: %.4f", ffi.cast("float*", buf.data)[0])) 
+                gui.igTextColored(v4_val, icons.CHART .. string.format(" Numeric Value: %.4f", ffi.cast("float*", buf.data)[0])) 
             end
         else 
             gui.igTextDisabled("(No data received yet)") 
@@ -188,7 +189,7 @@ panels.register("plotter", "Topic Plotter", function(gui, node_id, params)
     -- Topic Selector
     local current_topic = p_state.selected_ch and p_state.selected_ch.topic or "Select Topic..."
     gui.igSetNextItemWidth(gui.igGetContentRegionAvail().x * 0.5)
-    if gui.igBeginCombo("##PlotTopic", current_topic, 0) then
+    if gui.igBeginCombo("##PlotTopic", icons.SEARCH .. "  " .. current_topic, 0) then
         gui.igInputText("##Search", p_state.filter, 128, 0, nil, nil)
         local q = ffi.string(p_state.filter):lower()
         for _, ch in ipairs(channels) do
@@ -213,7 +214,7 @@ panels.register("plotter", "Topic Plotter", function(gui, node_id, params)
         
         local current_field = p_state.field_name or "Select Field..."
         gui.igSetNextItemWidth(-1)
-        if gui.igBeginCombo("##PlotField", current_field, 0) then
+        if gui.igBeginCombo("##PlotField", icons.LIST .. "  " .. current_field, 0) then
             if p_state.schema_fields then
                 for _, f in ipairs(p_state.schema_fields) do
                     if gui.igSelectable_Bool(f.name, p_state.field_name == f.name, 0, ffi.new("ImVec2_c", {0,0})) then
@@ -271,7 +272,7 @@ panels.register("plotter", "Topic Plotter", function(gui, node_id, params)
 end)
 
 panels.register("topics", "Topic List", function(gui, node_id)
-    if gui.igButton("Dump All Schemas to Terminal", ffi.new("ImVec2_c", {-1, 25})) then
+    if gui.igButton(icons.FOLDER .. " Dump All Schemas to Terminal", ffi.new("ImVec2_c", {-1, 25})) then
         print("\n" .. string.rep("=", 80))
         print("MCAP SCHEMA DUMP")
         print(string.rep("=", 80))
@@ -295,7 +296,7 @@ panels.register("topics", "Topic List", function(gui, node_id)
         print(string.rep("=", 80) .. "\n")
     end
 
-    gui.igText("Discovered Topics")
+    gui.igText(icons.LIST .. " Discovered Topics")
     gui.igSeparator()
     if gui.igBeginTable("TopicTable", 3, bit.bor(panels.Flags.TableBorders, panels.Flags.TableResizable), v2_zero, 0) then
         gui.igTableSetupColumn("Topic", 0, 0, 0)
@@ -311,5 +312,3 @@ panels.register("topics", "Topic List", function(gui, node_id)
         gui.igEndTable()
     end
 end)
-
--- hex_viewer, msg_viewer, plotter etc could be added here as well

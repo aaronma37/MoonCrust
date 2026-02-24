@@ -6,7 +6,10 @@ local gpu = require("mc.gpu")
 local vk = require("vulkan.ffi")
 local input = require("mc.input")
 
-local M = {}
+local M = {
+    -- Persistent storage to prevent GC of pointers passed to C
+    _persistence = {}
+}
 
 -- ImGui Key Enum (Partial)
 local ImGuiKey = {
@@ -42,11 +45,12 @@ local char_map = {
     [36]=55, [37]=56, [38]=57, [39]=48, [44]=32
 }
 
+function M.get_glyph_ranges_default()
+    return ffi_lib.ImFontAtlas_GetGlyphRangesDefault(ffi_lib.igGetIO_Nil().Fonts)
+end
+
 function M.build_and_upload_fonts()
     local io = ffi_lib.igGetIO_Nil()
-    
-    -- Clear current texture if it exists
-    -- (In a more complex engine we might want to manage this better, but for now we'll just re-upload)
     
     ffi_lib.igImFontAtlasBuildMain(io.Fonts)
     local tex_data = io.Fonts.TexData
@@ -69,15 +73,28 @@ function M.build_and_upload_fonts()
     renderer.white_uv = {io.Fonts.TexUvWhitePixel.x, io.Fonts.TexUvWhitePixel.y}
 end
 
-function M.add_font(path, size)
+function M.add_font(path, size, merge, glyph_ranges)
     local io = ffi_lib.igGetIO_Nil()
-    print(string.format("[ImGui] Loading Font: %s (%.1fpx)", path, size))
-    local font = ffi_lib.ImFontAtlas_AddFontFromFileTTF(io.Fonts, path, size, nil, nil)
+    
+    local config = ffi_lib.ImFontConfig_ImFontConfig()
+    config.MergeMode = merge == true
+    config.PixelSnapH = true
+    config.RasterizerMultiply = 1.0
+    config.RasterizerDensity = 1.0
+    
+    if glyph_ranges then
+        config.GlyphRanges = glyph_ranges
+    end
+    
+    -- Store reference to prevent GC
+    table.insert(M._persistence, { config = config, ranges = glyph_ranges })
+    
+    print(string.format("[ImGui] Loading Font: %s (%.1fpx) merge=%s", path, size, tostring(merge)))
+    local font = ffi_lib.ImFontAtlas_AddFontFromFileTTF(io.Fonts, path, size, config, glyph_ranges)
     if font == nil then
         print("[ImGui] ERROR: Failed to load font: " .. path)
         return nil
     end
-    M.build_and_upload_fonts()
     return font
 end
 
@@ -88,7 +105,6 @@ function M.init()
     local io = ffi_lib.igGetIO_Nil()
     io.DisplaySize.x, io.DisplaySize.y = 1280, 720
     renderer.init()
-    M.build_and_upload_fonts()
 end
 
 function M.new_frame()

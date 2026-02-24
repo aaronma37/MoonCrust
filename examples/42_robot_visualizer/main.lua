@@ -159,9 +159,22 @@ function M.init()
 
     imgui.init(); imgui_renderer = require("imgui.renderer")
     imgui_renderer.blur_tex_idx = 104
-    imgui.add_font("examples/41_imgui_visualizer/cimgui/imgui/misc/fonts/Roboto-Medium.ttf", 18.0)
+    
+    -- Load Main Font
+    imgui.add_font("examples/41_imgui_visualizer/cimgui/imgui/misc/fonts/Roboto-Medium.ttf", 18.0, false, imgui.get_glyph_ranges_default())
+    
+    -- Load Icon Font (Merged)
+    local icons = require("examples.42_robot_visualizer.ui.icons")
+    local ranges = ffi.new("ImWchar[3]", {icons.GLYPH_MIN, icons.GLYPH_MAX, 0})
+    imgui.add_font("examples/42_robot_visualizer/fa-solid-900.otf", 16.0, true, ranges)
+    
+    -- Rebuild atlas with both fonts
+    imgui.build_and_upload_fonts()
+    
     theme.apply(imgui.gui)
     state.last_perf = ffi.C.SDL_GetPerformanceCounter()
+    
+    M.header = require("examples.42_robot_visualizer.ui.header")
     
     -- Auto-load file from CLI arg if provided
     if _ARGS and _ARGS[2] then
@@ -490,7 +503,12 @@ function M.update()
     local win_w, win_h = _G._WIN_LW or 1280, _G._WIN_LH or 720
     imgui.new_frame()
     theme.apply(imgui.gui) -- Force theme every frame for now
-    render_node(state.layout, 0, 0, win_w, win_h, gui)
+    
+    -- Draw Status Header
+    M.header.draw(gui)
+    
+    -- Render main nodes below header (y=50)
+    render_node(state.layout, 0, 50, win_w, win_h - 50, gui)
     
     local cb = command_buffers[frame_idx]
     vk.vkResetCommandBuffer(cb, 0); vk.vkBeginCommandBuffer(cb, static.cb_begin)

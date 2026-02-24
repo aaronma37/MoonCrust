@@ -12,14 +12,70 @@ ffi.cdef[[
     typedef unsigned short ImU16;
     typedef unsigned int ImU32;
     typedef unsigned long long ImU64;
+    typedef signed char ImS8;
     typedef signed int ImS32;
     typedef signed long long ImS64;
-    typedef float ImWchar16;
+    typedef unsigned short ImWchar16;
     typedef unsigned int ImWchar32;
     typedef ImWchar16 ImWchar;
     
+    typedef enum {
+        ImGuiWindowFlags_None = 0,
+        ImGuiWindowFlags_NoTitleBar = 1,
+        ImGuiWindowFlags_NoResize = 2,
+        ImGuiWindowFlags_NoMove = 4,
+        ImGuiWindowFlags_NoScrollbar = 8,
+        ImGuiWindowFlags_NoScrollWithMouse = 16,
+        ImGuiWindowFlags_NoCollapse = 32,
+        ImGuiWindowFlags_AlwaysAutoResize = 64,
+        ImGuiWindowFlags_NoBackground = 128,
+        ImGuiWindowFlags_NoSavedSettings = 256,
+        ImGuiWindowFlags_NoMouseInputs = 512,
+        ImGuiWindowFlags_MenuBar = 1024,
+        ImGuiWindowFlags_HorizontalScrollbar = 2048,
+        ImGuiWindowFlags_NoFocusOnAppearing = 4096,
+        ImGuiWindowFlags_NoBringToFrontOnFocus = 8192,
+        ImGuiWindowFlags_AlwaysVerticalScrollbar = 16384,
+        ImGuiWindowFlags_AlwaysHorizontalScrollbar = 32768,
+        ImGuiWindowFlags_NoNavInputs = 65536,
+        ImGuiWindowFlags_NoNavFocus = 131072,
+        ImGuiWindowFlags_UnsavedDocument = 262144,
+        ImGuiWindowFlags_NoDocking = 524288,
+        ImGuiWindowFlags_NoNav = 196608,
+        ImGuiWindowFlags_NoDecoration = 43,
+        ImGuiWindowFlags_NoInputs = 197120,
+        ImGuiWindowFlags_DockNodeHost = 8388608,
+        ImGuiWindowFlags_ChildWindow = 16777216,
+        ImGuiWindowFlags_Tooltip = 33554432,
+        ImGuiWindowFlags_Popup = 67108864,
+        ImGuiWindowFlags_Modal = 134217728,
+        ImGuiWindowFlags_ChildMenu = 268435456,
+    } ImGuiWindowFlags_;
+
+    typedef enum {
+        ImGuiChildFlags_None = 0,
+        ImGuiChildFlags_Borders = 1,
+        ImGuiChildFlags_AlwaysUseWindowPadding = 2,
+        ImGuiChildFlags_ResizeX = 4,
+        ImGuiChildFlags_ResizeY = 8,
+        ImGuiChildFlags_AutoResizeX = 16,
+        ImGuiChildFlags_AutoResizeY = 32,
+        ImGuiChildFlags_AlwaysAutoResize = 64,
+        ImGuiChildFlags_FrameStyle = 128,
+        ImGuiChildFlags_NavFlattened = 256,
+    } ImGuiChildFlags_;
+
+    typedef enum {
+        ImGuiCond_None = 0,
+        ImGuiCond_Always = 1,
+        ImGuiCond_Once = 2,
+        ImGuiCond_FirstUseEver = 4,
+        ImGuiCond_Appearing = 8,
+    } ImGuiCond_;
+
     typedef int ImGuiWindowFlags;
     typedef int ImGuiChildFlags;
+    typedef int ImGuiCond;
     typedef int ImPlotFlags;
     typedef int ImPlot3DFlags;
     typedef int ImFontAtlasFlags;
@@ -403,9 +459,39 @@ ffi.cdef[[
     void igPopStyleColor(int count);
 
     // Font Atlas
+    typedef struct ImFontConfig {
+        char            Name[40];
+        void*           FontData;
+        int             FontDataSize;
+        bool            FontDataOwnedByAtlas;
+        bool            MergeMode;
+        bool            PixelSnapH;
+        ImS8            OversampleH;
+        ImS8            OversampleV;
+        ImWchar         EllipsisChar;
+        float           SizePixels;
+        const ImWchar*  GlyphRanges;
+        const ImWchar*  GlyphExcludeRanges;
+        ImVec2_c        GlyphOffset;
+        float           GlyphMinAdvanceX;
+        float           GlyphMaxAdvanceX;
+        float           GlyphExtraAdvanceX;
+        ImU32           FontNo;
+        unsigned int    FontLoaderFlags;
+        float           RasterizerMultiply;
+        float           RasterizerDensity;
+        float           ExtraSizeScale;
+        int             Flags;
+        void*           DstFont;
+        void*           FontLoader;
+        void*           FontLoaderData;
+    } ImFontConfig;
+
     void igImFontAtlasBuildMain(ImFontAtlas* atlas);
     void ImTextureData_SetTexID(ImTextureData* self, ImTextureID tex_id);
-    void* ImFontAtlas_AddFontFromFileTTF(ImFontAtlas* self, const char* filename, float size_pixels, const void* font_cfg, const ImWchar* glyph_ranges);
+    void* ImFontAtlas_AddFontFromFileTTF(ImFontAtlas* self, const char* filename, float size_pixels, const ImFontConfig* font_cfg, const ImWchar* glyph_ranges);
+    const ImWchar* ImFontAtlas_GetGlyphRangesDefault(ImFontAtlas* self);
+    ImFontConfig* ImFontConfig_ImFontConfig(void);
 
     // DrawList
     void ImDrawList_AddCallback(ImDrawList* self, ImDrawCallback callback, void* userdata, size_t userdata_size);
