@@ -103,10 +103,10 @@ function M.update(dt, raw_buffer)
         if M.current_msg.data ~= nil then 
             local buf = M.message_buffers[ch_id]
             if not buf then 
-                buf = { data = ffi.new("uint8_t[4096]"), size = 0 }
+                buf = { data = ffi.new("uint8_t[1048576]"), size = 0 } -- 1MB Buffer
                 M.message_buffers[ch_id] = buf 
             end
-            local sz = math.min(tonumber(M.current_msg.data_size), 4096)
+            local sz = math.min(tonumber(M.current_msg.data_size), 1048576)
             ffi.copy(buf.data, M.current_msg.data, sz)
             buf.size = sz
             

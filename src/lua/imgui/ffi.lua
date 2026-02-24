@@ -502,6 +502,8 @@ ffi.cdef[[
     bool ImPlot_BeginPlot(const char* title_id, const ImVec2_c size, ImPlotFlags flags);
     void ImPlot_EndPlot(void);
     void ImPlot_PlotLine_FloatPtrInt(const char* label_id, const float* values, int count, double xscale, double x0, const ImPlotSpec_c spec);
+    void ImPlot_SetupAxis(int axis, const char* label, int flags);
+    void ImPlot_SetupAxisLimits(int axis, double v_min, double v_max, int cond);
     ImVec2_c ImPlot_GetPlotPos(void);
     ImVec2_c ImPlot_GetPlotSize(void);
     

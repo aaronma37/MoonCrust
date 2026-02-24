@@ -13,7 +13,7 @@ local PRIMITIVES = {
     ["uint16"]  = { ffi = "uint16_t*", size = 2, fmt = "%u" },
     ["int64"]   = { ffi = "int64_t*", size = 8, fmt = "%lld" },
     ["uint64"]  = { ffi = "uint64_t*", size = 8, fmt = "%llu" },
-    ["bool"]    = { ffi = "bool*", size = 1, fmt = "%s" },
+    ["bool"]    = { ffi = "uint8_t*", size = 1, fmt = "%s" },
     ["uint8"]   = { ffi = "uint8_t*", size = 1, fmt = "%u" },
     ["int8"]    = { ffi = "int8_t*", size = 1, fmt = "%d" },
     ["char"]    = { ffi = "uint8_t*", size = 1, fmt = "%u" },
@@ -25,10 +25,11 @@ local function parse_single_definition(text)
     for line in text:gmatch("([^\r\n]+)") do
         line = line:gsub("#.*", ""):match("^%s*(.-)%s*$")
         if line ~= "" and not line:find("=") then
-            -- Fixed regex: Match "type name" or "type[] name"
-            local t, is_array, n = line:match("^([%w_/]+)(%[?%d*%]?)%s+([%w_]+)")
+            local t, array_spec, n = line:match("^([%w_/]+)(%[?%d*%]?)%s+([%w_]+)")
             if t and n then
-                table.insert(fields, { type = t, name = n, is_array = (is_array ~= "") })
+                local is_array = (array_spec ~= "")
+                local array_size = tonumber(array_spec:match("%d+"))
+                table.insert(fields, { type = t, name = n, is_array = is_array, array_size = array_size })
             end
         end
     end
@@ -39,62 +40,132 @@ function M.parse_schema(schema_text)
     if not schema_text then return nil end
     local type_lib = {}
     local sections = {}
-    -- Split by the ROS2 separator
+    local first_def = nil
+
     for section in schema_text:gmatch("([^=]+)") do
         local type_name = section:match("MSG:%s+([%w_/]+)")
-        if type_name then 
-            local def = parse_single_definition(section)
-            type_lib[type_name] = def
-            type_lib[type_name:gsub(".*/", "")] = def -- Strip namespace
-        else table.insert(sections, section) end
+        local def = parse_single_definition(section)
+        if #def > 0 then
+            if not first_def then first_def = def end
+            if type_name then
+                type_lib[type_name] = def
+                type_lib[type_name:gsub(".*/", "")] = def
+            else
+                table.insert(sections, def)
+            end
+        end
     end
     
-    local main_fields = parse_single_definition(sections[1] or "")
+    return {
+        main = sections[1] or first_def or {},
+        lib = type_lib
+    }
+end
+
+-- Returns a flattened list of fields with static offsets (for the Plotter)
+function M.get_flattened_fields(schema)
+    if not schema then return {} end
     local flattened = {}
-    local current_offset = 4 -- Skip ROS2 CDR Header
     
     local function resolve(fields, prefix, offset)
         for _, f in ipairs(fields) do
             local name = (prefix == "") and f.name or (prefix .. "." .. f.name)
             
-            if f.is_array then
-                -- For sequences, first 4 bytes is length
-                offset = math.ceil(offset / 4) * 4
-                table.insert(flattened, { type = "uint32", name = name .. ".count", info = PRIMITIVES["uint32"], offset = offset })
-                offset = offset + 4
+            if f.is_array and not f.array_size then
+                -- Sequences have dynamic offsets, skip flattening
+                offset = math.ceil(offset / 4) * 4 + 4
+            elseif f.is_array and f.array_size then
+                local sub_fields = PRIMITIVES[f.type] and { { type = f.type, name = "", is_array = false } } or (schema.lib[f.type] or schema.lib[f.type:gsub(".*/", "")])
+                if sub_fields then
+                    for i=0, math.min(f.array_size, 16)-1 do
+                        offset = resolve(sub_fields, name .. "[" .. i .. "]", offset)
+                    end
+                end
             elseif PRIMITIVES[f.type] then
                 local info = PRIMITIVES[f.type]
                 offset = math.ceil(offset / info.size) * info.size
-                table.insert(flattened, { type = f.type, name = name, info = info, offset = offset })
+                table.insert(flattened, { name = name, offset = offset, type = f.type, is_double = (f.type == "float64" or f.type == "double") })
                 offset = offset + info.size
             elseif f.type == "string" then
-                offset = math.ceil(offset / 4) * 4
-                offset = offset + 4 -- Skip string length
+                offset = math.ceil(offset / 4) * 4 + 4 
             else
-                -- Try to resolve as complex type (handling namespaces)
-                local t_name = f.type
-                local sub_fields = type_lib[t_name] or type_lib[t_name:gsub(".*/", "")]
-                if sub_fields then
-                    offset = resolve(sub_fields, name, offset)
-                end
+                local sub_fields = schema.lib[f.type] or schema.lib[f.type:gsub(".*/", "")]
+                if sub_fields then offset = resolve(sub_fields, name, offset) end
             end
         end
         return offset
     end
     
-    resolve(main_fields, "", current_offset)
-    return #flattened > 0 and flattened or nil
+    resolve(schema.main, "", 4)
+    return flattened
 end
 
-function M.decode(data_ptr, fields)
-    if not data_ptr or not fields then return nil end
+function M.decode(data_ptr, data_size, schema)
+    if not data_ptr or not schema then return nil end
     local results = {}
-    for _, field in ipairs(fields) do
-        local ptr = ffi.cast(field.info.ffi, data_ptr + field.offset)
-        local val = ptr[0]
-        if field.type == "bool" then val = val and "true" or "false" end
-        table.insert(results, { name = field.name, value = val, fmt = field.info.fmt })
+    local current_offset = 4
+    
+    -- Heuristic: If message is huge, don't decode "Live Values" to avoid UI freeze
+    if data_size > 100000 then
+        table.insert(results, { name = "Message too large for text viewer", value = string.format("%d bytes", data_size), fmt = "%s" })
+        return results
     end
+
+    local function resolve(fields, prefix, offset)
+        for _, f in ipairs(fields) do
+            local name = (prefix == "") and f.name or (prefix .. "." .. f.name)
+            
+            -- Bounds check
+            if offset >= data_size then break end
+
+            if f.is_array then
+                local count = 0
+                if not f.array_size then
+                    offset = math.ceil(offset / 4) * 4
+                    if offset + 4 > data_size then break end
+                    count = ffi.cast("uint32_t*", data_ptr + offset)[0]
+                    table.insert(results, { name = name .. ".count", value = count, fmt = "%u" })
+                    offset = offset + 4
+                else count = f.array_size end
+
+                local sub_fields = PRIMITIVES[f.type] and { { type = f.type, name = "", is_array = false } } or (schema.lib[f.type] or schema.lib[f.type:gsub(".*/", "")])
+                if sub_fields then
+                    local limit = math.min(count, 5)
+                    for i=0, limit-1 do
+                        if offset >= data_size then break end
+                        offset = resolve(sub_fields, name .. "[" .. i .. "]", offset)
+                    end
+                    -- Attempt to skip remaining bytes for primitives
+                    if count > limit and PRIMITIVES[f.type] then
+                        offset = offset + (count - limit) * PRIMITIVES[f.type].size
+                    end
+                end
+            elseif PRIMITIVES[f.type] then
+                local info = PRIMITIVES[f.type]
+                offset = math.ceil(offset / info.size) * info.size
+                if offset + info.size > data_size then break end
+                local val = ffi.cast(info.ffi, data_ptr + offset)[0]
+                if f.type == "bool" then val = val ~= 0 and "true" or "false" end
+                table.insert(results, { name = name, value = val, fmt = info.fmt })
+                offset = offset + info.size
+            elseif f.type == "string" then
+                offset = math.ceil(offset / 4) * 4
+                if offset + 4 > data_size then break end
+                local len = ffi.cast("uint32_t*", data_ptr + offset)[0]
+                offset = offset + 4
+                if len > 0 and len < 1024 and offset + len <= data_size then
+                    table.insert(results, { name = name, value = ffi.string(data_ptr + offset, len-1), fmt = "%s" })
+                end
+                offset = offset + len
+            else
+                local sub_fields = schema.lib[f.type] or schema.lib[f.type:gsub(".*/", "")]
+                if sub_fields then offset = resolve(sub_fields, name, offset) end
+            end
+        end
+        return offset
+    end
+    
+    resolve(schema.main, "", current_offset)
     return results
 end
 

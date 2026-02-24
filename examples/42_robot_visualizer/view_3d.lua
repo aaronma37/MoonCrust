@@ -258,7 +258,7 @@ function M.update_robot_buffer(frame_idx, params)
                             if raw then M.pose_schema = require("examples.42_robot_visualizer.decoder").parse_schema(ffi.string(raw)) end
                         end
                         if M.pose_schema then
-                            local vals = require("examples.42_robot_visualizer.decoder").decode(buf.data, M.pose_schema)
+                            local vals = require("examples.42_robot_visualizer.decoder").decode(buf.data, buf.size, M.pose_schema)
                             for _, v in ipairs(vals) do
                                 if v.name:find("%.x$") or v.name == "x" then px = tonumber(v.value) end
                                 if v.name:find("%.y$") or v.name == "y" then py = tonumber(v.value) end
