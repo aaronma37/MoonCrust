@@ -38,6 +38,7 @@ function M.load_mcap(path)
     M.end_time = robot.lib.mcap_get_end_time(M.bridge)
     M.current_time_ns = M.start_time
     M.playback_time_ns = M.start_time
+    M.paused = true -- Always pause on load to prevent jumping/lag
     
     M.discover_topics()
     robot.lib.mcap_next(M.bridge, M.current_msg)
@@ -66,6 +67,7 @@ function M.discover_topics()
     end
 end
 
+local HISTORY_SIZE = 1000
 function M.update(dt, raw_buffer)
     if not M.bridge then return end
     if M.seek_to then
@@ -89,12 +91,16 @@ function M.update(dt, raw_buffer)
             ffi.copy(buf.data, M.current_msg.data, sz)
             buf.size = sz
             
-            -- Basic history for plotter
+            -- O(1) Circular Buffer for plotter
             if sz >= 4 then 
                 local h = M.plot_history[ch_id]
-                if not h then h = ffi.new("float[1000]"); M.plot_history[ch_id] = h end
-                for i=0, 998 do h[i] = h[i+1] end
-                h[999] = ffi.cast("float*", M.current_msg.data)[0] 
+                if not h then 
+                    h = { data = ffi.new("float[?]", HISTORY_SIZE), head = 0, count = 0 }
+                    M.plot_history[ch_id] = h 
+                end
+                h.data[h.head] = ffi.cast("float*", M.current_msg.data)[0] 
+                h.head = (h.head + 1) % HISTORY_SIZE
+                if h.count < HISTORY_SIZE then h.count = h.count + 1 end
             end
             
             if ch_id == M.pose_ch_id then

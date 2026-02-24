@@ -41,15 +41,21 @@ local function create_default_layout()
                 children = {
                     { type = "view", view_type = "view3d", id = 1, title = "3D Lidar###1" },
                     {
-                        type = "split", direction = "h", ratio = 0.6,
+                        type = "split", direction = "h", ratio = 0.5,
                         children = {
                             { type = "view", view_type = "pretty_viewer", id = 2, title = "Message Inspector###2" },
-                            { type = "view", view_type = "perf", id = 3, title = "Performance###3" }
+                            { type = "view", view_type = "plotter", id = 5, title = "Telemetry Plot###5" }
                         }
                     }
                 }
             },
-            { type = "view", view_type = "telemetry", id = 4, title = "Playback Controls###4" }
+            {
+                type = "split", direction = "h", ratio = 0.6,
+                children = {
+                    { type = "view", view_type = "telemetry", id = 4, title = "Playback Controls###4" },
+                    { type = "view", view_type = "perf", id = 3, title = "Performance###3" }
+                }
+            }
         }
     }
 end
@@ -62,10 +68,13 @@ local state = {
     layout = create_default_layout(),
     next_id = 5,
     last_ticks = 0ULL,
+    real_fps = 0,
+    frame_times = {},
     picker = { trigger = false, title = "", query = ffi.new("char[128]"), selected_idx = 0, items = {}, results = {}, on_select = nil },
     file_dialog = { trigger = false, path = ffi.new("char[256]", "test_robot.mcap") }
 }
 _G._PICKER_STATE = state.picker
+_G._PERF_STATS = state -- Expose for perf.lua
 
 local M = {}
 local device, queue, graphics_family, sw, cb
@@ -215,6 +224,10 @@ function M.update()
     local ticks = ffi.C.SDL_GetTicks()
     local dt = tonumber(ticks - state.last_ticks) / 1000.0
     state.last_ticks = ticks
+    
+    if dt > 0 then
+        state.real_fps = 1.0 / dt
+    end
 
     view_3d.reset_frame()
     collectgarbage("step", 100)

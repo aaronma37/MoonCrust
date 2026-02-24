@@ -72,6 +72,30 @@ panels.register("pretty_viewer", "Pretty Message Viewer", function(gui, node_id)
     end
 end)
 
+panels.register("plotter", "Topic Plotter", function(gui, node_id)
+    local p_state = panels.states[node_id] or { selected_ch = nil }
+    panels.states[node_id] = p_state
+    
+    if gui.igButton(p_state.selected_ch and p_state.selected_ch.topic or "Select Topic to Plot...", ffi.new("ImVec2_c", {-1, 25})) then
+        open_topic_picker(gui, function(it) p_state.selected_ch = it.data end)
+    end
+    
+    if p_state.selected_ch then
+        local h = playback.plot_history[p_state.selected_ch.id]
+        if h and h.count > 0 then
+            if gui.ipBeginPlot("##History", ffi.new("ImVec2_c", {-1, -1}), 0) then
+                gui.ipSetupAxes("Sample", "Value", 0, 0)
+                gui.ipSetupAxisLimits(0, 0, 1000, 2) -- X Axis: 1000 samples
+                -- Use circular buffer aware plotting
+                gui.ipPlotLine_FloatPtrInt("Data", h.data, h.count, 1.0, 0.0, 0, h.head, 4)
+                gui.ipEndPlot()
+            end
+        else
+            gui.igTextDisabled("(No numeric data for this topic)")
+        end
+    end
+end)
+
 panels.register("topics", "Topic List", function(gui, node_id)
     gui.igText("Discovered Topics")
     gui.igSeparator()
