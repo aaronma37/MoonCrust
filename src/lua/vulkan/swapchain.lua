@@ -6,16 +6,20 @@ local M = {}
 local Swapchain = {}
 Swapchain.__index = Swapchain
 
-function M.new(instance, physical_device, device, window)
+function M.new(instance, physical_device, device, window, existing_surface)
     local self = setmetatable({}, Swapchain)
-    
-    -- 1. Create Surface
-    local pSurface = ffi.new("void*[1]")
-    if not sdl.SDL_Vulkan_CreateSurface(window, instance, nil, pSurface) then
-        error("Failed to create SDL Vulkan Surface: " .. ffi.string(sdl.SDL_GetError()))
-    end
-    self.surface = pSurface[0]
     self.device = device
+
+    -- 1. Use existing surface or create new one
+    if existing_surface then
+        self.surface = existing_surface
+    else
+        local pSurface = ffi.new("void*[1]")
+        if not sdl.SDL_Vulkan_CreateSurface(window, instance, nil, pSurface) then
+            error("Failed to create SDL Vulkan Surface: " .. ffi.string(sdl.SDL_GetError()))
+        end
+        self.surface = pSurface[0]
+    end
 
     -- 2. Get Window Size
     local pw = ffi.new("int[1]")
@@ -110,11 +114,18 @@ function M.new(instance, physical_device, device, window)
     return self
 end
 
+function Swapchain:cleanup()
+    for i=0, self.image_count-1 do
+        vk.vkDestroyImageView(self.device, ffi.cast("VkImageView", self.views[i]), nil)
+    end
+    vk.vkDestroySwapchainKHR(self.device, self.handle, nil)
+end
+
 function Swapchain:acquire_next_image(semaphore)
     local pIndex = ffi.new("uint32_t[1]")
     local result = vk.vkAcquireNextImageKHR(self.device, self.handle, 0xFFFFFFFFFFFFFFFFULL, semaphore, nil, pIndex)
-    if result ~= vk.VK_SUCCESS then return nil end
-    return pIndex[0] -- 0-based for FFI array access
+    if result ~= vk.VK_SUCCESS then return nil, result end
+    return pIndex[0], result
 end
 
 function Swapchain:present(queue, image_index, wait_semaphore)
@@ -130,7 +141,7 @@ function Swapchain:present(queue, image_index, wait_semaphore)
         pSwapchains = pSwaps,
         pImageIndices = pIndex
     })
-    vk.vkQueuePresentKHR(queue, present_info)
+    return vk.vkQueuePresentKHR(queue, present_info)
 end
 
 return M

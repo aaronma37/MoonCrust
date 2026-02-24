@@ -74,7 +74,7 @@ _G._OPEN_PICKER = function(title, items, on_select)
 end
 
 local M = {}
-local device, queue, graphics_family, sw
+local device, queue, graphics_family, sw, surface
 local pipe_parse, layout_parse, bindless_set, raw_buffers
 
 local MAX_FRAMES_IN_FLIGHT = 2
@@ -114,6 +114,7 @@ function M.init()
     local instance, phys = vulkan.get_instance(), vulkan.get_physical_device()
     device, queue, graphics_family = vulkan.get_device(), vulkan.get_queue()
     sw = swapchain.new(instance, phys, device, _G._SDL_WINDOW)
+    surface = sw.surface -- Capture the surface for reuse
     
     local robot = require("mc.robot")
     robot.init_bridge()
@@ -312,12 +313,27 @@ function M.update()
     local frame_idx = current_frame
     static.fences = ffi.new("VkFence[1]", {frame_fences[frame_idx]})
     vk.vkWaitForFences(device, 1, static.fences, vk.VK_TRUE, 0xFFFFFFFFFFFFFFFFULL)
-    -- Reset fence only after we are sure we can proceed
-    vk.vkResetFences(device, 1, static.fences)
-
+    
     local sem_available = image_available_sems[frame_idx]
-    local img_idx = sw:acquire_next_image(sem_available)
+    local img_idx, result = sw:acquire_next_image(sem_available)
+    
+    -- Handle Window Resize / Out of Date Swapchain
+    if result == vk.VK_ERROR_OUT_OF_DATE_KHR or result == vk.VK_SUBOPTIMAL_KHR then
+        local lw, lh = _G._WIN_LW or 0, _G._WIN_LH or 0
+        if lw > 0 and lh > 0 then
+            print("Swapchain: Out of date, recreating...")
+            vk.vkDeviceWaitIdle(device) -- Wait for ALL frames to finish
+            sw:cleanup()
+            local instance, phys = vulkan.get_instance(), vulkan.get_physical_device()
+            sw = swapchain.new(instance, phys, device, _G._SDL_WINDOW, surface)
+        end
+        return -- Skip this frame without resetting the fence
+    end
+    
     if img_idx == nil then return end
+    
+    -- ONLY reset the fence once we are guaranteed to submit new work
+    vk.vkResetFences(device, 1, static.fences)
     
     local now = ffi.C.SDL_GetPerformanceCounter()
     local dt = tonumber(now - state.last_perf) / state.perf_freq
@@ -479,7 +495,10 @@ function M.update()
     static.submit_info.pWaitSemaphores, static.submit_info.pWaitDstStageMask, static.submit_info.pCommandBuffers, static.submit_info.pSignalSemaphores = static.sems_wait, static.wait_stages, static.cbs, static.sems_sig
     vk.vkQueueSubmit(queue, 1, static.submit_info, frame_fences[frame_idx])
     
-    sw:present(queue, img_idx, sem_finished)
+    local present_result = sw:present(queue, img_idx, sem_finished)
+    if present_result == vk.VK_ERROR_OUT_OF_DATE_KHR or present_result == vk.VK_SUBOPTIMAL_KHR then
+        -- Handle in next frame's acquire_next_image
+    end
     current_frame = (current_frame + 1) % MAX_FRAMES_IN_FLIGHT
 end
 
