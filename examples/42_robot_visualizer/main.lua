@@ -440,6 +440,20 @@ function M.update()
         else return find_3d_params(node.children[1]) or find_3d_params(node.children[2]) end
     end
     find_3d_params(state.layout)
+    
+    -- Dynamically link Lidar Channel for Playback
+    if view3d_params and view3d_params.topic_name then
+        local found = false
+        if playback.channels then
+            for _, ch in ipairs(playback.channels) do
+                if ch.topic == view3d_params.topic_name then
+                    playback.lidar_ch_id = ch.id
+                    found = true; break
+                end
+            end
+        end
+        if not found then playback.lidar_ch_id = -1 end
+    end
 
     -- Update the specific raw buffer for THIS frame
     playback.update(dt, raw_buffers[frame_idx + 1])
@@ -482,7 +496,33 @@ function M.update()
     local in_idx = (frame_idx == 0) and 10 or 12
     local out_idx = (frame_idx == 0) and 11 or 13
     local point_count = playback.last_lidar_points
-    static.pc_p.in_buf_idx, static.pc_p.in_offset_u32, static.pc_p.out_buf_idx, static.pc_p.count = in_idx, 0, out_idx, point_count
+    
+    -- MARS LIVOX CUSTOM DETECTION
+    local in_offset_u32 = 0
+    local stride_u32 = 3
+    local pos_offset_u32 = 0
+    
+    if view3d_params then
+        local is_livox = false
+        if view3d_params.objects then
+            for _, obj in ipairs(view3d_params.objects) do
+                if obj.type == "lidar" and obj.topic == "/livox/lidar" then is_livox = true; break end
+            end
+        end
+
+        if is_livox then
+            in_offset_u32 = 8 -- Skip 32-byte Header
+            stride_u32 = 5    -- 20 bytes per point
+            pos_offset_u32 = 1 -- Skip offset_time float
+        end
+    end
+
+    static.pc_p.in_buf_idx = in_idx
+    static.pc_p.in_offset_u32 = in_offset_u32
+    static.pc_p.out_buf_idx = out_idx
+    static.pc_p.count = point_count
+    static.pc_p.in_stride_u32 = stride_u32
+    static.pc_p.in_pos_offset_u32 = pos_offset_u32
     
     vk.vkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_parse)
     static.sets = ffi.new("VkDescriptorSet[1]", {bindless_set})

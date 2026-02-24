@@ -73,7 +73,6 @@ function M.discover_topics()
     local count = robot.lib.mcap_get_channel_count(M.bridge)
     print("Playback: Discovered " .. count .. " channels in bridge.")
     M.channels = {}
-    local found_lidar, found_pose = false, false
     local info = ffi.new("McapChannelInfo")
     for i=0, count-1 do
         if robot.lib.mcap_get_channel_info(M.bridge, i, info) then
@@ -81,16 +80,10 @@ function M.discover_topics()
                 local t = ffi.string(info.topic)
                 local enc = info.message_encoding ~= nil and ffi.string(info.message_encoding) or "unknown"
                 local sch = info.schema_name ~= nil and ffi.string(info.schema_name) or "unknown"
-                
-                if t == "lidar" then M.lidar_ch_id = info.id; found_lidar = true end
-                if t == "pose" then M.pose_ch_id = info.id; found_pose = true end
-                
                 table.insert(M.channels, { id = info.id, topic = t, encoding = enc, schema = sch, active = true })
             end
         end
     end
-    if not found_lidar then M.lidar_ch_id = -1 end
-    if not found_pose then M.pose_ch_id = -1 end
 end
 
 local HISTORY_SIZE = 1000
@@ -135,7 +128,14 @@ function M.update(dt, raw_buffer)
         if ch_id == M.lidar_ch_id and raw_buffer and raw_buffer.allocation.ptr ~= nil then 
             local sz = math.min(tonumber(M.current_msg.data_size), raw_buffer.size)
             ffi.copy(raw_buffer.allocation.ptr, M.current_msg.data, sz)
-            M.last_lidar_points = math.floor(sz / 12)
+            
+            -- LIVOX CUSTOM DETECTION
+            if M.current_msg.data_size > 32 and ffi.string(M.current_msg.data + 4, 5) == "livox" then
+                -- The point count is at a specific offset in the Livox header (around byte 24-28)
+                M.last_lidar_points = ffi.cast("uint32_t*", M.current_msg.data + 24)[0]
+            else
+                M.last_lidar_points = math.floor(sz / 12)
+            end
         end
         
         if not robot.lib.mcap_next(M.bridge, M.current_msg) then

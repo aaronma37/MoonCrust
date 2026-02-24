@@ -6,11 +6,21 @@ M.facets = {
     MarsLidar3D = {
         panel = "view3d",
         params = { 
-            topic_name = "/livox/lidar", 
-            pose_topic = "/dji_osdk_ros/local_position",
-            point_size = 2.0,
-            follow = true,
-            attach = true
+            objects = {
+                { 
+                    type = "robot", 
+                    name = "Drone", 
+                    pose_topic = "/dji_osdk_ros/local_position",
+                    follow = true -- Tell camera to follow this specific object
+                },
+                { 
+                    type = "lidar", 
+                    name = "Livox", 
+                    topic = "/livox/lidar", 
+                    point_size = 2.0, 
+                    attach_to = "Drone" -- Stick these points to the Drone object
+                }
+            }
         }
     },
     MarsTelemetryInspector = {

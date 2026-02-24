@@ -28,7 +28,9 @@ void main() {
     gl_Position = pc.view_proj * vec4(worldPos, 1.0);
     gl_PointSize = pc.point_size;
     
-    vColor = vec4(0.2, 0.5, 1.0, 1.0) * (p.z + 1.0);
+    // High-visibility height ramp
+    float h = p.z * 0.2 + 0.5;
+    vColor = vec4(vec3(0.2, 0.6, 1.0) * h + vec3(0.1, 0.1, 0.2), 1.0);
     vPos = worldPos;
     vNormal = vec3(0.0, 0.0, 1.0);
 }

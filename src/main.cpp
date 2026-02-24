@@ -136,6 +136,7 @@ int main(int argc, char* argv[]) {
     features2.pNext = &meshFeatures;
     features2.features.vertexPipelineStoresAndAtomics = VK_TRUE;
     features2.features.largePoints = VK_TRUE;
+    features2.features.wideLines = VK_TRUE;
     features2.features.shaderStorageImageArrayDynamicIndexing = VK_TRUE;
     features2.features.shaderStorageBufferArrayDynamicIndexing = VK_TRUE;
     features2.features.shaderSampledImageArrayDynamicIndexing = VK_TRUE;
