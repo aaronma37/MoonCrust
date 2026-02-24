@@ -50,13 +50,13 @@ function M.create_pool(device, sizes_data)
 end
 
 function M.create_bindless_layout(device)
-    local count = 6
-    local bindings = ffi.new("VkDescriptorSetLayoutBinding[6]")
+    local count = 3
+    local bindings = ffi.new("VkDescriptorSetLayoutBinding[3]")
     local stages = bit.bor(vk.VK_SHADER_STAGE_ALL_GRAPHICS, vk.VK_SHADER_STAGE_COMPUTE_BIT)
 
-    for i=0,5 do
+    for i=0,2 do
         bindings[i].binding = i
-        bindings[i].descriptorCount = (i < 2) and MAX_BINDLESS_RESOURCES or 1
+        bindings[i].descriptorCount = MAX_BINDLESS_RESOURCES
         bindings[i].stageFlags = stages
         if i == 0 then bindings[i].descriptorType = vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER
         elseif i == 1 then bindings[i].descriptorType = vk.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER
@@ -69,13 +69,12 @@ function M.create_bindless_layout(device)
         vk.VK_DESCRIPTOR_BINDING_UPDATE_UNUSED_WHILE_PENDING_BIT
     )
     
-    local flags = ffi.new("VkDescriptorBindingFlags[6]")
-    for i=0,1 do flags[i] = bindless_flags end
-    for i=2,5 do flags[i] = 0 end
+    local flags = ffi.new("VkDescriptorBindingFlags[3]")
+    for i=0,2 do flags[i] = bindless_flags end
 
     local binding_flags = ffi.new("VkDescriptorSetLayoutBindingFlagsCreateInfo", {
         sType = vk.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO,
-        bindingCount = 6,
+        bindingCount = 3,
         pBindingFlags = flags
     })
 
@@ -83,7 +82,7 @@ function M.create_bindless_layout(device)
         sType = vk.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
         pNext = binding_flags,
         flags = vk.VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT,
-        bindingCount = 6,
+        bindingCount = 3,
         pBindings = bindings
     })
 
@@ -100,7 +99,7 @@ function M.create_bindless_pool(device)
     sizes[1].type = vk.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER
     sizes[1].descriptorCount = MAX_BINDLESS_RESOURCES
     sizes[2].type = vk.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE
-    sizes[2].descriptorCount = 10 
+    sizes[2].descriptorCount = MAX_BINDLESS_RESOURCES 
 
     local info = ffi.new("VkDescriptorPoolCreateInfo", {
         sType = vk.VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,

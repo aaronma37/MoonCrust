@@ -66,6 +66,7 @@ function M.build_and_upload_fonts()
     
     ffi_lib.ImTextureData_SetTexID(io.Fonts.TexData, ffi.cast("ImTextureID", 0))
     M.font_image = img
+    renderer.white_uv = {io.Fonts.TexUvWhitePixel.x, io.Fonts.TexUvWhitePixel.y}
 end
 
 function M.add_font(path, size)

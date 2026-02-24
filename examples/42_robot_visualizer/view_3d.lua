@@ -18,13 +18,15 @@ local M = {
     -- Pipelines
     pipe_layout = nil, pipe_render_g = nil, pipe_line_g = nil, pipe_grid_g = nil,
     pipe_layout_light = nil, pipe_light = nil,
+    pipe_layout_blur = nil, pipe_blur = nil,
     -- Buffers
     point_buffer = nil, line_buffer = nil, line_count = 0, robot_buffers = nil, robot_line_count = 128,
     
     -- Deferred Targets
     w = 1920, h = 1080,
-    g_color = nil, g_normal = nil, g_pos = nil, final_color = nil, depth_image = nil,
+    g_color = nil, g_normal = nil, g_pos = nil, final_color = nil, blurred_color = nil, depth_image = nil,
     final_color_idx = 103,
+    blurred_color_idx = 104,
     is_hovered = false,
     is_dragging = false,
     poses = {}, -- Persistent poses
@@ -33,6 +35,7 @@ local M = {
 local static = {
     pc_r = ffi.new("RenderPC"),
     pc_l = ffi.new("struct { uint32_t color_idx, normal_idx, pos_idx; float dummy; float light_dir[4]; }"),
+    pc_b = ffi.new("struct { uint32_t in_idx, out_idx; float inv_size[2]; }"),
     viewport = ffi.new("VkViewport", {0, 0, 1920, 1080, 0, 1}),
     scissor = ffi.new("VkRect2D", {offset={0,0}, extent={1920,1080}}),
     v_buffs = ffi.new("VkBuffer[1]"),
@@ -45,6 +48,7 @@ local static = {
     color_attach_l = ffi.new("VkRenderingAttachmentInfo[1]"),
     img_barrier_g = ffi.new("VkImageMemoryBarrier[4]"),
     img_barrier_l = ffi.new("VkImageMemoryBarrier[1]"),
+    img_barrier_b = ffi.new("VkImageMemoryBarrier[1]"),
     render_info_g = ffi.new("VkRenderingInfo", { sType = vk.VK_STRUCTURE_TYPE_RENDERING_INFO, layerCount = 1, colorAttachmentCount = 3 }),
     render_info_l = ffi.new("VkRenderingInfo", { sType = vk.VK_STRUCTURE_TYPE_RENDERING_INFO, layerCount = 1, colorAttachmentCount = 1 }),
 }
@@ -88,6 +92,9 @@ function M.init(device, bindless_set, sw)
         depth_test = false, depth_write = false 
     })
 
+    M.pipe_layout_blur = pipeline.create_layout(device, {bl_layout}, ffi.new("VkPushConstantRange[1]", {{ stageFlags = vk.VK_SHADER_STAGE_COMPUTE_BIT, offset = 0, size = 16 }}))
+    M.pipe_blur = pipeline.create_compute_pipeline(device, M.pipe_layout_blur, shader.create_module(device, shader.compile_glsl(io.open("examples/42_robot_visualizer/shaders/blur.comp"):read("*all"), vk.VK_SHADER_STAGE_COMPUTE_BIT)))
+
     M.point_buffers = {
         mc.buffer(M.points_count * 16, "storage", nil, false),
         mc.buffer(M.points_count * 16, "storage", nil, false)
@@ -100,12 +107,15 @@ function M.init(device, bindless_set, sw)
     M.g_normal = mc.image(M.w, M.h, vk.VK_FORMAT_R16G16B16A16_SFLOAT, "color_attachment_sampled")
     M.g_pos = mc.image(M.w, M.h, vk.VK_FORMAT_R32G32B32A32_SFLOAT, "color_attachment_sampled")
     M.final_color = mc.image(M.w, M.h, vk.VK_FORMAT_R8G8B8A8_UNORM, "color_attachment_sampled")
+    M.blurred_color = mc.image(M.w, M.h, vk.VK_FORMAT_R8G8B8A8_UNORM, "storage_sampled")
     M.depth_image = mc.image(M.w, M.h, vk.VK_FORMAT_D32_SFLOAT, "depth")
 
     descriptors.update_image_set(device, bindless_set, 1, vk.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, M.g_color.view, sampler, vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 100)
     descriptors.update_image_set(device, bindless_set, 1, vk.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, M.g_normal.view, sampler, vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 101)
     descriptors.update_image_set(device, bindless_set, 1, vk.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, M.g_pos.view, sampler, vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 102)
     descriptors.update_image_set(device, bindless_set, 1, vk.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, M.final_color.view, sampler, vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, M.final_color_idx)
+    descriptors.update_image_set(device, bindless_set, 1, vk.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, M.blurred_color.view, sampler, vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, M.blurred_color_idx)
+    descriptors.update_image_set(device, bindless_set, 2, vk.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, M.blurred_color.view, nil, vk.VK_IMAGE_LAYOUT_GENERAL, M.blurred_color_idx)
 
     static.depth_attach.imageView = M.depth_image.view
     static.depth_attach.clearValue.depthStencil.depth = 1.0
@@ -152,6 +162,12 @@ function M.init(device, bindless_set, sw)
     static.img_barrier_l[0].subresourceRange.levelCount = 1
     static.img_barrier_l[0].subresourceRange.layerCount = 1
     static.img_barrier_l[0].subresourceRange.aspectMask = vk.VK_IMAGE_ASPECT_COLOR_BIT
+
+    static.img_barrier_b[0].sType = vk.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER
+    static.img_barrier_b[0].image = M.blurred_color.handle
+    static.img_barrier_b[0].subresourceRange.levelCount = 1
+    static.img_barrier_b[0].subresourceRange.layerCount = 1
+    static.img_barrier_b[0].subresourceRange.aspectMask = vk.VK_IMAGE_ASPECT_COLOR_BIT
 
     local verts = {}
     local function add_line(x1,y1,z1, x2,y2,z2, r,g,b,a)
@@ -382,7 +398,23 @@ function M.render_deferred(cb_handle, point_buf_idx, frame_idx, point_count)
     vk.vkCmdEndRendering(cb_handle)
 
     static.img_barrier_l[0].oldLayout = vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL; static.img_barrier_l[0].newLayout = vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL; static.img_barrier_l[0].srcAccessMask = vk.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT; static.img_barrier_l[0].dstAccessMask = vk.VK_ACCESS_SHADER_READ_BIT
-    vk.vkCmdPipelineBarrier(cb_handle, vk.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, vk.VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nil, 0, nil, 1, static.img_barrier_l)
+    vk.vkCmdPipelineBarrier(cb_handle, vk.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nil, 0, nil, 1, static.img_barrier_l)
+
+    -- BLUR PASS
+    static.img_barrier_b[0].oldLayout = vk.VK_IMAGE_LAYOUT_UNDEFINED; static.img_barrier_b[0].newLayout = vk.VK_IMAGE_LAYOUT_GENERAL; static.img_barrier_b[0].srcAccessMask = 0; static.img_barrier_b[0].dstAccessMask = vk.VK_ACCESS_SHADER_WRITE_BIT
+    vk.vkCmdPipelineBarrier(cb_handle, vk.VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nil, 0, nil, 1, static.img_barrier_b)
+
+    vk.vkCmdBindPipeline(cb_handle, vk.VK_PIPELINE_BIND_POINT_COMPUTE, M.pipe_blur)
+    static.pc_b.in_idx = M.final_color_idx
+    static.pc_b.out_idx = M.blurred_color_idx
+    static.pc_b.inv_size[0] = 1.0 / M.w
+    static.pc_b.inv_size[1] = 1.0 / M.h
+    vk.vkCmdPushConstants(cb_handle, M.pipe_layout_blur, vk.VK_SHADER_STAGE_COMPUTE_BIT, 0, 16, static.pc_b)
+    
+    vk.vkCmdDispatch(cb_handle, math.ceil(M.w / 16), math.ceil(M.h / 16), 1)
+
+    static.img_barrier_b[0].oldLayout = vk.VK_IMAGE_LAYOUT_GENERAL; static.img_barrier_b[0].newLayout = vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL; static.img_barrier_b[0].srcAccessMask = vk.VK_ACCESS_SHADER_WRITE_BIT; static.img_barrier_b[0].dstAccessMask = vk.VK_ACCESS_SHADER_READ_BIT
+    vk.vkCmdPipelineBarrier(cb_handle, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, vk.VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nil, 0, nil, 1, static.img_barrier_b)
 end
 
 return M

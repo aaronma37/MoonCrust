@@ -105,16 +105,17 @@ function M.image(width, height, format, usage_type)
     print("mc.gpu.image: creating " .. width .. "x" .. height .. " type=" .. usage_type)
     local d = vulkan.get_device()
     
-    local is_sampled = (usage_type == "sampled" or usage_type == "color_attachment_sampled")
+    local is_sampled = usage_type:find("sampled") ~= nil
     local mip_levels = 1
-    if is_sampled and usage_type == "sampled" then
+    if is_sampled and not usage_type:find("attachment") then
         mip_levels = math.floor(math.log(math.max(width, height), 2)) + 1
     end
 
-    local usage = bit.bor(vk.VK_IMAGE_USAGE_SAMPLED_BIT, vk.VK_IMAGE_USAGE_TRANSFER_DST_BIT, vk.VK_IMAGE_USAGE_TRANSFER_SRC_BIT)
-    if usage_type == "storage" then usage = bit.bor(usage, vk.VK_IMAGE_USAGE_STORAGE_BIT)
-    elseif usage_type == "depth" then usage = bit.bor(usage, vk.VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT) 
-    elseif usage_type == "color_attachment_sampled" then usage = bit.bor(usage, vk.VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) end
+    local usage = bit.bor(vk.VK_IMAGE_USAGE_TRANSFER_DST_BIT, vk.VK_IMAGE_USAGE_TRANSFER_SRC_BIT)
+    if is_sampled then usage = bit.bor(usage, vk.VK_IMAGE_USAGE_SAMPLED_BIT) end
+    if usage_type:find("storage") then usage = bit.bor(usage, vk.VK_IMAGE_USAGE_STORAGE_BIT) end
+    if usage_type:find("depth") then usage = bit.bor(usage, vk.VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT) end
+    if usage_type:find("color_attachment") then usage = bit.bor(usage, vk.VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) end
     
     local handle = image.create_2d(d, width, height, format, usage, mip_levels)
     local mem_req = ffi.new("VkMemoryRequirements[1]")
@@ -131,7 +132,7 @@ function M.image(width, height, format, usage_type)
     
     local alloc = { memory = pMemory[0], offset = 0, is_dedicated = true }
     
-    local view = image.create_view(d, handle, format, (usage_type == "depth") and vk.VK_IMAGE_ASPECT_DEPTH_BIT or vk.VK_IMAGE_ASPECT_COLOR_BIT, false, mip_levels)
+    local view = image.create_view(d, handle, format, (usage_type:find("depth")) and vk.VK_IMAGE_ASPECT_DEPTH_BIT or vk.VK_IMAGE_ASPECT_COLOR_BIT, false, mip_levels)
     
     local obj = {
         handle = handle,
@@ -159,7 +160,7 @@ function M.image_3d(width, height, depth, format, usage_type)
     local d = vulkan.get_device()
     
     local usage = bit.bor(vk.VK_IMAGE_USAGE_SAMPLED_BIT, vk.VK_IMAGE_USAGE_TRANSFER_DST_BIT)
-    if usage_type == "storage" then usage = bit.bor(usage, vk.VK_IMAGE_USAGE_STORAGE_BIT) end
+    if usage_type:find("storage") then usage = bit.bor(usage, vk.VK_IMAGE_USAGE_STORAGE_BIT) end
     
     local handle = image.create_3d(d, width, height, depth, format, usage)
     local mem_req = ffi.new("VkMemoryRequirements[1]")

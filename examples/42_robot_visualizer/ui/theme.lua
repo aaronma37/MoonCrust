@@ -57,9 +57,9 @@ function M.apply(gui)
     local deep_glow  = {0.10, 0.30, 0.50} -- Muted blue for states
 
     -- Backgrounds
-    set_col(Col.WindowBg, void_black[1], void_black[2], void_black[3], 0.96)
+    set_col(Col.WindowBg, void_black[1], void_black[2], void_black[3], 0.70)
     set_col(Col.ChildBg,  0, 0, 0, 0)
-    set_col(Col.PopupBg,  void_black[1], void_black[2], void_black[3], 0.98)
+    set_col(Col.PopupBg,  void_black[1], void_black[2], void_black[3], 0.85)
     
     set_col(Col.Border, 0.20, 0.20, 0.25, 0.50)
     set_col(Col.BorderShadow, 0, 0, 0, 0)
