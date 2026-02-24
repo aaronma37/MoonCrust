@@ -27,6 +27,7 @@ local M = {
     final_color_idx = 103,
     is_hovered = false,
     is_dragging = false,
+    poses = {}, -- Persistent poses
 }
 
 local static = {
@@ -221,13 +222,13 @@ function M.update_robot_buffer(frame_idx, params)
     local rv = ffi.cast("LineVertex*", M.robot_buffers[frame_idx + 1].allocation.ptr)
     local combined = {}
     
-    -- Track poses for other objects to use
-    M.poses = {} 
-
     if params and params.objects then
         for _, obj in ipairs(params.objects) do
             if obj.type == "robot" then
-                local px, py, pz, yaw = 0, 0, 0, 0
+                -- Baseline from persistence
+                local last = M.poses[obj.name or "default"] or { x = 0, y = 0, z = 0, yaw = 0 }
+                local px, py, pz, yaw = last.x, last.y, last.z, last.yaw
+                
                 local ch = nil
                 if playback.channels then
                     for _, c in ipairs(playback.channels) do if c.topic == obj.pose_topic then ch = c; break end end
@@ -256,8 +257,8 @@ function M.update_robot_buffer(frame_idx, params)
                 if obj.follow then M.current_pose = M.poses[obj.name or "default"] end
 
                 -- Create visuals for this robot
-                local box = primitives.create_box(2.0, 2.0, 1.0, 1, 1, 0, 1)
-                local axes = primitives.create_axes(3.0)
+                local box = primitives.create_box(5.0, 5.0, 2.5, 1, 1, 0, 1)
+                local axes = primitives.create_axes(10.0)
                 for _, v in ipairs(primitives.transform(box, px, py, pz, yaw)) do table.insert(combined, v) end
                 for _, v in ipairs(primitives.transform(axes, px, py, pz, yaw)) do table.insert(combined, v) end
             end
@@ -287,7 +288,7 @@ function M.render_deferred(cb_handle, point_buf_idx, frame_idx, point_count)
     static.cam_pos.y = static.cam_target.y + M.cam.dist * math.cos(ry) * math.sin(rx)
     static.cam_pos.z = static.cam_target.z + M.cam.dist * math.sin(ry)
     
-    local p = mc.mat4_perspective(mc.rad(45), M.w/M.h, 0.1, 1000.0)
+    local p = mc.mat4_perspective(mc.rad(45), M.w/M.h, 0.1, 10000.0) -- 10km view distance
     local v = mc.mat4_look_at({static.cam_pos.x, static.cam_pos.y, static.cam_pos.z}, {static.cam_target.x, static.cam_target.y, static.cam_target.z}, {0,0,1})
     local mvp = mc.mat4_multiply(p, v)
     for i=0,15 do static.pc_r.view_proj[i] = mvp.m[i] end
@@ -328,7 +329,13 @@ function M.render_deferred(cb_handle, point_buf_idx, frame_idx, point_count)
 
     -- 1. Draw Procedural Grid
     vk.vkCmdBindPipeline(cb_handle, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, M.pipe_grid_g)
-    vk.vkCmdPushConstants(cb_handle, M.pipe_layout, vk.VK_SHADER_STAGE_ALL_GRAPHICS, 0, ffi.sizeof("RenderPC"), static.pc_r)
+    
+    local grid_pc = ffi.new("struct { float view_proj[16]; float cam_xy[2]; }")
+    for i=0,15 do grid_pc.view_proj[i] = static.pc_r.view_proj[i] end
+    grid_pc.cam_xy[0] = M.cam.target[1]
+    grid_pc.cam_xy[1] = M.cam.target[2]
+    
+    vk.vkCmdPushConstants(cb_handle, M.pipe_layout, vk.VK_SHADER_STAGE_ALL_GRAPHICS, 0, 72, grid_pc)
     vk.vkCmdDraw(cb_handle, 4, 1, 0, 0)
 
     -- 2. Draw Robot Visuals (SOTA Poly-Lines)

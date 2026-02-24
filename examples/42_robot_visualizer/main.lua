@@ -456,7 +456,8 @@ function M.update()
     end
 
     -- Update the specific raw buffer for THIS frame
-    playback.update(dt, raw_buffers[frame_idx + 1])
+    local current_raw_buffer = raw_buffers[frame_idx + 1]
+    playback.update(dt, current_raw_buffer)
     view_3d.update_robot_buffer(frame_idx, view3d_params)
 
     -- Camera navigation (unchanged)

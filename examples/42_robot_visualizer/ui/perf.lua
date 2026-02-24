@@ -15,4 +15,23 @@ panels.register("perf", "Performance Stats", function(gui, node_id)
     gui.igSeparator()
     gui.igText(string.format("Lua Heap: %.2f MB", collectgarbage("count") / 1024))
     gui.igText(string.format("Active Streams: %d", #playback.channels))
+    gui.igSeparator()
+    gui.igText("Telemetry Stream")
+    gui.igText(string.format("Lidar Pts: %d", playback.last_lidar_points or 0))
+    gui.igText(string.format("Time: %s", tostring(playback.current_time_ns)))
+    
+    local view3d = require("examples.42_robot_visualizer.view_3d")
+    gui.igSeparator()
+    gui.igText("3D Scene Status")
+    if view3d.current_pose then
+        gui.igText(string.format("Robot XYZ: %.1f, %.1f, %.1f", view3d.current_pose.x, view3d.current_pose.y, view3d.current_pose.z))
+        if gui.igButton("Snap Cam to Drone", ffi.new("ImVec2_c", {-1, 25})) then
+            view3d.cam.target[1] = view3d.current_pose.x
+            view3d.cam.target[2] = view3d.current_pose.y
+            view3d.cam.target[3] = view3d.current_pose.z
+            view3d.cam.dist = 20.0 -- Zoom in slightly
+        end
+    else
+        gui.igText("Robot Pose: (No Data)")
+    end
 end)

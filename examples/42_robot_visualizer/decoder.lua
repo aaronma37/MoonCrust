@@ -25,9 +25,10 @@ local function parse_single_definition(text)
     for line in text:gmatch("([^\r\n]+)") do
         line = line:gsub("#.*", ""):match("^%s*(.-)%s*$")
         if line ~= "" and not line:find("=") then
-            local t, n = line:match("^([%w_/]+)%s+([%w_]+)")
+            -- Fixed regex: Match "type name" or "type[] name"
+            local t, is_array, n = line:match("^([%w_/]+)(%[?%d*%]?)%s+([%w_]+)")
             if t and n then
-                table.insert(fields, { type = t, name = n })
+                table.insert(fields, { type = t, name = n, is_array = (is_array ~= "") })
             end
         end
     end
@@ -36,44 +37,46 @@ end
 
 function M.parse_schema(schema_text)
     if not schema_text then return nil end
-    
-    -- 1. Build Type Library from all MSG: sections
     local type_lib = {}
     local sections = {}
+    -- Split by the ROS2 separator
     for section in schema_text:gmatch("([^=]+)") do
         local type_name = section:match("MSG:%s+([%w_/]+)")
-        if type_name then
-            type_lib[type_name] = parse_single_definition(section)
-        else
-            -- First section is the main message (usually doesn't have a MSG: header)
-            table.insert(sections, section)
-        end
+        if type_name then 
+            local def = parse_single_definition(section)
+            type_lib[type_name] = def
+            type_lib[type_name:gsub(".*/", "")] = def -- Strip namespace
+        else table.insert(sections, section) end
     end
     
     local main_fields = parse_single_definition(sections[1] or "")
     local flattened = {}
     local current_offset = 4 -- Skip ROS2 CDR Header
     
-    -- 2. Recursive Resolver
     local function resolve(fields, prefix, offset)
         for _, f in ipairs(fields) do
             local name = (prefix == "") and f.name or (prefix .. "." .. f.name)
             
-            if PRIMITIVES[f.type] then
+            if f.is_array then
+                -- For sequences, first 4 bytes is length
+                offset = math.ceil(offset / 4) * 4
+                table.insert(flattened, { type = "uint32", name = name .. ".count", info = PRIMITIVES["uint32"], offset = offset })
+                offset = offset + 4
+            elseif PRIMITIVES[f.type] then
                 local info = PRIMITIVES[f.type]
                 offset = math.ceil(offset / info.size) * info.size
                 table.insert(flattened, { type = f.type, name = name, info = info, offset = offset })
                 offset = offset + info.size
             elseif f.type == "string" then
                 offset = math.ceil(offset / 4) * 4
-                offset = offset + 4 -- Skip string length, skip data for now
-            elseif type_lib[f.type] or type_lib[f.type:gsub(".*/", "")] then
-                -- Handle nested complex type (with or without package prefix)
-                local sub_fields = type_lib[f.type] or type_lib[f.type:gsub(".*/", "")]
-                offset = resolve(sub_fields, name, offset)
+                offset = offset + 4 -- Skip string length
             else
-                -- Unknown type or array, skip for now to maintain alignment
-                -- (In full industrial implementation, we would handle arrays/sequences)
+                -- Try to resolve as complex type (handling namespaces)
+                local t_name = f.type
+                local sub_fields = type_lib[t_name] or type_lib[t_name:gsub(".*/", "")]
+                if sub_fields then
+                    offset = resolve(sub_fields, name, offset)
+                end
             end
         end
         return offset
