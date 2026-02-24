@@ -25,18 +25,19 @@ end
 
 panels.register("pretty_viewer", "Pretty Message Viewer", function(gui, node_id, params)
     if not panels.states[node_id] then
-        panels.states[node_id] = { selected_ch = nil, filter = ffi.new("char[128]"), schema_fields = nil, last_schema_id = -1 }
+        panels.states[node_id] = { selected_ch = nil, filter = ffi.new("char[128]"), schema_fields = nil, last_schema_id = -1, facet_synced = false }
     end
     local p_state = panels.states[node_id]
     
     local requested_topic = params and params.topic_name
     local channels = playback.channels or {}
     
-    -- Sync selection with facet if needed
-    if requested_topic and (not p_state.selected_ch or p_state.selected_ch.topic ~= requested_topic) then
+    -- Initial sync with facet (only once or if facet changes)
+    if requested_topic and not p_state.facet_synced then
         for _, ch in ipairs(channels) do
             if ch.topic == requested_topic then
                 p_state.selected_ch = ch
+                p_state.facet_synced = true
                 break
             end
         end
@@ -66,6 +67,7 @@ panels.register("pretty_viewer", "Pretty Message Viewer", function(gui, node_id,
                 if gui.igSelectable_Bool(ch.topic, selected, 0, ffi.new("ImVec2_c", {0,0})) then
                     p_state.selected_ch = ch
                     p_state.schema_fields = nil -- Force re-parse
+                    p_state.facet_synced = true -- Manual selection also counts as synced
                     gui.igCloseCurrentPopup()
                 end
             end
@@ -162,7 +164,7 @@ end)
 
 panels.register("plotter", "Topic Plotter", function(gui, node_id, params)
     if not panels.states[node_id] then
-        panels.states[node_id] = { selected_ch = nil, filter = ffi.new("char[128]"), field_name = nil, schema_fields = nil }
+        panels.states[node_id] = { selected_ch = nil, filter = ffi.new("char[128]"), field_name = nil, schema_fields = nil, facet_synced = false }
     end
     local p_state = panels.states[node_id]
     
@@ -170,18 +172,19 @@ panels.register("plotter", "Topic Plotter", function(gui, node_id, params)
     local requested_field = params and params.field_name
     local channels = playback.channels or {}
     
-    -- 1. Sync Topic
-    if requested_topic and (not p_state.selected_ch or p_state.selected_ch.topic ~= requested_topic) then
+    -- 1. Sync Topic with facet
+    if requested_topic and not p_state.facet_synced then
         for _, ch in ipairs(channels) do
             if ch.topic == requested_topic then
                 p_state.selected_ch = ch
                 p_state.schema_fields = nil -- Reset schema cache
+                p_state.facet_synced = true
                 break
             end
         end
     end
     
-    -- 2. Sync Field
+    -- 2. Sync Field with facet
     if requested_field and not p_state.field_name then
         p_state.field_name = requested_field
     end
@@ -197,6 +200,7 @@ panels.register("plotter", "Topic Plotter", function(gui, node_id, params)
                 if gui.igSelectable_Bool(ch.topic, p_state.selected_ch and ch.id == p_state.selected_ch.id, 0, ffi.new("ImVec2_c", {0,0})) then
                     p_state.selected_ch = ch
                     p_state.schema_fields = nil
+                    p_state.facet_synced = true
                 end
             end
         end
