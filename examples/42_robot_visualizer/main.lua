@@ -67,18 +67,33 @@ end
 local state = {
     layout = create_default_layout(),
     next_id = 5,
-    last_ticks = 0ULL,
+    last_perf = 0ULL,
+    perf_freq = tonumber(ffi.C.SDL_GetPerformanceFrequency()),
     real_fps = 0,
-    frame_times = {},
+    frame_times = {}, -- Sliding window
+    frame_times_idx = 1,
     picker = { trigger = false, title = "", query = ffi.new("char[128]"), selected_idx = 0, items = {}, results = {}, on_select = nil },
     file_dialog = { trigger = false, path = ffi.new("char[256]", "test_robot.mcap") }
 }
+for i=1, 60 do state.frame_times[i] = 0.0166 end -- Initialize with 60fps
 _G._PICKER_STATE = state.picker
 _G._PERF_STATS = state -- Expose for perf.lua
+_G._OPEN_PICKER = function(title, items, on_select)
+    local p = _G._PICKER_STATE
+    p.trigger, p.title, p.items, p.results, p.selected_idx, p.on_select = true, title, items, items, 0, on_select
+    ffi.fill(p.query, 128)
+end
 
 local M = {}
-local device, queue, graphics_family, sw, cb
-local pipe_parse, layout_parse, bindless_set, image_available_sem, frame_fence, raw_buffer
+local device, queue, graphics_family, sw
+local pipe_parse, layout_parse, bindless_set, raw_buffers
+
+local MAX_FRAMES_IN_FLIGHT = 2
+local current_frame = 0
+local frame_fences = ffi.new("VkFence[?]", MAX_FRAMES_IN_FLIGHT)
+local image_available_sems = ffi.new("VkSemaphore[?]", MAX_FRAMES_IN_FLIGHT)
+local render_finished_sems = ffi.new("VkSemaphore[?]", MAX_FRAMES_IN_FLIGHT)
+local command_buffers = ffi.new("VkCommandBuffer[?]", MAX_FRAMES_IN_FLIGHT)
 
 local static = {
     pc_p = ffi.new("ParserPC"),
@@ -117,8 +132,13 @@ function M.init()
     playback.init()
     bindless_set = mc.gpu.get_bindless_set()
     
-    raw_buffer = mc.buffer(view_3d.points_count * 12, "storage", nil, true)
-    descriptors.update_buffer_set(device, bindless_set, 0, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, raw_buffer.handle, 0, raw_buffer.size, 10)
+    -- Double-buffer raw inputs for FIF
+    raw_buffers = {
+        mc.buffer(view_3d.points_count * 12, "storage", nil, true),
+        mc.buffer(view_3d.points_count * 12, "storage", nil, true)
+    }
+    descriptors.update_buffer_set(device, bindless_set, 0, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, raw_buffers[1].handle, 0, raw_buffers[1].size, 10)
+    descriptors.update_buffer_set(device, bindless_set, 0, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, raw_buffers[2].handle, 0, raw_buffers[2].size, 12)
     
     view_3d.init(device, bindless_set, sw)
     view_3d.register_panels()
@@ -127,14 +147,26 @@ function M.init()
     layout_parse = pipeline.create_layout(device, {bl_layout}, ffi.new("VkPushConstantRange[1]", {{ stageFlags = vk.VK_SHADER_STAGE_COMPUTE_BIT, offset = 0, size = ffi.sizeof("ParserPC") }}))
     pipe_parse = pipeline.create_compute_pipeline(device, layout_parse, shader.create_module(device, shader.compile_glsl(io.open("examples/42_robot_visualizer/shaders/parser.comp"):read("*all"), vk.VK_SHADER_STAGE_COMPUTE_BIT)))
     
-    local pool = command.create_pool(device, graphics_family); cb = command.allocate_buffers(device, pool, 1)[1]
-    local pF = ffi.new("VkFence[1]"); vk.vkCreateFence(device, ffi.new("VkFenceCreateInfo", { sType=vk.VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, flags=vk.VK_FENCE_CREATE_SIGNALED_BIT }), nil, pF); frame_fence = pF[0]
-    local pS = ffi.new("VkSemaphore[1]"); vk.vkCreateSemaphore(device, ffi.new("VkSemaphoreCreateInfo", { sType = vk.VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO }), nil, pS); image_available_sem = pS[0]
+    local pool = command.create_pool(device, graphics_family)
+    local cbs = command.allocate_buffers(device, pool, MAX_FRAMES_IN_FLIGHT)
+    
+    for i=0, MAX_FRAMES_IN_FLIGHT-1 do
+        command_buffers[i] = cbs[i+1]
+        local pF = ffi.new("VkFence[1]")
+        vk.vkCreateFence(device, ffi.new("VkFenceCreateInfo", { sType=vk.VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, flags=vk.VK_FENCE_CREATE_SIGNALED_BIT }), nil, pF)
+        frame_fences[i] = pF[0]
+        
+        local pS = ffi.new("VkSemaphore[1]")
+        vk.vkCreateSemaphore(device, ffi.new("VkSemaphoreCreateInfo", { sType = vk.VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO }), nil, pS)
+        image_available_sems[i] = pS[0]
+        
+        local pS2 = ffi.new("VkSemaphore[1]")
+        vk.vkCreateSemaphore(device, ffi.new("VkSemaphoreCreateInfo", { sType = vk.VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO }), nil, pS2)
+        render_finished_sems[i] = pS2[0]
+    end
 
     imgui.init(); imgui_renderer = require("imgui.renderer")
-    -- ImGui callback hijack removed for Deferred Rendering
-    
-    state.last_ticks = ffi.C.SDL_GetTicks()
+    state.last_perf = ffi.C.SDL_GetPerformanceCounter()
 end
 
 local function render_fuzzy_picker(gui)
@@ -217,33 +249,39 @@ local function render_node(node, x, y, w, h, gui)
 end
 
 function M.update()
-    static.fences = ffi.new("VkFence[1]", {frame_fence})
-    vk.vkWaitForFences(device, 1, static.fences, vk.VK_TRUE, 0xFFFFFFFFFFFFFFFFULL); vk.vkResetFences(device, 1, static.fences)
-    local img_idx = sw:acquire_next_image(image_available_sem); if img_idx == nil then return end
+    local frame_idx = current_frame
+    static.fences = ffi.new("VkFence[1]", {frame_fences[frame_idx]})
+    vk.vkWaitForFences(device, 1, static.fences, vk.VK_TRUE, 0xFFFFFFFFFFFFFFFFULL)
+    -- Reset fence only after we are sure we can proceed
+    vk.vkResetFences(device, 1, static.fences)
+
+    local sem_available = image_available_sems[frame_idx]
+    local img_idx = sw:acquire_next_image(sem_available)
+    if img_idx == nil then return end
     
-    local ticks = ffi.C.SDL_GetTicks()
-    local dt = tonumber(ticks - state.last_ticks) / 1000.0
-    state.last_ticks = ticks
+    local now = ffi.C.SDL_GetPerformanceCounter()
+    local dt = tonumber(now - state.last_perf) / state.perf_freq
+    state.last_perf = now
     
-    if dt > 0 then
-        state.real_fps = 1.0 / dt
+    -- Sliding window average
+    state.frame_times[state.frame_times_idx] = dt
+    state.frame_times_idx = (state.frame_times_idx % 60) + 1
+    local avg_dt = 0
+    for i=1, 60 do avg_dt = avg_dt + state.frame_times[i] end
+    avg_dt = avg_dt / 60
+    
+    if avg_dt > 0 then
+        state.real_fps = 1.0 / avg_dt
     end
 
     view_3d.reset_frame()
     collectgarbage("step", 100)
     
-    -- Input Debug
+    -- Input Debug (unchanged)
     local ctrl = input.key_down(224) or input.key_down(228)
-    if input.key_pressed(30) then -- 1
-        -- print("Key 1 Pressed! Ctrl:", ctrl)
-        state.layout = create_default_layout()
-    end
-    if input.key_pressed(31) then -- 2
-        -- print("Key 2 Pressed! Ctrl:", ctrl)
-        state.layout = create_full_3d_layout() 
-    end
-    if input.key_pressed(32) then -- 3
-        -- print("Key 3 Pressed! Ctrl:", ctrl)
+    if input.key_pressed(30) then state.layout = create_default_layout() end
+    if input.key_pressed(31) then state.layout = create_full_3d_layout() end
+    if input.key_pressed(32) then 
         state.layout = { 
             type = "split", direction = "h", ratio = 0.5,
             children = {
@@ -257,7 +295,7 @@ function M.update()
         if input.key_pressed(18) then state.file_dialog.trigger = true end -- O
         if input.key_pressed(25) then split_focused("v") end -- V
         if input.key_pressed(11) then split_focused("h") end -- H
-        if input.key_pressed(27) then -- X
+        if input.key_pressed(27) then
             local function find_and_close(node, parent)
                 if node.type == "view" then
                     if node.id == panels.focused_id and parent then
@@ -268,7 +306,7 @@ function M.update()
                 return false
             end; find_and_close(state.layout, nil)
         end
-        if input.key_pressed(19) then -- P
+        if input.key_pressed(19) then
             local items = {}; for id, p in pairs(panels.list) do table.insert(items, { name = p.name, id = id }) end
             _G._OPEN_PICKER("Select Panel", items, function(item) 
                 local function find_and_replace(node)
@@ -281,18 +319,14 @@ function M.update()
         end
     end
 
-    playback.update(dt, raw_buffer)
-    view_3d.update_robot_buffer()
+    -- Update the specific raw buffer for THIS frame
+    playback.update(dt, raw_buffers[frame_idx + 1])
+    view_3d.update_robot_buffer(frame_idx)
 
-    -- Camera navigation
+    -- Camera navigation (unchanged)
     local gui, io = imgui.gui, imgui.gui.igGetIO_Nil()
-    
-    if view_3d.is_hovered and (input.mouse_down(2) or input.mouse_down(3)) then
-        view_3d.is_dragging = true
-    elseif not (input.mouse_down(2) or input.mouse_down(3)) then
-        view_3d.is_dragging = false
-    end
-    
+    if view_3d.is_hovered and (input.mouse_down(2) or input.mouse_down(3)) then view_3d.is_dragging = true
+    elseif not (input.mouse_down(2) or input.mouse_down(3)) then view_3d.is_dragging = false end
     local can_move = view_3d.is_hovered or view_3d.is_dragging
 
     if input.mouse_down(3) and can_move then 
@@ -308,10 +342,6 @@ function M.update()
         view_3d.cam.target[1] = view_3d.cam.target[1] - right_x * rmx * scale
         view_3d.cam.target[2] = view_3d.cam.target[2] - right_y * rmx * scale
         view_3d.cam.target[3] = view_3d.cam.target[3] + rmy * scale
-    -- else
-    --     view_3d.cam.target[1] = playback.robot_pose.x
-    --     view_3d.cam.target[2] = playback.robot_pose.y
-    --     view_3d.cam.target[3] = playback.robot_pose.z + 0.5
     end
     if view_3d.is_hovered then
         local wheel = _G._MOUSE_WHEEL or 0
@@ -321,12 +351,28 @@ function M.update()
     local win_w, win_h = _G._WIN_LW or 1280, _G._WIN_LH or 720
     imgui.new_frame(); render_node(state.layout, 0, 0, win_w, win_h, gui)
     
+    local cb = command_buffers[frame_idx]
     vk.vkResetCommandBuffer(cb, 0); vk.vkBeginCommandBuffer(cb, static.cb_begin)
-    static.pc_p.in_buf_idx, static.pc_p.in_offset_u32, static.pc_p.out_buf_idx, static.pc_p.count = 10, 0, 11, view_3d.points_count
-    vk.vkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_parse); static.sets = ffi.new("VkDescriptorSet[1]", {bindless_set}); vk.vkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_COMPUTE, layout_parse, 0, 1, static.sets, 0, nil); vk.vkCmdPushConstants(cb, layout_parse, vk.VK_SHADER_STAGE_COMPUTE_BIT, 0, ffi.sizeof("ParserPC"), static.pc_p); vk.vkCmdDispatch(cb, math.ceil(view_3d.points_count / 256), 1, 1)
+    
+    -- Pick buffers based on frame index: frame0 uses 10/11, frame1 uses 12/13
+    local in_idx = (frame_idx == 0) and 10 or 12
+    local out_idx = (frame_idx == 0) and 11 or 13
+    local point_count = playback.last_lidar_points
+    static.pc_p.in_buf_idx, static.pc_p.in_offset_u32, static.pc_p.out_buf_idx, static.pc_p.count = in_idx, 0, out_idx, point_count
+    
+    vk.vkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_parse)
+    static.sets = ffi.new("VkDescriptorSet[1]", {bindless_set})
+    vk.vkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, layout_parse, 0, 1, static.sets, 0, nil) 
+    vk.vkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_COMPUTE, layout_parse, 0, 1, static.sets, 0, nil)
+    vk.vkCmdPushConstants(cb, layout_parse, vk.VK_SHADER_STAGE_COMPUTE_BIT, 0, ffi.sizeof("ParserPC"), static.pc_p)
+    if point_count > 0 then
+        vk.vkCmdDispatch(cb, math.ceil(point_count / 256), 1, 1)
+    end
+    
     vk.vkCmdPipelineBarrier(cb, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, vk.VK_PIPELINE_STAGE_VERTEX_SHADER_BIT, 0, 1, static.mem_barrier, 0, nil, 0, nil)
     
-    view_3d.render_deferred(cb)
+    -- Tell view_3d which buffer to render from and passing frame_idx
+    view_3d.render_deferred(cb, out_idx, frame_idx, point_count)
     
     static.img_barrier[0].oldLayout, static.img_barrier[0].newLayout, static.img_barrier[0].image, static.img_barrier[0].dstAccessMask = vk.VK_IMAGE_LAYOUT_UNDEFINED, vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, ffi.cast("VkImage", sw.images[img_idx]), vk.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT
     static.img_barrier[0].srcAccessMask = 0
@@ -346,11 +392,15 @@ function M.update()
     static.img_barrier[0].subresourceRange.aspectMask = vk.VK_IMAGE_ASPECT_COLOR_BIT
     vk.vkCmdPipelineBarrier(cb, vk.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, vk.VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nil, 0, nil, 1, static.img_barrier); vk.vkEndCommandBuffer(cb)
     
-    static.sems_wait = ffi.new("VkSemaphore[1]", {image_available_sem})
-    static.sems_sig = ffi.new("VkSemaphore[1]", {sw.semaphores[img_idx]})
+    local sem_finished = render_finished_sems[frame_idx]
+    static.sems_wait = ffi.new("VkSemaphore[1]", {sem_available})
+    static.sems_sig = ffi.new("VkSemaphore[1]", {sem_finished})
     static.cbs = ffi.new("VkCommandBuffer[1]", {cb})
     static.submit_info.pWaitSemaphores, static.submit_info.pWaitDstStageMask, static.submit_info.pCommandBuffers, static.submit_info.pSignalSemaphores = static.sems_wait, static.wait_stages, static.cbs, static.sems_sig
-    vk.vkQueueSubmit(queue, 1, static.submit_info, frame_fence); sw:present(queue, img_idx, sw.semaphores[img_idx])
+    vk.vkQueueSubmit(queue, 1, static.submit_info, frame_fences[frame_idx])
+    
+    sw:present(queue, img_idx, sem_finished)
+    current_frame = (current_frame + 1) % MAX_FRAMES_IN_FLIGHT
 end
 
 return M

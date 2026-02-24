@@ -30,12 +30,15 @@ function M.new(instance, physical_device, device, window)
     vk.vkGetPhysicalDeviceSurfacePresentModesKHR(physical_device, self.surface, mode_count, modes)
     
     local present_mode = vk.VK_PRESENT_MODE_FIFO_KHR
-    for i=0, mode_count[0]-1 do
-        if modes[i] == vk.VK_PRESENT_MODE_MAILBOX_KHR then
-            present_mode = vk.VK_PRESENT_MODE_MAILBOX_KHR
-            break
-        elseif modes[i] == vk.VK_PRESENT_MODE_IMMEDIATE_KHR then
-            present_mode = vk.VK_PRESENT_MODE_IMMEDIATE_KHR
+    -- Only use high-performance modes if specifically requested via global flag
+    if _G._MC_UNCAPPED then
+        for i=0, mode_count[0]-1 do
+            if modes[i] == vk.VK_PRESENT_MODE_MAILBOX_KHR then
+                present_mode = vk.VK_PRESENT_MODE_MAILBOX_KHR
+                break
+            elseif modes[i] == vk.VK_PRESENT_MODE_IMMEDIATE_KHR then
+                present_mode = vk.VK_PRESENT_MODE_IMMEDIATE_KHR
+            end
         end
     end
     print("Swapchain: Using Present Mode: " .. present_mode)

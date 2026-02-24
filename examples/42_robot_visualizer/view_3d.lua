@@ -83,8 +83,12 @@ function M.init(device, bindless_set, sw)
         depth_test = false, depth_write = false 
     })
 
-    M.point_buffer = mc.buffer(M.points_count * 16, "storage", nil, false)
-    descriptors.update_buffer_set(device, bindless_set, 0, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, M.point_buffer.handle, 0, M.point_buffer.size, 11)
+    M.point_buffers = {
+        mc.buffer(M.points_count * 16, "storage", nil, false),
+        mc.buffer(M.points_count * 16, "storage", nil, false)
+    }
+    descriptors.update_buffer_set(device, bindless_set, 0, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, M.point_buffers[1].handle, 0, M.point_buffers[1].size, 11)
+    descriptors.update_buffer_set(device, bindless_set, 0, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, M.point_buffers[2].handle, 0, M.point_buffers[2].size, 13)
 
     local sampler = mc.gpu.sampler()
     M.g_color = mc.image(M.w, M.h, vk.VK_FORMAT_R8G8B8A8_UNORM, "color_attachment_sampled")
@@ -167,7 +171,10 @@ function M.init(device, bindless_set, sw)
         p_verts[i-1].r, p_verts[i-1].g, p_verts[i-1].b, p_verts[i-1].a = v.r, v.g, v.b, v.a
     end
 
-    M.robot_buffer = mc.buffer(M.robot_line_count * ffi.sizeof("LineVertex"), "vertex", nil, true)
+    M.robot_buffers = {
+        mc.buffer(M.robot_line_count * ffi.sizeof("LineVertex"), "vertex", nil, true),
+        mc.buffer(M.robot_line_count * ffi.sizeof("LineVertex"), "vertex", nil, true)
+    }
 end
 
 function M.reset_frame()
@@ -206,8 +213,8 @@ function M.register_panels()
     end)
 end
 
-function M.update_robot_buffer()
-    local rv = ffi.cast("LineVertex*", M.robot_buffer.allocation.ptr)
+function M.update_robot_buffer(frame_idx)
+    local rv = ffi.cast("LineVertex*", M.robot_buffers[frame_idx + 1].allocation.ptr)
     local px, py, pz, yaw = playback.robot_pose.x, playback.robot_pose.y, playback.robot_pose.z, playback.robot_pose.yaw
     local s, c = math.sin(yaw), math.cos(yaw)
     local function add_robot_line(idx, x1,y1,z1, x2,y2,z2, r,g,b,a)
@@ -234,7 +241,7 @@ function M.update_robot_buffer()
     cur_i = add_robot_line(cur_i, -2.5, 2.5,0, -2.5, 2.5,2.5, 1,1,0,1)
 end
 
-function M.render_deferred(cb_handle)
+function M.render_deferred(cb_handle, point_buf_idx, frame_idx, point_count)
     local rx, ry = mc.rad(M.cam.orbit_x), mc.rad(M.cam.orbit_y)
     static.cam_target.x, static.cam_target.y, static.cam_target.z = M.cam.target[1], M.cam.target[2], M.cam.target[3]
     static.cam_pos.x = static.cam_target.x + M.cam.dist * math.cos(ry) * math.cos(rx)
@@ -245,7 +252,7 @@ function M.render_deferred(cb_handle)
     local v = mc.mat4_look_at({static.cam_pos.x, static.cam_pos.y, static.cam_pos.z}, {static.cam_target.x, static.cam_target.y, static.cam_target.z}, {0,0,1})
     local mvp = mc.mat4_multiply(p, v)
     for i=0,15 do static.pc_r.view_proj[i] = mvp.m[i] end
-    static.pc_r.buf_idx, static.pc_r.point_size = 11, 3.0
+    static.pc_r.buf_idx, static.pc_r.point_size = point_buf_idx or 11, 3.0
 
     static.img_barrier_g[0].oldLayout = vk.VK_IMAGE_LAYOUT_UNDEFINED; static.img_barrier_g[0].newLayout = vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL; static.img_barrier_g[0].srcAccessMask = 0; static.img_barrier_g[0].dstAccessMask = vk.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT
     static.img_barrier_g[1].oldLayout = vk.VK_IMAGE_LAYOUT_UNDEFINED; static.img_barrier_g[1].newLayout = vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL; static.img_barrier_g[1].srcAccessMask = 0; static.img_barrier_g[1].dstAccessMask = vk.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT
@@ -266,13 +273,15 @@ function M.render_deferred(cb_handle)
     vk.vkCmdBindVertexBuffers(cb_handle, 0, 1, static.v_buffs, static.v_offs)
     vk.vkCmdDraw(cb_handle, M.line_count, 1, 0, 0)
 
-    static.v_buffs[0] = M.robot_buffer.handle
+    static.v_buffs[0] = M.robot_buffers[(frame_idx or 0) + 1].handle
     vk.vkCmdBindVertexBuffers(cb_handle, 0, 1, static.v_buffs, static.v_offs)
     vk.vkCmdDraw(cb_handle, M.robot_line_count, 1, 0, 0)
 
     vk.vkCmdBindPipeline(cb_handle, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, M.pipe_render_g)
     vk.vkCmdPushConstants(cb_handle, M.pipe_layout, vk.VK_SHADER_STAGE_ALL_GRAPHICS, 0, ffi.sizeof("RenderPC"), static.pc_r)
-    vk.vkCmdDraw(cb_handle, M.points_count, 1, 0, 0)
+    if (point_count or 0) > 0 then
+        vk.vkCmdDraw(cb_handle, point_count, 1, 0, 0)
+    end
     vk.vkCmdEndRendering(cb_handle)
 
     static.img_barrier_g[0].oldLayout = vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL; static.img_barrier_g[0].newLayout = vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL; static.img_barrier_g[0].srcAccessMask = vk.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT; static.img_barrier_g[0].dstAccessMask = vk.VK_ACCESS_SHADER_READ_BIT

@@ -19,6 +19,7 @@ local M = {
     robot_pose = { x = 0, y = 0, z = 0, yaw = 0 },
     message_buffers = {},
     plot_history = {},
+    last_lidar_points = 0,
 }
 
 function M.init()
@@ -110,7 +111,9 @@ function M.update(dt, raw_buffer)
         end
         
         if ch_id == M.lidar_ch_id and raw_buffer and raw_buffer.allocation.ptr ~= nil then 
-            ffi.copy(raw_buffer.allocation.ptr, M.current_msg.data, math.min(tonumber(M.current_msg.data_size), raw_buffer.size)) 
+            local sz = math.min(tonumber(M.current_msg.data_size), raw_buffer.size)
+            ffi.copy(raw_buffer.allocation.ptr, M.current_msg.data, sz)
+            M.last_lidar_points = math.floor(sz / 12)
         end
         
         if not robot.lib.mcap_next(M.bridge, M.current_msg) then
