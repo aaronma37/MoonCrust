@@ -1,6 +1,18 @@
 -- Robot Visualizer Configuration
 local M = {}
 
+-- Facets: Configured versions of panels
+M.facets = {
+	MarsLidarInspector = {
+		panel = "pretty_viewer",
+		params = { topic_name = "/livox/lidar" },
+	},
+	RobotPoseMonitor = {
+		panel = "pretty_viewer",
+		params = { topic_name = "pose" },
+	},
+}
+
 M.layout = {
 	type = "split",
 	direction = "h",
@@ -17,7 +29,7 @@ M.layout = {
 					direction = "h",
 					ratio = 0.5,
 					children = {
-						{ type = "view", view_type = "pretty_viewer", id = 2, title = "Message Inspector###2" },
+						{ type = "view", facet = "MarsLidarInspector", id = 2, title = "Lidar Inspector###2" },
 						{ type = "view", view_type = "plotter", id = 5, title = "Telemetry Plot###5" },
 					},
 				},

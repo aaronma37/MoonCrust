@@ -217,3 +217,16 @@ EXPORT bool mcap_get_channel_info(McapBridge* b, uint32_t index, McapChannelInfo
     out->schema_name = ch.schema.c_str();
     return true;
 }
+
+EXPORT const char* mcap_get_schema_content(McapBridge* b, uint32_t channel_id) {
+    if (!b) return nullptr;
+    const auto& channel_map = b->reader.channels();
+    if (channel_map.count(channel_id)) {
+        auto schema_id = channel_map.at(channel_id)->schemaId;
+        const auto& schema_map = b->reader.schemas();
+        if (schema_map.count(schema_id)) {
+            return reinterpret_cast<const char*>(schema_map.at(schema_id)->data.data());
+        }
+    }
+    return nullptr;
+}

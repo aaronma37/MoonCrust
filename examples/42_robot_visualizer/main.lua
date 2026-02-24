@@ -251,10 +251,24 @@ local function render_node(node, x, y, w, h, gui)
             
             render_fuzzy_picker(gui)
             render_file_dialog(gui)
-            local p = panels.list[node.view_type]
+            
+            local view_type = node.view_type
+            local params = nil
+            
+            -- If node uses a facet, override view_type and provide params
+            if node.facet and config.facets and config.facets[node.facet] then
+                local f = config.facets[node.facet]
+                view_type = f.panel
+                params = f.params
+            end
+            
+            local p = panels.list[view_type]
             if p then 
-                local ok, err = pcall(p.render, gui, node.id)
-                if not ok then gui.igTextColored(ffi.new("ImVec4_c", {1,0,0,1}), "Render Error: %s", tostring(err)) end
+                local ok, err = pcall(p.render, gui, node.id, params)
+                if not ok then 
+                    print("UI Render Error in node " .. node.id .. ":", err)
+                    gui.igTextColored(ffi.new("ImVec4_c", {1,0,0,1}), "Render Error (see console)") 
+                end
             end
         end
         gui.igEnd()

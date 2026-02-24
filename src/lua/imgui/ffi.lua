@@ -308,6 +308,29 @@ ffi.cdef[[
     bool igBeginChild_Str(const char* str_id, const ImVec2_c size, bool border, ImGuiWindowFlags flags);
     void igEndChild(void);
 
+    // Widgets
+    bool igBeginCombo(const char* label, const char* preview_value, int flags);
+    void igEndCombo(void);
+    bool igSelectable_Bool(const char* label, bool selected, int flags, const ImVec2_c size);
+    bool igInputText(const char* label, char* buf, size_t buf_size, int flags, void* callback, void* user_data);
+    bool igTreeNode_Str(const char* label);
+    void igTreePop(void);
+    void igSameLine(float offset_from_start_x, float spacing_w);
+    void igSetNextItemWidth(float item_width);
+    void igSetKeyboardFocusHere(int offset);
+    void igSetCursorPos(const ImVec2_c local_pos);
+    ImVec2_c igGetCursorPos(void);
+    float igGetCursorPosX(void);
+    float igGetCursorPosY(void);
+    bool igIsWindowHovered(int flags);
+    bool igInvisibleButton(const char* str_id, const ImVec2_c size, int flags);
+    void igOpenPopup_Str(const char* str_id, int flags);
+    bool igBeginPopupModal(const char* name, bool* p_open, int flags);
+    void igEndPopup(void);
+    void igCloseCurrentPopup(void);
+    void igPushStyleColor_Vec4(int idx, const ImVec4_c col);
+    void igPopStyleColor(int count);
+
     // Font Atlas
     void igImFontAtlasBuildMain(ImFontAtlas* atlas);
     void ImTextureData_SetTexID(ImTextureData* self, ImTextureID tex_id);

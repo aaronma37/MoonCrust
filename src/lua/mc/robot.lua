@@ -29,6 +29,7 @@ ffi.cdef[[
     uint64_t mcap_get_end_time(McapBridge* bridge);
     uint32_t mcap_get_channel_count(McapBridge* bridge);
     bool mcap_get_channel_info(McapBridge* bridge, uint32_t index, McapChannelInfo* out_info);
+    const char* mcap_get_schema_content(McapBridge* bridge, uint32_t channel_id);
 ]]
 
 -- Common ROS2 Message Structs (Silicon Aligned)

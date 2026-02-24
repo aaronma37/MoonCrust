@@ -3,6 +3,8 @@ require("examples.42_robot_visualizer.types")
 local bit = require("bit")
 local panels = require("examples.42_robot_visualizer.ui.panels")
 local playback = require("examples.42_robot_visualizer.playback")
+local robot = require("mc.robot")
+local decoder = require("examples.42_robot_visualizer.decoder")
 
 local v4_val = ffi.new("ImVec4_c", {0.2, 0.8, 1, 1})
 local v2_zero = ffi.new("ImVec2_c", {0, 0})
@@ -20,25 +22,110 @@ local function open_topic_picker(gui, on_select)
     _G._OPEN_PICKER("Select Topic", items, on_select)
 end
 
-panels.register("pretty_viewer", "Pretty Message Viewer", function(gui, node_id)
-    local p_state = panels.states[node_id] or { selected_ch = nil }
-    panels.states[node_id] = p_state
+panels.register("pretty_viewer", "Pretty Message Viewer", function(gui, node_id, params)
+    if not panels.states[node_id] then
+        panels.states[node_id] = { selected_ch = nil, filter = ffi.new("char[128]"), schema_fields = nil, last_schema_id = -1 }
+    end
+    local p_state = panels.states[node_id]
     
-    if gui.igButton(p_state.selected_ch and p_state.selected_ch.topic or "Select Pretty View...", ffi.new("ImVec2_c", {-1, 25})) then
-        open_topic_picker(gui, function(it) p_state.selected_ch = it.data end)
+    local requested_topic = params and params.topic_name
+    local channels = playback.channels or {}
+    
+    -- Sync selection with facet if needed
+    if requested_topic and (not p_state.selected_ch or p_state.selected_ch.topic ~= requested_topic) then
+        for _, ch in ipairs(channels) do
+            if ch.topic == requested_topic then
+                p_state.selected_ch = ch
+                break
+            end
+        end
     end
     
+    -- Check if current selection still exists in the current file
+    local current_exists = false
     if p_state.selected_ch then
+        for _, ch in ipairs(channels) do
+            if ch.id == p_state.selected_ch.id then
+                current_exists = true
+                break
+            end
+        end
+    end
+    
+    local display_name = p_state.selected_ch and p_state.selected_ch.topic or (requested_topic and (requested_topic .. " [MISSING]") or "Select Topic...")
+    
+    gui.igSetNextItemWidth(-1)
+    if gui.igBeginCombo("##TopicSelector", display_name, 0) then
+        gui.igInputText("##Search", p_state.filter, 128, 0, nil, nil)
+        local q = ffi.string(p_state.filter):lower()
+        
+        for _, ch in ipairs(channels) do
+            if q == "" or ch.topic:lower():find(q, 1, true) then
+                local selected = (p_state.selected_ch ~= nil) and (ch.id == p_state.selected_ch.id)
+                if gui.igSelectable_Bool(ch.topic, selected, 0, ffi.new("ImVec2_c", {0,0})) then
+                    p_state.selected_ch = ch
+                    p_state.schema_fields = nil -- Force re-parse
+                    gui.igCloseCurrentPopup()
+                end
+            end
+        end
+        gui.igEndCombo()
+    end
+    
+    if not current_exists and requested_topic then
+        gui.igTextColored(ffi.new("ImVec4_c", {1, 0.2, 0.2, 1}), "Target topic '%s' not found.", requested_topic)
+    end
+    
+    if current_exists and p_state.selected_ch then
         local ch = p_state.selected_ch
         local buf = playback.message_buffers[ch.id]
+        
+        -- Auto-parse schema once
+        if not p_state.schema_fields then
+            local raw = robot.lib.mcap_get_schema_content(playback.bridge, ch.id)
+            if raw ~= nil then
+                p_state.schema_fields = decoder.parse_schema(ffi.string(raw))
+            end
+        end
+
         if buf and buf.size > 0 then
             if gui.igTreeNode_Str("Metadata") then 
                 gui.igText("Topic: %s", ch.topic)
                 gui.igText("Type: %s", ch.schema)
                 gui.igText("Size: %d bytes", buf.size)
+                
+                local schema_raw = robot.lib.mcap_get_schema_content(playback.bridge, ch.id)
+                if schema_raw ~= nil then
+                    if gui.igTreeNode_Str("Schema Definition") then
+                        gui.igTextWrapped(ffi.string(schema_raw))
+                        gui.igTreePop()
+                    end
+                end
+                
                 gui.igTreePop() 
             end
             
+            -- AUTO-VALUES SECTION
+            if p_state.schema_fields then
+                if gui.igTreeNode_Str("Live Values") then
+                    local vals = decoder.decode(buf.data, p_state.schema_fields)
+                    if vals then
+                        if gui.igBeginTable("ValuesTable", 2, bit.bor(panels.Flags.TableBorders, panels.Flags.TableResizable), v2_zero, 0) then
+                            gui.igTableSetupColumn("Field", 0, 0, 0)
+                            gui.igTableSetupColumn("Value", 0, 0, 0)
+                            gui.igTableHeadersRow()
+                            for _, v in ipairs(vals) do
+                                gui.igTableNextRow(0, 0)
+                                gui.igTableNextColumn(); gui.igText("%s", v.name)
+                                gui.igTableNextColumn(); gui.igText(v.fmt, v.value)
+                            end
+                            gui.igEndTable()
+                        end
+                    end
+                    gui.igTreePop()
+                end
+            end
+
             if ch.topic == "lidar" then
                 if gui.igTreeNode_Str("PointCloud2 Table") then
                     if gui.igBeginTable("PtsTable", 4, bit.bor(panels.Flags.TableBorders, panels.Flags.TableResizable), v2_table, 0) then

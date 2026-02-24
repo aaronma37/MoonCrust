@@ -23,6 +23,10 @@ local M = {
         NoTickLabels = 16, 
         NoLabel = 1 
     },
+    Col = {
+        FrameBg = 7,
+        Text = 0,
+    }
 }
 
 function M.register(id, name, render_func)
