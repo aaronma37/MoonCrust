@@ -159,23 +159,57 @@ panels.register("pretty_viewer", "Pretty Message Viewer", function(gui, node_id,
     end
 end)
 
-panels.register("plotter", "Topic Plotter", function(gui, node_id)
-    local p_state = panels.states[node_id] or { selected_ch = nil }
-    panels.states[node_id] = p_state
+panels.register("plotter", "Topic Plotter", function(gui, node_id, params)
+    if not panels.states[node_id] then
+        panels.states[node_id] = { selected_ch = nil, filter = ffi.new("char[128]") }
+    end
+    local p_state = panels.states[node_id]
     
-    if gui.igButton(p_state.selected_ch and p_state.selected_ch.topic or "Select Topic to Plot...", ffi.new("ImVec2_c", {-1, 25})) then
-        open_topic_picker(gui, function(it) p_state.selected_ch = it.data end)
+    local requested_topic = params and params.topic_name
+    local channels = playback.channels or {}
+    
+    -- Sync selection with facet if needed
+    if requested_topic and (not p_state.selected_ch or p_state.selected_ch.topic ~= requested_topic) then
+        for _, ch in ipairs(channels) do
+            if ch.topic == requested_topic then
+                p_state.selected_ch = ch
+                break
+            end
+        end
+    end
+    
+    -- Searchable Topic Selector
+    local current_topic = p_state.selected_ch and p_state.selected_ch.topic or (requested_topic and (requested_topic .. " [MISSING]") or "Select Topic to Plot...")
+    gui.igSetNextItemWidth(-1)
+    if gui.igBeginCombo("##PlotSelector", current_topic, 0) then
+        gui.igInputText("##Search", p_state.filter, 128, 0, nil, nil)
+        local q = ffi.string(p_state.filter):lower()
+        for _, ch in ipairs(channels) do
+            if q == "" or ch.topic:lower():find(q, 1, true) then
+                local selected = (p_state.selected_ch ~= nil) and (ch.id == p_state.selected_ch.id)
+                if gui.igSelectable_Bool(ch.topic, selected, 0, ffi.new("ImVec2_c", {0,0})) then
+                    p_state.selected_ch = ch
+                    gui.igCloseCurrentPopup()
+                end
+            end
+        end
+        gui.igEndCombo()
     end
     
     if p_state.selected_ch then
         local h = playback.plot_history[p_state.selected_ch.id]
         if h and h.count > 0 then
-            if gui.ipBeginPlot("##History", ffi.new("ImVec2_c", {-1, -1}), 0) then
-                gui.ipSetupAxes("Sample", "Value", 0, 0)
-                gui.ipSetupAxisLimits(0, 0, 1000, 2) -- X Axis: 1000 samples
-                -- Use circular buffer aware plotting
-                gui.ipPlotLine_FloatPtrInt("Data", h.data, h.count, 1.0, 0.0, 0, h.head, 4)
-                gui.ipEndPlot()
+            if gui.ImPlot_BeginPlot("##History", ffi.new("ImVec2_c", {-1, -1}), 0) then
+                gui.ImPlot_SetupAxes("Sample", "Value", 0, 0)
+                gui.ImPlot_SetupAxisLimits(0, 0, 1000, 2) -- X Axis: 1000 samples
+                
+                local spec = ffi.new("ImPlotSpec_c")
+                spec.Stride = 4 -- Size of float
+                
+                -- Note: Minimal FFI doesn't support circular offset yet, 
+                -- so we just plot the raw buffer for now.
+                gui.ImPlot_PlotLine_FloatPtrInt("Data", h.data, h.count, 1.0, 0.0, spec)
+                gui.ImPlot_EndPlot()
             end
         else
             gui.igTextDisabled("(No numeric data for this topic)")
@@ -184,6 +218,30 @@ panels.register("plotter", "Topic Plotter", function(gui, node_id)
 end)
 
 panels.register("topics", "Topic List", function(gui, node_id)
+    if gui.igButton("Dump All Schemas to Terminal", ffi.new("ImVec2_c", {-1, 25})) then
+        print("\n" .. string.rep("=", 80))
+        print("MCAP SCHEMA DUMP")
+        print(string.rep("=", 80))
+        if playback.channels then
+            for _, ch in ipairs(playback.channels) do
+                print(string.format("\n[ TOPIC: %s ]", ch.topic))
+                print(string.format("  Schema Name: %s", ch.schema))
+                print(string.format("  Encoding:    %s", ch.encoding))
+                local raw = robot.lib.mcap_get_schema_content(playback.bridge, ch.id)
+                if raw ~= nil then
+                    print("  Definition:")
+                    print(ffi.string(raw))
+                else
+                    print("  (No schema definition found for this channel)")
+                end
+                print(string.rep("-", 40))
+            end
+        else
+            print("No file loaded.")
+        end
+        print(string.rep("=", 80) .. "\n")
+    end
+
     gui.igText("Discovered Topics")
     gui.igSeparator()
     if gui.igBeginTable("TopicTable", 3, bit.bor(panels.Flags.TableBorders, panels.Flags.TableResizable), v2_zero, 0) then
