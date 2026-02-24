@@ -130,11 +130,6 @@ function M.update(dt, raw_buffer)
                     end
                 end
             end
-            
-            if ch_id == M.pose_ch_id then
-                local p = ffi.cast("Pose*", M.current_msg.data)
-                M.robot_pose.x, M.robot_pose.y, M.robot_pose.z, M.robot_pose.yaw = p.x, p.y, p.z, p.yaw
-            end
         end
         
         if ch_id == M.lidar_ch_id and raw_buffer and raw_buffer.allocation.ptr ~= nil then 

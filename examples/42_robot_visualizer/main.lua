@@ -429,9 +429,21 @@ function M.update()
         end
     end
 
+    -- Find parameters for the first 3D view if it exists
+    local view3d_params = nil
+    local function find_3d_params(node)
+        if node.type == "view" then
+            if node.facet and config.facets and config.facets[node.facet] and config.facets[node.facet].panel == "view3d" then
+                view3d_params = config.facets[node.facet].params
+                return true
+            elseif node.view_type == "view3d" then return true end
+        else return find_3d_params(node.children[1]) or find_3d_params(node.children[2]) end
+    end
+    find_3d_params(state.layout)
+
     -- Update the specific raw buffer for THIS frame
     playback.update(dt, raw_buffers[frame_idx + 1])
-    view_3d.update_robot_buffer(frame_idx)
+    view_3d.update_robot_buffer(frame_idx, view3d_params)
 
     -- Camera navigation (unchanged)
     local gui, io = imgui.gui, imgui.gui.igGetIO_Nil()

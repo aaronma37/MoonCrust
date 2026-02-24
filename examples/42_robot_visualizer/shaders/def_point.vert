@@ -11,16 +11,24 @@ layout(push_constant) uniform PC {
     mat4 view_proj;
     uint buf_idx;
     float point_size;
+    vec4 pose_offset; // [x, y, z, yaw]
 } pc;
 
 void main() {
     vec4 p = all_buffers[nonuniformEXT(pc.buf_idx)].pos[gl_VertexIndex];
-    vec4 worldPos = vec4(p.xyz, 1.0);
-    gl_Position = pc.view_proj * worldPos;
+    
+    // Rotate and Translate if pose_offset is provided
+    float s = sin(pc.pose_offset.w);
+    float c = cos(pc.pose_offset.w);
+    vec3 worldPos;
+    worldPos.x = p.x * c - p.y * s + pc.pose_offset.x;
+    worldPos.y = p.x * s + p.y * c + pc.pose_offset.y;
+    worldPos.z = p.z + pc.pose_offset.z;
+
+    gl_Position = pc.view_proj * vec4(worldPos, 1.0);
     gl_PointSize = pc.point_size;
     
-    // Simple height-based color
     vColor = vec4(0.2, 0.5, 1.0, 1.0) * (p.z + 1.0);
-    vPos = worldPos.xyz;
-    vNormal = vec3(0.0, 0.0, 1.0); // Default normal for points
+    vPos = worldPos;
+    vNormal = vec3(0.0, 0.0, 1.0);
 }

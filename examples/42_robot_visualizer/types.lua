@@ -5,7 +5,7 @@ ffi.cdef[[
     typedef struct LineVertex { float x, y, z; float r, g, b, a; } LineVertex;
     typedef struct Pose { float x, y, z, yaw; } Pose;
     typedef struct ParserPC { uint32_t in_buf_idx; uint32_t in_offset_u32; uint32_t out_buf_idx; uint32_t count; } ParserPC;
-    typedef struct RenderPC { float view_proj[16]; uint32_t buf_idx; float point_size; } RenderPC;
+    typedef struct RenderPC { float view_proj[16]; uint32_t buf_idx; float point_size; float pose_offset[4]; } RenderPC;
     typedef struct LidarCallbackData { float x, y, w, h; } LidarCallbackData;
     
     typedef int ImGuiAxis;

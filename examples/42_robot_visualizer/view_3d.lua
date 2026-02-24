@@ -8,6 +8,8 @@ local command = require("vulkan.command")
 local mc = require("mc")
 local panels = require("examples.42_robot_visualizer.ui.panels")
 local playback = require("examples.42_robot_visualizer.playback")
+local primitives = require("examples.42_robot_visualizer.primitives")
+local robot = require("mc.robot")
 local imgui = require("imgui")
 
 local M = {
@@ -17,7 +19,7 @@ local M = {
     pipe_layout = nil, pipe_render_g = nil, pipe_line_g = nil,
     pipe_layout_light = nil, pipe_light = nil,
     -- Buffers
-    point_buffer = nil, line_buffer = nil, line_count = 0, robot_buffer = nil, robot_line_count = 24,
+    point_buffer = nil, line_buffer = nil, line_count = 0, robot_buffers = nil, robot_line_count = 128,
     
     -- Deferred Targets
     w = 1920, h = 1080,
@@ -183,11 +185,14 @@ end
 local igImage_hack = nil
 
 function M.register_panels()
-    panels.register("view3d", "3D Scene", function(gui, node_id)
+    panels.register("view3d", "3D Scene", function(gui, node_id, params)
         if not igImage_hack then
             igImage_hack = ffi.cast("void(*)(void*, uint64_t, ImVec2_c, ImVec2_c, ImVec2_c)", gui.igImage)
         end
         
+        -- Store params for the rendering pass
+        M.current_params = params
+
         local p = gui.igGetWindowPos()
         local s = gui.igGetContentRegionAvail()
         gui.igInvisibleButton("##scene_hit", s, 0)
@@ -208,39 +213,74 @@ function M.register_panels()
     end)
 end
 
-function M.update_robot_buffer(frame_idx)
+function M.update_robot_buffer(frame_idx, params)
     local rv = ffi.cast("LineVertex*", M.robot_buffers[frame_idx + 1].allocation.ptr)
-    local px, py, pz, yaw = playback.robot_pose.x, playback.robot_pose.y, playback.robot_pose.z, playback.robot_pose.yaw
-    local s, c = math.sin(yaw), math.cos(yaw)
-    local function add_robot_line(idx, x1,y1,z1, x2,y2,z2, r,g,b,a)
-        local rx1, ry1 = x1*c - y1*s, x1*s + y1*c
-        local rx2, ry2 = x2*c - y2*s, x2*s + y2*c
-        rv[idx].x, rv[idx].y, rv[idx].z = px+rx1, py+ry1, pz+z1
-        rv[idx].r, rv[idx].g, rv[idx].b, rv[idx].a = r, g, b, a
-        rv[idx+1].x, rv[idx+1].y, rv[idx+1].z = px+rx2, py+ry2, pz+z2
-        rv[idx+1].r, rv[idx+1].g, rv[idx+1].b, rv[idx+1].a = r, g, b, a
-        return idx + 2
+    
+    -- 1. Extract Pose Dynamically from Params
+    local px, py, pz, yaw = 0, 0, 0, 0
+    local pose_topic = params and params.pose_topic
+    
+    if pose_topic then
+        local ch = nil
+        if playback.channels then
+            for _, c in ipairs(playback.channels) do if c.topic == pose_topic then ch = c; break end end
+        end
+        
+        if ch then
+            local buf = playback.message_buffers[ch.id]
+            if buf and buf.size > 0 then
+                -- Reuse or fetch schema
+                if not M.pose_schema then
+                    local raw = robot.lib.mcap_get_schema_content(playback.bridge, ch.id)
+                    if raw then 
+                        M.pose_schema = require("examples.42_robot_visualizer.decoder").parse_schema(ffi.string(raw)) 
+                        print("Pose: Schema loaded for", pose_topic)
+                    end
+                end
+                
+                if M.pose_schema then
+                    local vals = require("examples.42_robot_visualizer.decoder").decode(buf.data, M.pose_schema)
+                    for _, v in ipairs(vals) do
+                        if v.name:find("%.x$") or v.name == "x" then px = tonumber(v.value) end
+                        if v.name:find("%.y$") or v.name == "y" then py = tonumber(v.value) end
+                        if v.name:find("%.z$") or v.name == "z" then pz = tonumber(v.value) end
+                        if v.name:find("yaw") or v.name:find("heading") then yaw = tonumber(v.value) end
+                    end
+                end
+            end
+        else
+            -- Topic not found yet, don't spam
+        end
     end
-    local cur_i = 0
-    cur_i = add_robot_line(cur_i, -2.5,-2.5,0,  2.5,-2.5,0, 1,1,0,1)
-    cur_i = add_robot_line(cur_i,  2.5,-2.5,0,  2.5, 2.5,0, 1,1,0,1)
-    cur_i = add_robot_line(cur_i,  2.5, 2.5,0, -2.5, 2.5,0, 1,1,0,1)
-    cur_i = add_robot_line(cur_i, -2.5, 2.5,0, -2.5,-2.5,0, 1,1,0,1)
-    cur_i = add_robot_line(cur_i, -2.5,-2.5,2.5,  2.5,-2.5,2.5, 1,1,0,1)
-    cur_i = add_robot_line(cur_i,  2.5,-2.5,2.5,  2.5, 2.5,2.5, 1,1,0,1)
-    cur_i = add_robot_line(cur_i,  2.5, 2.5,2.5, -2.5, 2.5,2.5, 1,1,0,1)
-    cur_i = add_robot_line(cur_i, -2.5, 2.5,2.5, -2.5,-2.5,2.5, 1,1,0,1)
-    cur_i = add_robot_line(cur_i, -2.5,-2.5,0, -2.5,-2.5,2.5, 1,1,0,1)
-    cur_i = add_robot_line(cur_i,  2.5,-2.5,0,  2.5,-2.5,2.5, 1,1,0,1)
-    cur_i = add_robot_line(cur_i,  2.5, 2.5,0,  2.5, 2.5,2.5, 1,1,0,1)
-    cur_i = add_robot_line(cur_i, -2.5, 2.5,0, -2.5, 2.5,2.5, 1,1,0,1)
+    
+    -- Store current pose for camera following
+    M.current_pose = { x = px, y = py, z = pz, yaw = yaw }
+
+    -- 2. Create Base Primitives
+    local box = primitives.create_box(2.0, 2.0, 1.0, 1, 1, 0, 1) -- Smaller robot box
+    local axes = primitives.create_axes(3.0) -- TF Axes
+    
+    -- 3. Transform and Copy
+    local combined = {}
+    for _, v in ipairs(primitives.transform(box, px, py, pz, yaw)) do table.insert(combined, v) end
+    for _, v in ipairs(primitives.transform(axes, px, py, pz, yaw)) do table.insert(combined, v) end
+    
+    for i, v in ipairs(combined) do
+        if i > M.robot_line_count then break end
+        rv[i-1].x, rv[i-1].y, rv[i-1].z = v.x, v.y, v.z
+        rv[i-1].r, rv[i-1].g, rv[i-1].b, rv[i-1].a = v.r, v.g, v.b, v.a
+    end
+    M.active_robot_line_count = #combined
+    -- print("DEBUG: Robot Visual Lines:", M.active_robot_line_count, "at", px, py, pz)
 end
 
 function M.render_deferred(cb_handle, point_buf_idx, frame_idx, point_count)
-    if M.cam.follow then
-        M.cam.target[1] = playback.robot_pose.x
-        M.cam.target[2] = playback.robot_pose.y
-        M.cam.target[3] = playback.robot_pose.z + 0.5
+    local params = M.current_params or {}
+    
+    if (params.follow ~= false) and M.current_pose then
+        M.cam.target[1] = M.current_pose.x
+        M.cam.target[2] = M.current_pose.y
+        M.cam.target[3] = M.current_pose.z + 2.0
     end
 
     local rx, ry = mc.rad(M.cam.orbit_x), mc.rad(M.cam.orbit_y)
@@ -253,7 +293,18 @@ function M.render_deferred(cb_handle, point_buf_idx, frame_idx, point_count)
     local v = mc.mat4_look_at({static.cam_pos.x, static.cam_pos.y, static.cam_pos.z}, {static.cam_target.x, static.cam_target.y, static.cam_target.z}, {0,0,1})
     local mvp = mc.mat4_multiply(p, v)
     for i=0,15 do static.pc_r.view_proj[i] = mvp.m[i] end
-    static.pc_r.buf_idx, static.pc_r.point_size = point_buf_idx or 11, 3.0
+    
+    static.pc_r.buf_idx = point_buf_idx or 11
+    static.pc_r.point_size = params.point_size or 2.0
+    
+    if (params.attach ~= false) and M.current_pose then
+        static.pc_r.pose_offset[0] = M.current_pose.x
+        static.pc_r.pose_offset[1] = M.current_pose.y
+        static.pc_r.pose_offset[2] = M.current_pose.z
+        static.pc_r.pose_offset[3] = M.current_pose.yaw
+    else
+        static.pc_r.pose_offset[0], static.pc_r.pose_offset[1], static.pc_r.pose_offset[2], static.pc_r.pose_offset[3] = 0,0,0,0
+    end
 
     static.img_barrier_g[0].oldLayout = vk.VK_IMAGE_LAYOUT_UNDEFINED; static.img_barrier_g[0].newLayout = vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL; static.img_barrier_g[0].srcAccessMask = 0; static.img_barrier_g[0].dstAccessMask = vk.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT
     static.img_barrier_g[1].oldLayout = vk.VK_IMAGE_LAYOUT_UNDEFINED; static.img_barrier_g[1].newLayout = vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL; static.img_barrier_g[1].srcAccessMask = 0; static.img_barrier_g[1].dstAccessMask = vk.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT
@@ -276,7 +327,7 @@ function M.render_deferred(cb_handle, point_buf_idx, frame_idx, point_count)
 
     static.v_buffs[0] = M.robot_buffers[(frame_idx or 0) + 1].handle
     vk.vkCmdBindVertexBuffers(cb_handle, 0, 1, static.v_buffs, static.v_offs)
-    vk.vkCmdDraw(cb_handle, M.robot_line_count, 1, 0, 0)
+    vk.vkCmdDraw(cb_handle, M.active_robot_line_count or 0, 1, 0, 0)
 
     vk.vkCmdBindPipeline(cb_handle, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, M.pipe_render_g)
     vk.vkCmdPushConstants(cb_handle, M.pipe_layout, vk.VK_SHADER_STAGE_ALL_GRAPHICS, 0, ffi.sizeof("RenderPC"), static.pc_r)

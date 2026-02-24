@@ -8,7 +8,9 @@ M.facets = {
         params = { 
             topic_name = "/livox/lidar", 
             pose_topic = "/dji_osdk_ros/local_position",
-            point_size = 2.0
+            point_size = 2.0,
+            follow = true,
+            attach = true
         }
     },
     MarsTelemetryInspector = {
