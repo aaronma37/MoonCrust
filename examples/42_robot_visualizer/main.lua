@@ -177,17 +177,23 @@ function M.init()
     
     M.header = require("examples.42_robot_visualizer.ui.header")
     
-    -- CLI Argument Handling
+    -- CLI Argument Handling (Robust Loop)
     if _ARGS then
-        for i=2, 10 do -- Scan a reasonable range of args
-            local arg = _ARGS[i]
-            if not arg then break end
-            if arg == "--maximized" then
-                print("CLI: Maximizing window")
-                sdl.SDL_MaximizeWindow(_G._SDL_WINDOW)
-            elseif not arg:find("^--") then
-                print("CLI: Auto-loading file:", arg)
-                playback.load_mcap(arg)
+        print("CLI: Processing arguments...")
+        for _, arg in pairs(_ARGS) do
+            if type(arg) == "string" then
+                if arg == "--maximized" then
+                    print("CLI: Signal -> Maximize Window")
+                    sdl.SDL_MaximizeWindow(_G._SDL_WINDOW)
+                elseif arg:find("%.mcap$") or arg:find("%.mcap@") then
+                    local clean_path = arg:gsub("^@", "")
+                    print("CLI: Signal -> Load MCAP: " .. clean_path)
+                    if playback.load_mcap(clean_path) then
+                        playback.paused = false 
+                        playback.seek_to = playback.start_time
+                        _G._ACTIVE_MCAP = clean_path:match("([^/]+)$")
+                    end
+                end
             end
         end
     end
@@ -256,7 +262,9 @@ local function render_file_dialog(gui)
         gui.igInputText("Selected", state.file_dialog.path, 256, 0, nil, nil)
         
         if gui.igButton("Load", ffi.new("ImVec2_c", {80, 0})) then
-            playback.load_mcap(ffi.string(state.file_dialog.path))
+            local path = ffi.string(state.file_dialog.path)
+            playback.load_mcap(path)
+            _G._ACTIVE_MCAP = path:match("([^/]+)$")
             gui.igCloseCurrentPopup()
         end
         gui.igSameLine(0, 10)
@@ -466,17 +474,45 @@ function M.update()
     find_3d_params(state.layout)
     
     -- Dynamically link Lidar Channel for Playback
-    if view3d_params and view3d_params.topic_name then
-        local found = false
-        if playback.channels then
+    if playback.channels and #playback.channels > 0 then
+        local target_id = -1
+        
+        -- 1. Try to find the specific topic from config/facets
+        local requested_topic = nil
+        if view3d_params and view3d_params.objects then
+            for _, obj in ipairs(view3d_params.objects) do
+                if obj.type == "lidar" and obj.topic then requested_topic = obj.topic; break end
+            end
+        end
+        if not requested_topic and view3d_params then requested_topic = view3d_params.topic_name end
+
+        if requested_topic then
             for _, ch in ipairs(playback.channels) do
-                if ch.topic == view3d_params.topic_name then
-                    playback.lidar_ch_id = ch.id
-                    found = true; break
+                if ch.topic == requested_topic then target_id = ch.id; break end
+            end
+        end
+
+        -- 2. Fallback: Search for PointCloud2 schema (The standard for Lidar)
+        if target_id == -1 then
+            for _, ch in ipairs(playback.channels) do
+                if ch.schema:find("PointCloud2") then 
+                    print("CLI: Auto-linking Lidar via schema match:", ch.topic)
+                    target_id = ch.id; break 
                 end
             end
         end
-        if not found then playback.lidar_ch_id = -1 end
+
+        -- 3. Fallback: Search for "lidar" in topic name
+        if target_id == -1 then
+            for _, ch in ipairs(playback.channels) do
+                if ch.topic:lower():find("lidar") then 
+                    print("CLI: Auto-linking Lidar via name match:", ch.topic)
+                    target_id = ch.id; break 
+                end
+            end
+        end
+
+        playback.lidar_ch_id = target_id
     end
 
     -- Update the specific raw buffer for THIS frame
