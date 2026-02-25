@@ -158,7 +158,10 @@ local function render_node(node, x, y, w, h, gui, id_path)
             local vt, pms = node.view_type, nil
             if node.facet and config.facets and config.facets[node.facet] then local f = config.facets[node.facet]; vt, pms = f.panel, f.params end
             local p = panels.list[vt]
-            if p then pcall(p.render, gui, node.id, pms) end
+            if p then 
+                local ok, err = pcall(p.render, gui, node.id, pms)
+                if not ok then print("ERROR IN PANEL [" .. node.title .. "]: " .. tostring(err)) end
+            end
         end
         gui.igEnd()
     end

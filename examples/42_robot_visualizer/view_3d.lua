@@ -45,11 +45,14 @@ local static = {
     depth_attach = ffi.new("VkRenderingAttachmentInfo", { sType = vk.VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, imageLayout = vk.VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL, loadOp = vk.VK_ATTACHMENT_LOAD_OP_CLEAR, storeOp = vk.VK_ATTACHMENT_STORE_OP_STORE }),
     color_attach_g = ffi.new("VkRenderingAttachmentInfo[3]"),
     color_attach_l = ffi.new("VkRenderingAttachmentInfo[1]"),
+    color_attach_plot = ffi.new("VkRenderingAttachmentInfo[1]"),
     img_barrier_g = ffi.new("VkImageMemoryBarrier[4]"),
     img_barrier_l = ffi.new("VkImageMemoryBarrier[1]"),
+    img_barrier_plot = ffi.new("VkImageMemoryBarrier[1]"),
     img_barrier_b = ffi.new("VkImageMemoryBarrier[1]"),
     render_info_g = ffi.new("VkRenderingInfo", { sType = vk.VK_STRUCTURE_TYPE_RENDERING_INFO, layerCount = 1, colorAttachmentCount = 3 }),
     render_info_l = ffi.new("VkRenderingInfo", { sType = vk.VK_STRUCTURE_TYPE_RENDERING_INFO, layerCount = 1, colorAttachmentCount = 1 }),
+    render_info_plot = ffi.new("VkRenderingInfo", { sType = vk.VK_STRUCTURE_TYPE_RENDERING_INFO, layerCount = 1, colorAttachmentCount = 1 }),
     m_proj = ffi.new("mc_mat4"),
     m_view = ffi.new("mc_mat4"),
     m_mvp = ffi.new("mc_mat4"),
@@ -108,12 +111,14 @@ function M.init(device, bindless_set, sw)
     M.g_color, M.g_normal, M.g_pos = mc.image(M.w, M.h, vk.VK_FORMAT_R8G8B8A8_UNORM, "color_attachment_sampled"), mc.image(M.w, M.h, vk.VK_FORMAT_R16G16B16A16_SFLOAT, "color_attachment_sampled"), mc.image(M.w, M.h, vk.VK_FORMAT_R32G32B32A32_SFLOAT, "color_attachment_sampled")
     M.final_color, M.blurred_color = mc.image(M.w, M.h, vk.VK_FORMAT_R8G8B8A8_UNORM, "color_attachment_sampled"), mc.image(M.w, M.h, vk.VK_FORMAT_R8G8B8A8_UNORM, "storage_sampled")
     M.depth_image = mc.image(M.w, M.h, vk.VK_FORMAT_D32_SFLOAT, "depth")
+    M.plot_image = mc.image(2048, 1024, vk.VK_FORMAT_B8G8R8A8_UNORM, "color_attachment_sampled")
 
     descriptors.update_image_set(device, bindless_set, 1, vk.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, M.g_color.view, sampler, vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 100)
     descriptors.update_image_set(device, bindless_set, 1, vk.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, M.g_normal.view, sampler, vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 101)
     descriptors.update_image_set(device, bindless_set, 1, vk.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, M.g_pos.view, sampler, vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 102)
     descriptors.update_image_set(device, bindless_set, 1, vk.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, M.final_color.view, sampler, vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, M.final_color_idx)
     descriptors.update_image_set(device, bindless_set, 1, vk.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, M.blurred_color.view, sampler, vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, M.blurred_color_idx)
+    descriptors.update_image_set(device, bindless_set, 1, vk.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, M.plot_image.view, sampler, vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 105)
     descriptors.update_image_set(device, bindless_set, 2, vk.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, M.blurred_color.view, nil, vk.VK_IMAGE_LAYOUT_GENERAL, M.blurred_color_idx)
 
     static.depth_attach.imageView = M.depth_image.view
@@ -123,15 +128,20 @@ function M.init(device, bindless_set, sw)
     static.render_info_g.renderArea.extent, static.render_info_g.pColorAttachments, static.render_info_g.pDepthAttachment = {width=M.w, height=M.h}, static.color_attach_g, static.depth_attach
     static.color_attach_l[0].sType, static.color_attach_l[0].imageLayout, static.color_attach_l[0].loadOp, static.color_attach_l[0].storeOp, static.color_attach_l[0].imageView = vk.VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, vk.VK_ATTACHMENT_LOAD_OP_DONT_CARE, vk.VK_ATTACHMENT_STORE_OP_STORE, M.final_color.view
     static.render_info_l.renderArea.extent, static.render_info_l.pColorAttachments = {width=M.w, height=M.h}, static.color_attach_l
+    static.color_attach_plot[0].sType, static.color_attach_plot[0].imageLayout, static.color_attach_plot[0].loadOp, static.color_attach_plot[0].storeOp, static.color_attach_plot[0].imageView = vk.VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, vk.VK_ATTACHMENT_LOAD_OP_CLEAR, vk.VK_ATTACHMENT_STORE_OP_STORE, M.plot_image.view
+    static.color_attach_plot[0].clearValue.color.float32[0], static.color_attach_plot[0].clearValue.color.float32[1], static.color_attach_plot[0].clearValue.color.float32[2], static.color_attach_plot[0].clearValue.color.float32[3] = 0, 0, 0, 0
+    static.render_info_plot.renderArea.extent, static.render_info_plot.pColorAttachments = {width=2048, height=1024}, static.color_attach_plot
     for i=0,3 do static.img_barrier_g[i].sType, static.img_barrier_g[i].subresourceRange.levelCount, static.img_barrier_g[i].subresourceRange.layerCount = vk.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, 1, 1 end
     static.img_barrier_g[0].image, static.img_barrier_g[0].subresourceRange.aspectMask = M.g_color.handle, vk.VK_IMAGE_ASPECT_COLOR_BIT
     static.img_barrier_g[1].image, static.img_barrier_g[1].subresourceRange.aspectMask = M.g_normal.handle, vk.VK_IMAGE_ASPECT_COLOR_BIT
     static.img_barrier_g[2].image, static.img_barrier_g[2].subresourceRange.aspectMask = M.g_pos.handle, vk.VK_IMAGE_ASPECT_COLOR_BIT
     static.img_barrier_g[3].image, static.img_barrier_g[3].subresourceRange.aspectMask = M.depth_image.handle, vk.VK_IMAGE_ASPECT_DEPTH_BIT
     static.img_barrier_l[0].sType, static.img_barrier_l[0].image, static.img_barrier_l[0].subresourceRange.levelCount, static.img_barrier_l[0].subresourceRange.layerCount, static.img_barrier_l[0].subresourceRange.aspectMask = vk.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, M.final_color.handle, 1, 1, vk.VK_IMAGE_ASPECT_COLOR_BIT
+    static.img_barrier_plot[0].sType, static.img_barrier_plot[0].image, static.img_barrier_plot[0].subresourceRange.levelCount, static.img_barrier_plot[0].subresourceRange.layerCount, static.img_barrier_plot[0].subresourceRange.aspectMask = vk.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, M.plot_image.handle, 1, 1, vk.VK_IMAGE_ASPECT_COLOR_BIT
     static.img_barrier_b[0].sType, static.img_barrier_b[0].image, static.img_barrier_b[0].subresourceRange.levelCount, static.img_barrier_b[0].subresourceRange.layerCount, static.img_barrier_b[0].subresourceRange.aspectMask = vk.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, M.blurred_color.handle, 1, 1, vk.VK_IMAGE_ASPECT_COLOR_BIT
 
     M.robot_buffers = { mc.buffer(M.robot_line_count * ffi.sizeof("LineVertex"), "vertex", nil, true), mc.buffer(M.robot_line_count * ffi.sizeof("LineVertex"), "vertex", nil, true) }
+    M.plot_queue = {}
     descriptors.update_buffer_set(device, bindless_set, 0, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, M.robot_buffers[1].handle, 0, M.robot_buffers[1].size, 14)
     descriptors.update_buffer_set(device, bindless_set, 0, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, M.robot_buffers[2].handle, 0, M.robot_buffers[2].size, 15)
 end
@@ -157,32 +167,15 @@ function M.register_panels()
     end)
 end
 
-function M.on_plot_callback(cb, data_ptr)
-    local data = ffi.cast("PlotCallbackData*", data_ptr)
-    vk.vkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, M.pipe_plot)
-    local slot_size = playback.MSG_SIZE_MAX * playback.HISTORY_MAX
-    local channel_idx = -1
-    for i, ch in ipairs(playback.channels) do if ch.id == data.ch_id then channel_idx = i-1; break end end
-    if channel_idx == -1 then return end
-    static.pc_plot.gtb_idx, static.pc_plot.slot_offset, static.pc_plot.msg_size, static.pc_plot.head_idx, static.pc_plot.field_offset, static.pc_plot.history_count, static.pc_plot.is_double, static.pc_plot.range_min, static.pc_plot.range_max = 50, channel_idx * slot_size, playback.MSG_SIZE_MAX, playback.get_gtb_slot_index(data.ch_id), data.field_offset, playback.HISTORY_MAX, data.is_double, data.range_min, data.range_max
-    static.pc_plot.view_min[0], static.pc_plot.view_min[1], static.pc_plot.view_max[0], static.pc_plot.view_max[1] = data.x, data.y, data.x + data.w, data.y + data.h
-    
-    local io = imgui.gui.igGetIO_Nil()
-    static.pc_plot.uScale[0], static.pc_plot.uScale[1] = 2.0 / io.DisplaySize.x, 2.0 / io.DisplaySize.y
-    static.pc_plot.uTranslate[0], static.pc_plot.uTranslate[1] = -1.0 - io.DisplayPos.x * static.pc_plot.uScale[0], -1.0 - io.DisplayPos.y * static.pc_plot.uScale[1]
-
-    local scissor = ffi.new("VkRect2D")
-    scissor.offset.x = math.max(0, math.floor(data.x - io.DisplayPos.x))
-    scissor.offset.y = math.max(0, math.floor(data.y - io.DisplayPos.y))
-    scissor.extent.width = math.floor(data.w)
-    scissor.extent.height = math.floor(data.h)
-    vk.vkCmdSetScissor(cb, 0, 1, ffi.new("VkRect2D[1]", {scissor}))
-
-    local viewport = ffi.new("VkViewport", {0, 0, io.DisplaySize.x, io.DisplaySize.y, 0, 1})
-    vk.vkCmdSetViewport(cb, 0, 1, ffi.new("VkViewport[1]", {viewport}))
-
-    vk.vkCmdPushConstants(cb, M.pipe_layout_plot, vk.VK_SHADER_STAGE_VERTEX_BIT, 0, ffi.sizeof("PlotPC"), static.pc_plot)
-    vk.vkCmdDraw(cb, playback.HISTORY_MAX, 1, 0, 0)
+function M.enqueue_plot(data)
+    table.insert(M.plot_queue, {
+        ch_id = data.ch_id,
+        field_offset = data.field_offset,
+        is_double = data.is_double,
+        range_min = data.range_min,
+        range_max = data.range_max,
+        x = data.x, y = data.y, w = data.w, h = data.h
+    })
 end
 
 function M.update_robot_buffer(frame_idx, params)
@@ -226,6 +219,54 @@ function M.update_robot_buffer(frame_idx, params)
 end
 
 function M.render_deferred(cb_handle, point_buf_idx, frame_idx, point_count)
+    if #M.plot_queue > 0 then
+        static.img_barrier_plot[0].oldLayout, static.img_barrier_plot[0].newLayout, static.img_barrier_plot[0].srcAccessMask, static.img_barrier_plot[0].dstAccessMask = vk.VK_IMAGE_LAYOUT_UNDEFINED, vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 0, vk.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT
+        vk.vkCmdPipelineBarrier(cb_handle, vk.VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, vk.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, nil, 0, nil, 1, static.img_barrier_plot)
+        vk.vkCmdBeginRendering(cb_handle, static.render_info_plot)
+        
+        vk.vkCmdBindPipeline(cb_handle, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, M.pipe_plot)
+        local sets = ffi.new("VkDescriptorSet[1]", {mc.gpu.get_bindless_set()})
+        vk.vkCmdBindDescriptorSets(cb_handle, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, M.pipe_layout_plot, 0, 1, sets, 0, nil)
+        
+        local viewport = ffi.new("VkViewport", {0, 0, 2048, 1024, 0, 1})
+        vk.vkCmdSetViewport(cb_handle, 0, 1, ffi.new("VkViewport[1]", {viewport}))
+        local scissor = ffi.new("VkRect2D", {{0,0}, {2048, 1024}})
+        vk.vkCmdSetScissor(cb_handle, 0, 1, ffi.new("VkRect2D[1]", {scissor}))
+
+        local slot_size = playback.MSG_SIZE_MAX * playback.HISTORY_MAX
+        for _, p in ipairs(M.plot_queue) do
+            local channel_idx = -1
+            if playback.channels then
+                for i, ch in ipairs(playback.channels) do if ch.id == p.ch_id then channel_idx = i-1; break end end
+            end
+            if channel_idx ~= -1 then
+                static.pc_plot.gtb_idx = 50
+                static.pc_plot.slot_offset = channel_idx * slot_size
+                static.pc_plot.msg_size = playback.MSG_SIZE_MAX
+                static.pc_plot.head_idx = playback.get_gtb_slot_index(p.ch_id)
+                static.pc_plot.field_offset = p.field_offset
+                static.pc_plot.history_count = playback.HISTORY_MAX
+                static.pc_plot.is_double = p.is_double
+                static.pc_plot.range_min = p.range_min
+                static.pc_plot.range_max = p.range_max
+                
+                static.pc_plot.view_min[0] = -1.0
+                static.pc_plot.view_min[1] = -1.0
+                static.pc_plot.view_max[0] = 1.0
+                static.pc_plot.view_max[1] = 1.0
+                static.pc_plot.uScale[0], static.pc_plot.uScale[1] = 1.0, 1.0
+                static.pc_plot.uTranslate[0], static.pc_plot.uTranslate[1] = 0.0, 0.0
+                
+                vk.vkCmdPushConstants(cb_handle, M.pipe_layout_plot, vk.VK_SHADER_STAGE_VERTEX_BIT, 0, ffi.sizeof("PlotPC"), static.pc_plot)
+                vk.vkCmdDraw(cb_handle, playback.HISTORY_MAX, 1, 0, 0)
+            end
+        end
+        vk.vkCmdEndRendering(cb_handle)
+        static.img_barrier_plot[0].oldLayout, static.img_barrier_plot[0].newLayout, static.img_barrier_plot[0].srcAccessMask, static.img_barrier_plot[0].dstAccessMask = vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, vk.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, vk.VK_ACCESS_SHADER_READ_BIT
+        vk.vkCmdPipelineBarrier(cb_handle, vk.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, vk.VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nil, 0, nil, 1, static.img_barrier_plot)
+        M.plot_queue = {}
+    end
+
     local params = M.current_params or {}
     if M.current_pose then
         M.cam.target[0], M.cam.target[1], M.cam.target[2] = M.current_pose.x, M.current_pose.y, M.current_pose.z + 2.0
