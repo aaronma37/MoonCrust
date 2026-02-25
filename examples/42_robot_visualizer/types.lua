@@ -6,7 +6,9 @@ ffi.cdef[[
     typedef struct Pose { float x, y, z, yaw; } Pose;
     typedef struct ParserPC { uint32_t in_buf_idx; uint32_t in_offset_u32; uint32_t out_buf_idx; uint32_t count; uint32_t in_stride_u32; uint32_t in_pos_offset_u32; } ParserPC;
     typedef struct RenderPC { float view_proj[16]; uint32_t buf_idx; float point_size; float viewport_size[2]; float pose_offset[4]; } RenderPC;
+    typedef struct PlotPC { uint32_t gtb_idx, slot_offset, msg_size, head_idx, field_offset, history_count, is_double; float range_min, range_max; float view_min[2], view_max[2], screen_size[2]; } PlotPC;
     typedef struct LidarCallbackData { float x, y, w, h; } LidarCallbackData;
+    typedef struct PlotCallbackData { uint32_t ch_id, field_offset, is_double; float range_min, range_max; float x, y, w, h; } PlotCallbackData;
     
     typedef int ImGuiAxis;
     typedef struct ImDrawList ImDrawList;

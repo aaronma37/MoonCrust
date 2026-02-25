@@ -43,128 +43,89 @@ end
 function M.parse_schema(schema_text)
     if not schema_text then return nil end
     local type_lib = {}
-    local sections = {}
-    
-    -- ROS2 Schema separator is a line of '=' signs
     local parts = {}
-    for part in schema_text:gmatch("[^=]+") do
-        table.insert(parts, part)
-    end
-
+    for part in schema_text:gmatch("[^=]+") do table.insert(parts, part) end
     local first_def = nil
     for _, part in ipairs(parts) do
         local type_name = part:match("MSG:%s+([%w_/]+)")
         local def = parse_single_definition(part)
         if #def > 0 then
             if not first_def then first_def = def end
-            if type_name then
-                type_lib[type_name] = def
-                type_lib[type_name:gsub(".*/", "")] = def
-            end
+            if type_name then type_lib[type_name] = def; type_lib[type_name:gsub(".*/", "")] = def end
         end
     end
-    
     return { main = first_def or {}, lib = type_lib }
 end
 
--- Recursive size calculation for CDR skipping
 local function calculate_static_size(schema, fields)
     local size = 0
     for _, f in ipairs(fields) do
-        if f.is_array and not f.array_size then return nil end -- Dynamic
-        if f.type == "string" then return nil end -- Dynamic
-        
+        if f.is_array and not f.array_size then return nil end
+        if f.type == "string" then return nil end
         local item_size = 0
-        if PRIMITIVES[f.type] then
-            item_size = PRIMITIVES[f.type].size
+        if PRIMITIVES[f.type] then item_size = PRIMITIVES[f.type].size
         else
             local sub = schema.lib[f.type] or schema.lib[f.type:gsub(".*/", "")]
             if not sub then return nil end
-            item_size = calculate_static_size(schema, sub)
-            if not item_size then return nil end
+            item_size = calculate_static_size(schema, sub); if not item_size then return nil end
         end
-        
-        if f.is_array then
-            size = align(size, 4) -- Arrays of anything align to at least 4 in CDR
-            size = size + item_size * f.array_size
-        else
-            size = align(size, item_size < 8 and item_size or 8) + item_size
-        end
+        if f.is_array then size = align(size, 4) + item_size * f.array_size
+        else size = align(size, item_size < 8 and item_size or 8) + item_size end
     end
     return size
 end
 
-function M.decode(data_ptr, data_size, schema)
+function M.decode(data_ptr, data_size, schema, results_pool)
     if not data_ptr or not schema then return nil end
-    local results = {}
-    local current_offset = 4 -- Skip 4-byte encapsulation header
+    local results = results_pool or {}
+    for k in pairs(results) do results[k] = nil end
     
+    local current_offset = 4
+    if data_size > 500000 then 
+        table.insert(results, { name = "Message too large", value = "SKIPPED", fmt = "%s" })
+        return results
+    end
+
     local function resolve(fields, prefix, offset)
         for _, f in ipairs(fields) do
             local name = (prefix == "") and f.name or (prefix .. "." .. f.name)
             if offset >= data_size then break end
-
             if f.is_array then
                 local count = 0
                 if not f.array_size then
-                    offset = align(offset, 4)
-                    if offset + 4 > data_size then break end
+                    offset = align(offset, 4); if offset + 4 > data_size then break end
                     count = ffi.cast("uint32_t*", data_ptr + offset)[0]
                     table.insert(results, { name = name .. ".count", value = count, fmt = "%u" })
                     offset = offset + 4
                 else count = f.array_size end
-
-                local sub_fields = PRIMITIVES[f.type] and { { type = f.type, name = "", is_array = false } } or (schema.lib[f.type] or schema.lib[f.type:gsub(".*/", "")])
-                if sub_fields then
+                local sub = PRIMITIVES[f.type] and { { type = f.type, name = "", is_array = false } } or (schema.lib[f.type] or schema.lib[f.type:gsub(".*/", "")])
+                if sub then
                     local limit = math.min(count, 5)
-                    for i=0, limit-1 do
-                        if offset >= data_size then break end
-                        offset = resolve(sub_fields, name .. "[" .. i .. "]", offset)
-                    end
-                    -- If we have more elements, we MUST skip them to maintain alignment
-                    if count > limit then
-                        local item_static_size = calculate_static_size(schema, sub_fields)
-                        if item_static_size then
-                            offset = offset + (count - limit) * item_static_size
-                        else
-                            -- If we can't calculate static size (nested dynamic data), 
-                            -- we have to abort decoding this branch to avoid garbage data.
-                            table.insert(results, { name = name .. ".warning", value = "Skipped remaining dynamic elements", fmt = "%s" })
-                            return offset
-                        end
-                    end
+                    for i=0, limit-1 do if offset >= data_size then break end; offset = resolve(sub, name .. "[" .. i .. "]", offset) end
+                    if count > limit then local ss = calculate_static_size(schema, sub); if ss then offset = offset + (count - limit) * ss else return offset end end
                 end
             elseif PRIMITIVES[f.type] then
-                local info = PRIMITIVES[f.type]
-                offset = align(offset, info.size)
-                if offset + info.size > data_size then break end
+                local info = PRIMITIVES[f.type]; offset = align(offset, info.size); if offset + info.size > data_size then break end
                 local val = ffi.cast(info.ffi, data_ptr + offset)[0]
                 if f.type == "bool" then val = val ~= 0 and "true" or "false" end
                 table.insert(results, { name = name, value = val, fmt = info.fmt })
                 offset = offset + info.size
             elseif f.type == "string" then
-                offset = align(offset, 4)
-                if offset + 4 > data_size then break end
-                local len = ffi.cast("uint32_t*", data_ptr + offset)[0]
-                offset = offset + 4
-                if len > 0 and len < 2048 and offset + len <= data_size then
-                    table.insert(results, { name = name, value = ffi.string(data_ptr + offset, len-1), fmt = "%s" })
+                offset = align(offset, 4); if offset + 4 > data_size then break end
+                local len = ffi.cast("uint32_t*", data_ptr + offset)[0]; offset = offset + 4
+                if len > 0 and len < 2048 and offset + len <= data_size then 
+                    table.insert(results, { name = name, value = ffi.string(data_ptr + offset, len-1), fmt = "%s" }) 
+                else
+                    table.insert(results, { name = name, value = "", fmt = "%s" }) 
                 end
                 offset = offset + len
             else
-                -- Complex nested type
-                local sub_fields = schema.lib[f.type] or schema.lib[f.type:gsub(".*/", "")]
-                if sub_fields then
-                    offset = resolve(sub_fields, name, offset)
-                else
-                    -- Unknown type, assume 4-byte padding at least
-                    offset = align(offset, 4)
-                end
+                local sub = schema.lib[f.type] or schema.lib[f.type:gsub(".*/", "")]
+                if sub then offset = resolve(sub, name, offset) else offset = align(offset, 4) end
             end
         end
         return offset
     end
-    
     resolve(schema.main, "", current_offset)
     return results
 end
@@ -180,10 +141,7 @@ function M.get_flattened_fields(schema)
                 local sub = PRIMITIVES[f.type] and { { type = f.type, name = "", is_array = false } } or (schema.lib[f.type] or schema.lib[f.type:gsub(".*/", "")])
                 if sub then for i=0, f.array_size-1 do offset = resolve(sub, name .. "[" .. i .. "]", offset) end end
             elseif PRIMITIVES[f.type] then
-                local info = PRIMITIVES[f.type]
-                offset = align(offset, info.size)
-                table.insert(flattened, { name = name, offset = offset, type = f.type, is_double = (f.type:find("64") or f.type == "double") })
-                offset = offset + info.size
+                local info = PRIMITIVES[f.type]; offset = align(offset, info.size); table.insert(flattened, { name = name, offset = offset, type = f.type, is_double = (f.type:find("64") or f.type == "double") }); offset = offset + info.size
             elseif f.type == "string" then offset = align(offset, 4) + 4
             else
                 local sub = schema.lib[f.type] or schema.lib[f.type:gsub(".*/", "")]

@@ -10,15 +10,25 @@ ffi.cdef[[
     typedef struct mc_mat4 { float m[16]; } mc_mat4;
 ]]
 
-function M.mat4_identity()
-    local m = ffi.new("mc_mat4")
+-- Pre-allocated internal scratchpad for math operations to avoid table churn
+local scratch = {
+    f = ffi.new("float[3]"),
+    s = ffi.new("float[3]"),
+    u = ffi.new("float[3]"),
+    temp_mat = ffi.new("mc_mat4"),
+}
+
+function M.mat4_identity(out)
+    local m = out or ffi.new("mc_mat4")
+    for i=0,15 do m.m[i] = 0 end
     m.m[0], m.m[5], m.m[10], m.m[15] = 1, 1, 1, 1
     return m
 end
 
-function M.mat4_perspective(fovy, aspect, near, far)
+function M.mat4_perspective(fovy, aspect, near, far, out)
     local f = 1.0 / math.tan(fovy / 2.0)
-    local m = ffi.new("mc_mat4")
+    local m = out or ffi.new("mc_mat4")
+    for i=0,15 do m.m[i] = 0 end
     m.m[0] = f / aspect
     m.m[5] = -f 
     m.m[10] = far / (near - far)
@@ -27,47 +37,60 @@ function M.mat4_perspective(fovy, aspect, near, far)
     return m
 end
 
-function M.mat4_look_at(eye, center, up)
-    local f = { center[1] - eye[1], center[2] - eye[2], center[3] - eye[3] }
-    local fn = math.sqrt(f[1]^2 + f[2]^2 + f[3]^2)
-    if fn == 0 then return M.mat4_identity() end
-    f[1], f[2], f[3] = f[1]/fn, f[2]/fn, f[3]/fn
-    local s = { f[2]*up[3] - f[3]*up[2], f[3]*up[1] - f[1]*up[3], f[1]*up[2] - f[2]*up[1] }
-    local sn = math.sqrt(s[1]^2 + s[2]^2 + s[3]^2)
-    if sn == 0 then return M.mat4_identity() end
-    s[1], s[2], s[3] = s[1]/sn, s[2]/sn, s[3]/sn
-    local u = { s[2]*f[3] - s[3]*f[2], s[3]*f[1] - s[1]*f[3], s[1]*f[2] - s[2]*f[1] }
-    local m = ffi.new("mc_mat4")
-    m.m[0] = s[1]; m.m[1] = u[1]; m.m[2] = -f[1]; m.m[3] = 0
-    m.m[4] = s[2]; m.m[5] = u[2]; m.m[6] = -f[2]; m.m[7] = 0
-    m.m[8] = s[3]; m.m[9] = u[3]; m.m[10] = -f[3]; m.m[11] = 0
-    m.m[12] = -(s[1]*eye[1] + s[2]*eye[2] + s[3]*eye[3])
-    m.m[13] = -(u[1]*eye[1] + u[2]*eye[2] + u[3]*eye[3])
-    m.m[14] = (f[1]*eye[1] + f[2]*eye[2] + f[3]*eye[3])
+function M.mat4_look_at(eye, center, up, out)
+    local f = scratch.f
+    f[0], f[1], f[2] = center[1] - eye[1], center[2] - eye[2], center[3] - eye[3]
+    local fn = math.sqrt(f[0]^2 + f[1]^2 + f[2]^2)
+    if fn == 0 then return M.mat4_identity(out) end
+    f[0], f[1], f[2] = f[0]/fn, f[1]/fn, f[2]/fn
+    
+    local s = scratch.s
+    s[0] = f[1]*up[3] - f[2]*up[2]
+    s[1] = f[2]*up[1] - f[0]*up[3]
+    s[2] = f[0]*up[2] - f[1]*up[1]
+    local sn = math.sqrt(s[0]^2 + s[1]^2 + s[2]^2)
+    if sn == 0 then return M.mat4_identity(out) end
+    s[0], s[1], s[2] = s[0]/sn, s[1]/sn, s[2]/sn
+    
+    local u = scratch.u
+    u[0] = s[1]*f[2] - s[2]*f[1]
+    u[1] = s[2]*f[0] - s[0]*f[2]
+    u[2] = s[0]*f[1] - s[1]*f[0]
+    
+    local m = out or ffi.new("mc_mat4")
+    m.m[0] = s[0]; m.m[1] = u[0]; m.m[2] = -f[0]; m.m[3] = 0
+    m.m[4] = s[1]; m.m[5] = u[1]; m.m[6] = -f[1]; m.m[7] = 0
+    m.m[8] = s[2]; m.m[9] = u[2]; m.m[10] = -f[2]; m.m[11] = 0
+    m.m[12] = -(s[0]*eye[1] + s[1]*eye[2] + s[2]*eye[3])
+    m.m[13] = -(u[0]*eye[1] + u[1]*eye[2] + u[2]*eye[3])
+    m.m[14] = (f[0]*eye[1] + f[1]*eye[2] + f[2]*eye[3])
     m.m[15] = 1
     return m
 end
 
-function M.mat4_multiply(a, b)
-    local c = ffi.new("mc_mat4")
+function M.mat4_multiply(a, b, out)
+    local c = out or ffi.new("mc_mat4")
+    local res = (c == a or c == b) and scratch.temp_mat or c
     for j = 0, 3 do
         for i = 0, 3 do
             local sum = 0
             for k = 0, 3 do sum = sum + a.m[k*4 + i] * b.m[j*4 + k] end
-            c.m[j*4 + i] = sum
+            res.m[j*4 + i] = sum
         end
     end
+    if res == scratch.temp_mat then ffi.copy(c, scratch.temp_mat, 64) end
     return c
 end
 
-function M.mat4_scale(s)
-    local m = M.mat4_identity()
+function M.mat4_scale(s, out)
+    local m = M.mat4_identity(out)
     m.m[0], m.m[5], m.m[10] = s, s, s
     return m
 end
 
-function M.mat4_ortho(left, right, bottom, top, near, far)
-    local m = ffi.new("mc_mat4")
+function M.mat4_ortho(left, right, bottom, top, near, far, out)
+    local m = out or ffi.new("mc_mat4")
+    for i=0,15 do m.m[i] = 0 end
     m.m[0] = 2.0 / (right - left)
     m.m[5] = 2.0 / (bottom - top)
     m.m[10] = 1.0 / (near - far)
@@ -78,15 +101,16 @@ function M.mat4_ortho(left, right, bottom, top, near, far)
     return m
 end
 
-function M.mat4_inverse(m)
-    local inv = ffi.new("mc_mat4")
+function M.mat4_inverse(m, out)
+    local inv = out or ffi.new("mc_mat4")
     local s = m.m
     local b00 = s[0]*s[5] - s[1]*s[4]; local b01 = s[0]*s[6] - s[2]*s[4]; local b02 = s[0]*s[7] - s[3]*s[4]
     local b03 = s[1]*s[6] - s[2]*s[5]; local b04 = s[1]*s[7] - s[3]*s[5]; local b05 = s[2]*s[7] - s[3]*s[6]
     local b06 = s[8]*s[13] - s[9]*s[12]; local b07 = s[8]*s[14] - s[10]*s[12]; local b08 = s[8]*s[15] - s[11]*s[12]
-    local b09 = s[9]*s[14] - s[10]*s[13]; local b10 = s[9]*s[15] - s[11]*s[13]; local b11 = s[10]*s[15] - s[11]*s[14]
+    local b09 = s[9]*s[14] - s[10]*s[13]; local b10 = s[9]*s[15] - s[11]*s[13]
+    local b11 = s[10]*s[15] - s[11]*s[14]
     local det = b00*b11 - b01*b10 + b02*b09 + b03*b08 - b04*b07 + b05*b06
-    if det == 0 then return M.mat4_identity() end
+    if det == 0 then return M.mat4_identity(out) end
     local idet = 1.0 / det
     inv.m[0] = (s[5]*b11 - s[6]*b10 + s[7]*b09) * idet; inv.m[1] = (-s[1]*b11 + s[2]*b10 - s[3]*b09) * idet
     inv.m[2] = (s[13]*b05 - s[14]*b04 + s[15]*b03) * idet; inv.m[3] = (-s[9]*b05 + s[10]*b04 - s[11]*b03) * idet

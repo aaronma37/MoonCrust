@@ -18,6 +18,15 @@ local Col = {
     TableRowBg = 45, TableRowBgAlt = 46, TextSelectedBg = 47,
 }
 
+-- Persistent style objects to avoid hot-loop allocations
+local static = {
+    WindowPadding = ffi.new("ImVec2_c", {20, 20}),
+    FramePadding = ffi.new("ImVec2_c", {10, 6}),
+    ItemSpacing = ffi.new("ImVec2_c", {12, 12}),
+    ItemInnerSpacing = ffi.new("ImVec2_c", {8, 6}),
+    ButtonTextAlign = ffi.new("ImVec2_c", {0.5, 0.5}),
+}
+
 function M.apply(gui)
     local style = gui.igGetStyle()
     
@@ -29,10 +38,10 @@ function M.apply(gui)
     style.ScrollbarRounding = 12.0
     style.TabRounding = 6.0
     
-    style.WindowPadding = ffi.new("ImVec2_c", {20, 20})
-    style.FramePadding = ffi.new("ImVec2_c", {10, 6})
-    style.ItemSpacing = ffi.new("ImVec2_c", {12, 12})
-    style.ItemInnerSpacing = ffi.new("ImVec2_c", {8, 6})
+    style.WindowPadding = static.WindowPadding
+    style.FramePadding = static.FramePadding
+    style.ItemSpacing = static.ItemSpacing
+    style.ItemInnerSpacing = static.ItemInnerSpacing
     
     style.WindowBorderSize = 1.0
     style.ChildBorderSize = 0.0

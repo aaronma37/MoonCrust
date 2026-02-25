@@ -1,148 +1,129 @@
 local ffi = require("ffi")
 local vk = require("vulkan.ffi")
-local sdl = require("vulkan.sdl")
+local resource = require("vulkan.resource")
 
 local M = {}
-local Swapchain = {}
-Swapchain.__index = Swapchain
+M.__index = M
 
-function M.new(instance, physical_device, device, window, existing_surface, use_srgb)
-    local self = setmetatable({}, Swapchain)
+-- Pre-allocate presentation structures to avoid hot-loop churn
+local static = {
+    present_info = ffi.new("VkPresentInfoKHR", { sType = vk.VK_STRUCTURE_TYPE_PRESENT_INFO_KHR }),
+    image_indices = ffi.new("uint32_t[1]"),
+    swapchains = ffi.new("VkSwapchainKHR[1]"),
+    semaphores = ffi.new("VkSemaphore[1]"),
+}
+
+function M.new(instance, physical_device, device, window, old_swapchain, use_srgb)
+    local self = setmetatable({}, M)
     self.device = device
-    local format = (use_srgb == false) and vk.VK_FORMAT_B8G8R8A8_UNORM or vk.VK_FORMAT_B8G8R8A8_SRGB
 
-    -- 1. Use existing surface or create new one
-    if existing_surface then
-        self.surface = existing_surface
-    else
-        local pSurface = ffi.new("void*[1]")
-        if not sdl.SDL_Vulkan_CreateSurface(window, instance, nil, pSurface) then
-            error("Failed to create SDL Vulkan Surface: " .. ffi.string(sdl.SDL_GetError()))
-        end
-        self.surface = pSurface[0]
+    local surface_ptr = ffi.new("void*[1]")
+    if not ffi.C.SDL_Vulkan_CreateSurface(window, instance, nil, surface_ptr) then
+        error("Failed to create surface: " .. ffi.string(ffi.C.SDL_GetError()))
     end
+    self.surface = surface_ptr[0]
 
-    -- 2. Get Window Size
-    local pw = ffi.new("int[1]")
-    local ph = ffi.new("int[1]")
-    sdl.SDL_GetWindowSizeInPixels(window, pw, ph)
-    local width, height = pw[0], ph[0]
-
-    -- 3. Get Present Modes and choose best
-    local mode_count = ffi.new("uint32_t[1]")
-    vk.vkGetPhysicalDeviceSurfacePresentModesKHR(physical_device, self.surface, mode_count, nil)
-    local modes = ffi.new("VkPresentModeKHR[?]", mode_count[0])
-    vk.vkGetPhysicalDeviceSurfacePresentModesKHR(physical_device, self.surface, mode_count, modes)
+    -- Query support
+    local caps = ffi.new("VkSurfaceCapabilitiesKHR")
+    vk.vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physical_device, self.surface, caps)
     
-    local present_mode = vk.VK_PRESENT_MODE_FIFO_KHR
-    -- Only use high-performance modes if specifically requested via global flag
-    if _G._MC_UNCAPPED then
-        for i=0, mode_count[0]-1 do
-            if modes[i] == vk.VK_PRESENT_MODE_MAILBOX_KHR then
-                present_mode = vk.VK_PRESENT_MODE_MAILBOX_KHR
-                break
-            elseif modes[i] == vk.VK_PRESENT_MODE_IMMEDIATE_KHR then
-                present_mode = vk.VK_PRESENT_MODE_IMMEDIATE_KHR
-            end
-        end
+    self.extent = { width = caps.currentExtent.width, height = caps.currentExtent.height }
+    
+    local format_count = ffi.new("uint32_t[1]")
+    vk.vkGetPhysicalDeviceSurfaceFormatsKHR(physical_device, self.surface, format_count, nil)
+    local formats = ffi.new("VkSurfaceFormatKHR[?]", format_count[0])
+    vk.vkGetPhysicalDeviceSurfaceFormatsKHR(physical_device, self.surface, format_count, formats)
+    
+    self.format = formats[0].format
+    for i=0, format_count[0]-1 do
+        if not use_srgb and formats[i].format == vk.VK_FORMAT_B8G8R8A8_UNORM then self.format = formats[i].format break end
+        if use_srgb and formats[i].format == vk.VK_FORMAT_B8G8R8A8_SRGB then self.format = formats[i].format break end
     end
-    print("Swapchain: Using Present Mode: " .. present_mode)
 
-    -- 4. Create Swapchain
-    local swap_info = ffi.new("VkSwapchainCreateInfoKHR", {
+    local createInfo = ffi.new("VkSwapchainCreateInfoKHR", {
         sType = vk.VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
-        surface = ffi.cast("VkSurfaceKHR", self.surface),
-        minImageCount = 3,
-        imageFormat = format,
-        imageColorSpace = vk.VK_COLOR_SPACE_SRGB_NONLINEAR_KHR,
-        imageExtent = { width = width, height = height },
+        surface = self.surface,
+        minImageCount = math.max(caps.minImageCount + 1, 3), 
+        imageFormat = self.format,
+        imageColorSpace = formats[0].colorSpace,
+        imageExtent = caps.currentExtent,
         imageArrayLayers = 1,
-        imageUsage = bit.bor(vk.VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, vk.VK_IMAGE_USAGE_TRANSFER_DST_BIT),
+        imageUsage = vk.VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
         imageSharingMode = vk.VK_SHARING_MODE_EXCLUSIVE,
-        preTransform = vk.VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR,
+        preTransform = caps.currentTransform,
         compositeAlpha = vk.VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
-        presentMode = present_mode,
-        clipped = vk.VK_TRUE
+        presentMode = vk.VK_PRESENT_MODE_FIFO_KHR, 
+        clipped = vk.VK_TRUE,
+        oldSwapchain = old_swapchain or nil
     })
 
     local pSwapchain = ffi.new("VkSwapchainKHR[1]")
-    local result = vk.vkCreateSwapchainKHR(device, swap_info, nil, pSwapchain)
-    if result ~= vk.VK_SUCCESS then
-        error("Failed to create Swapchain: " .. tostring(result))
-    end
+    local res = vk.vkCreateSwapchainKHR(device, createInfo, nil, pSwapchain)
+    if res ~= vk.VK_SUCCESS then error("vkCreateSwapchainKHR failed: " .. res) end
     self.handle = pSwapchain[0]
 
-    -- 4. Get Images and Create Views
+    -- Images
     local count = ffi.new("uint32_t[1]")
     vk.vkGetSwapchainImagesKHR(device, self.handle, count, nil)
-    
-    -- HARDENING: Store images and views in persistent FFI arrays
     self.image_count = count[0]
-    self.images = ffi.new("uint64_t[?]", self.image_count)
-    self.views = ffi.new("uint64_t[?]", self.image_count)
-    self.semaphores = ffi.new("VkSemaphore[?]", self.image_count)
-    
-    local pImgs = ffi.new("VkImage[?]", self.image_count)
-    vk.vkGetSwapchainImagesKHR(device, self.handle, count, pImgs)
-    
-    local sem_info = ffi.new("VkSemaphoreCreateInfo", { sType = vk.VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO })
+    self.images = ffi.new("VkImage[?]", self.image_count)
+    vk.vkGetSwapchainImagesKHR(device, self.handle, count, self.images)
 
-    for i=0, self.image_count-1 do
-        self.images[i] = ffi.cast("uint64_t", pImgs[i])
-        
-        local view_info = ffi.new("VkImageViewCreateInfo", {
+    -- Views
+    self.views = ffi.new("VkImageView[?]", self.image_count)
+    for i = 0, self.image_count - 1 do
+        local viewInfo = ffi.new("VkImageViewCreateInfo", {
             sType = vk.VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
-            image = pImgs[i],
+            image = self.images[i],
             viewType = vk.VK_IMAGE_VIEW_TYPE_2D,
-            format = format,
-            subresourceRange = {
-                aspectMask = vk.VK_IMAGE_ASPECT_COLOR_BIT,
-                baseMipLevel = 0, levelCount = 1,
-                baseArrayLayer = 0, layerCount = 1
-            }
+            format = self.format,
+            subresourceRange = { aspectMask = vk.VK_IMAGE_ASPECT_COLOR_BIT, baseMipLevel = 0, levelCount = 1, baseArrayLayer = 0, layerCount = 1 }
         })
         local pView = ffi.new("VkImageView[1]")
-        vk.vkCreateImageView(device, view_info, nil, pView)
-        self.views[i] = ffi.cast("uint64_t", pView[0])
-
-        local pSem = ffi.new("VkSemaphore[1]")
-        vk.vkCreateSemaphore(device, sem_info, nil, pSem)
-        self.semaphores[i] = pSem[0]
+        vk.vkCreateImageView(device, viewInfo, nil, pView)
+        self.views[i] = pView[0]
     end
-    
-    self.extent = { width = width, height = height }
-    
+
     return self
 end
 
-function Swapchain:cleanup()
-    for i=0, self.image_count-1 do
-        vk.vkDestroyImageView(self.device, ffi.cast("VkImageView", self.views[i]), nil)
-    end
-    vk.vkDestroySwapchainKHR(self.device, self.handle, nil)
-end
-
-function Swapchain:acquire_next_image(semaphore)
+function M:acquire_next_image(semaphore, fence)
     local pIndex = ffi.new("uint32_t[1]")
-    local result = vk.vkAcquireNextImageKHR(self.device, self.handle, 0xFFFFFFFFFFFFFFFFULL, semaphore, nil, pIndex)
-    if result ~= vk.VK_SUCCESS then return nil, result end
-    return pIndex[0], result
+    local res = vk.vkAcquireNextImageKHR(self.device, self.handle, 0xFFFFFFFFFFFFFFFFULL, semaphore, fence or nil, pIndex)
+    if res == vk.VK_SUCCESS or res == vk.VK_SUBOPTIMAL_KHR then
+        return pIndex[0], res
+    end
+    return nil, res
 end
 
-function Swapchain:present(queue, image_index, wait_semaphore)
-    local pIndex = ffi.new("uint32_t[1]", {image_index})
-    local pSwaps = ffi.new("VkSwapchainKHR[1]", {self.handle})
-    local pSems = wait_semaphore and ffi.new("VkSemaphore[1]", {wait_semaphore}) or nil
+function M:present(queue, image_index, wait_semaphore)
+    static.image_indices[0] = image_index
+    static.swapchains[0] = self.handle
+    static.semaphores[0] = wait_semaphore
     
-    local present_info = ffi.new("VkPresentInfoKHR", {
-        sType = vk.VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
-        waitSemaphoreCount = wait_semaphore and 1 or 0,
-        pWaitSemaphores = pSems,
-        swapchainCount = 1,
-        pSwapchains = pSwaps,
-        pImageIndices = pIndex
-    })
-    return vk.vkQueuePresentKHR(queue, present_info)
+    static.present_info.waitSemaphoreCount = 1
+    static.present_info.pWaitSemaphores = static.semaphores
+    static.present_info.swapchainCount = 1
+    static.present_info.pSwapchains = static.swapchains
+    static.present_info.pImageIndices = static.image_indices
+    
+    return vk.vkQueuePresentKHR(queue, static.present_info)
+end
+
+function M:cleanup()
+    if not self.handle then return end
+    -- CRITICAL: Ensure GPU is IDLE before destroying views/swapchain
+    vk.vkDeviceWaitIdle(self.device)
+    
+    for i = 0, self.image_count - 1 do
+        if self.views[i] ~= nil then
+            vk.vkDestroyImageView(self.device, self.views[i], nil)
+        end
+    end
+    -- We do NOT use resource.free here for the swapchain handle itself 
+    -- to avoid the death-row race condition during recreation.
+    vk.vkDestroySwapchainKHR(self.device, self.handle, nil)
+    self.handle = nil
 end
 
 return M
