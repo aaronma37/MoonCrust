@@ -1,6 +1,36 @@
 local ffi = require("ffi")
 
-local M = {}
+local M = {
+    pool = {},
+    pool_idx = 1,
+    name_cache = {}, -- Cache for concatenated field names
+    name_cache_count = 0,
+}
+
+local function get_cached_name(prefix, field_name)
+    local key = prefix .. field_name
+    local cached = M.name_cache[key]
+    if not cached then
+        if M.name_cache_count > 10000 then 
+            M.name_cache = {}; M.name_cache_count = 0 
+        end
+        cached = (prefix == "") and field_name or (prefix .. "." .. field_name)
+        M.name_cache[key] = cached
+        M.name_cache_count = M.name_cache_count + 1
+    end
+    return cached
+end
+
+-- Initialize pool with 10,000 result objects
+for i=1, 10000 do
+    M.pool[i] = { name = "", value = 0, fmt = "" }
+end
+
+local function get_pool_obj()
+    local obj = M.pool[M.pool_idx]
+    M.pool_idx = (M.pool_idx % 10000) + 1
+    return obj
+end
 
 local PRIMITIVES = {
     ["float32"] = { ffi = "float*", size = 4, fmt = "%.4f" },
@@ -88,35 +118,47 @@ function M.decode(data_ptr, data_size, schema, results_pool)
 
     local function resolve(fields, prefix, offset)
         for _, f in ipairs(fields) do
-            local name = (prefix == "") and f.name or (prefix .. "." .. f.name)
+            local name = get_cached_name(prefix, f.name)
             if offset >= data_size then break end
             if f.is_array then
                 local count = 0
                 if not f.array_size then
                     offset = align(offset, 4); if offset + 4 > data_size then break end
                     count = ffi.cast("uint32_t*", data_ptr + offset)[0]
-                    table.insert(results, { name = name .. ".count", value = count, fmt = "%u" })
+                    local obj = get_pool_obj()
+                    obj.name, obj.value, obj.fmt = get_cached_name(name, ".count"), count, "%u"
+                    table.insert(results, obj)
                     offset = offset + 4
                 else count = f.array_size end
                 local sub = PRIMITIVES[f.type] and { { type = f.type, name = "", is_array = false } } or (schema.lib[f.type] or schema.lib[f.type:gsub(".*/", "")])
                 if sub then
                     local limit = math.min(count, 5)
-                    for i=0, limit-1 do if offset >= data_size then break end; offset = resolve(sub, name .. "[" .. i .. "]", offset) end
+                    for i=0, limit-1 do 
+                        if offset >= data_size then break end
+                        local sub_prefix = get_cached_name(name, "[" .. i .. "]")
+                        offset = resolve(sub, sub_prefix, offset) 
+                    end
                     if count > limit then local ss = calculate_static_size(schema, sub); if ss then offset = offset + (count - limit) * ss else return offset end end
                 end
             elseif PRIMITIVES[f.type] then
                 local info = PRIMITIVES[f.type]; offset = align(offset, info.size); if offset + info.size > data_size then break end
                 local val = ffi.cast(info.ffi, data_ptr + offset)[0]
                 if f.type == "bool" then val = val ~= 0 and "true" or "false" end
-                table.insert(results, { name = name, value = val, fmt = info.fmt })
+                local obj = get_pool_obj()
+                obj.name, obj.value, obj.fmt = name, val, info.fmt
+                table.insert(results, obj)
                 offset = offset + info.size
             elseif f.type == "string" then
                 offset = align(offset, 4); if offset + 4 > data_size then break end
                 local len = ffi.cast("uint32_t*", data_ptr + offset)[0]; offset = offset + 4
                 if len > 0 and len < 2048 and offset + len <= data_size then 
-                    table.insert(results, { name = name, value = ffi.string(data_ptr + offset, len-1), fmt = "%s" }) 
+                    local obj = get_pool_obj()
+                    obj.name, obj.value, obj.fmt = name, ffi.string(data_ptr + offset, len-1), "%s"
+                    table.insert(results, obj)
                 else
-                    table.insert(results, { name = name, value = "", fmt = "%s" }) 
+                    local obj = get_pool_obj()
+                    obj.name, obj.value, obj.fmt = name, "", "%s"
+                    table.insert(results, obj)
                 end
                 offset = offset + len
             else
@@ -128,6 +170,11 @@ function M.decode(data_ptr, data_size, schema, results_pool)
     end
     resolve(schema.main, "", current_offset)
     return results
+end
+
+-- Disable JIT for the high-churn decoder to prevent "trace" and "table overflow" compiler errors
+if jit then
+    jit.off(M.decode)
 end
 
 function M.get_flattened_fields(schema)

@@ -171,7 +171,7 @@ EXPORT void mcap_close(McapBridge* b) {
     }
 }
 
-EXPORT bool mcap_next(McapBridge* b, McapMessage* out) {
+EXPORT bool mcap_get_current(McapBridge* b, McapMessage* out) {
     if (!b || !b->it || *b->it == b->message_view->end()) return false;
     const auto& m = **b->it;
     out->log_time = m.message.logTime;
@@ -180,23 +180,25 @@ EXPORT bool mcap_next(McapBridge* b, McapMessage* out) {
     out->sequence = m.message.sequence;
     out->data = reinterpret_cast<const uint8_t*>(m.message.data);
     out->data_size = m.message.dataSize;
+    return true;
+}
 
-    // GTB CIRCULAR BLIT LOGIC
+EXPORT void mcap_advance(McapBridge* b) {
+    if (!b || !b->it || *b->it == b->message_view->end()) return;
+    
+    // Perform GTB blit before moving iterator
+    const auto& m = **b->it;
     if (b->gtb_ptr && b->slots.count(m.message.channelId)) {
         auto& slot = b->slots[m.message.channelId];
         uint64_t write_offset = slot.base_offset + (static_cast<uint64_t>(slot.current_index) * slot.msg_size);
         uint64_t sz = std::min(static_cast<uint64_t>(m.message.dataSize), static_cast<uint64_t>(slot.msg_size));
-        
-        // CRITICAL SAFETY CHECK: Prevent buffer overflow
-        if (write_offset + sz <= b->gtb_size && (static_cast<uint64_t>(slot.current_index) * slot.msg_size + sz) <= (slot.history_max * slot.msg_size)) {
+        if (write_offset + sz <= b->gtb_size) {
             std::memcpy(b->gtb_ptr + write_offset, m.message.data, sz);
-            // Advance head
             slot.current_index = (slot.current_index + 1) % slot.history_max;
         }
     }
-
+    
     ++(*b->it);
-    return true;
 }
 
 EXPORT void mcap_rewind(McapBridge* b) {

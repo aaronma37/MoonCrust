@@ -105,7 +105,9 @@ function M.load_mcap(path)
     
     M._msg_anchor = ffi.new("McapMessage")
     M.current_msg = M._msg_anchor
-    robot.lib.mcap_next(M.bridge, M.current_msg)
+    if robot.lib.mcap_get_current(M.bridge, M.current_msg) then
+        -- initial msg loaded
+    end
     return true
 end
 
@@ -145,12 +147,14 @@ function M.update(dt, raw_buffer)
     if M.seek_to then
         robot.lib.mcap_seek(M.bridge, M.seek_to)
         M.playback_time_ns, M.seek_to = M.seek_to, nil
-        robot.lib.mcap_next(M.bridge, M.current_msg)
+        robot.lib.mcap_get_current(M.bridge, M.current_msg)
     elseif not M.paused then
         M.playback_time_ns = M.playback_time_ns + ffi.cast("uint64_t", dt * 1e9 * M.speed)
     end
 
+    local msgs_processed = 0
     while (not M.paused or M.seek_to) and M.current_msg.log_time < M.playback_time_ns do
+        if msgs_processed > 1000 then break end -- Safety throttle
         local ch_id = M.current_msg.channel_id
         if M.current_msg.data ~= nil then 
             local buf = M.get_msg_buffer(ch_id)
@@ -181,14 +185,22 @@ function M.update(dt, raw_buffer)
             else M.last_lidar_points = math.floor(sz / 12) end
         end
         
-        if not robot.lib.mcap_next(M.bridge, M.current_msg) then
+        -- Advance C++ iterator AFTER Lua is done with the pointer
+        robot.lib.mcap_advance(M.bridge)
+        
+        if not robot.lib.mcap_get_current(M.bridge, M.current_msg) then
             robot.lib.mcap_rewind(M.bridge)
             M.playback_time_ns = M.start_time
-            robot.lib.mcap_next(M.bridge, M.current_msg)
+            robot.lib.mcap_get_current(M.bridge, M.current_msg)
             break
         end
+        msgs_processed = msgs_processed + 1
     end
     M.current_time_ns = M.playback_time_ns
+end
+
+if jit then
+    jit.off(M.update)
 end
 
 return M

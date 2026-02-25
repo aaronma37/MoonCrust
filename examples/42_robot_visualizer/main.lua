@@ -240,6 +240,11 @@ function M.init()
     end end end
 end
 
+local function find_pms(n, config)
+    if n.type == "view" then if n.facet and config.facets and config.facets[n.facet] and config.facets[n.facet].panel == "view3d" then return config.facets[n.facet].params elseif n.view_type == "view3d" then return true end
+    else if n.children then return find_pms(n.children[1], config) or find_pms(n.children[2], config) end end
+end
+
 function M.update()
     local f_idx = current_frame
     static.fences[0] = frame_fences[f_idx]; vk.vkWaitForFences(device, 1, static.fences, vk.VK_TRUE, 0xFFFFFFFFFFFFFFFFULL)
@@ -303,12 +308,10 @@ function M.update()
     imgui.new_frame(); theme.apply(imgui.gui); M.header.draw(imgui.gui); render_node(state.layout, 0, 50, win_w, win_h - 50, imgui.gui)
     local cb = command_buffers[f_idx]; vk.vkResetCommandBuffer(cb, 0); vk.vkBeginCommandBuffer(cb, static.cb_begin)
     local in_idx, out_idx, pt_cnt = (f_idx == 0) and 10 or 12, (f_idx == 0) and 11 or 13, playback.last_lidar_points
-    local in_off, str_u, pos_off, v3d_pms = 0, 3, 0, nil
-    local function find_pms(n)
-        if n.type == "view" then if n.facet and config.facets and config.facets[n.facet] and config.facets[n.facet].panel == "view3d" then v3d_pms = config.facets[n.facet].params; return true elseif n.view_type == "view3d" then return true end
-        else if n.children then return find_pms(n.children[1]) or find_pms(n.children[2]) end end
-    end
-    find_pms(state.layout)
+    local in_off, str_u, pos_off = 0, 3, 0
+    local v3d_pms = find_pms(state.layout, config)
+    if type(v3d_pms) == "boolean" then v3d_pms = nil end -- Normalize
+    
     if v3d_pms and v3d_pms.objects then for _, o in ipairs(v3d_pms.objects) do if o.type == "lidar" and o.topic == "/livox/lidar" then in_off, str_u, pos_off = 8, 5, 1; break end end end
     if playback.channels and #playback.channels > 0 then
         local tid, req = -1, nil
@@ -337,6 +340,7 @@ function M.update()
     imgui.gui.igRender()
     local draw_data = imgui.gui.igGetDrawData()
     local text_count = harvester.harvest_text(draw_data, text_buffers[f_idx + 1])
+    state.last_text_count = text_count
     
     local ui_pc = ffi.new("struct { uint32_t idx; uint32_t pad; float screen[2]; }", { 60 + f_idx, 0, {tonumber(win_w), tonumber(win_h)} })
     
@@ -357,6 +361,15 @@ function M.update()
     if text_count > 0 then vk.vkCmdDraw(cb, 4, text_count, 0, 0) end
     
     vk.vkCmdEndRendering(cb)
+    
+    -- HEARTBEAT MONITOR: Track health after frame completion
+    state.heartbeat_timer = (state.heartbeat_timer or 0) + dt
+    if state.heartbeat_timer > 5.0 then
+        print(string.format("[HEARTBEAT] Mem: %.2f MB | UI: %d | Text: %d | FPS: %.1f", 
+            collectgarbage("count") / 1024, ui_context.count, state.last_text_count or 0, state.real_fps or 0))
+        state.heartbeat_timer = 0
+    end
+
     static.img_barrier[0].oldLayout, static.img_barrier[0].newLayout = vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, vk.VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
     static.img_barrier[0].srcAccessMask, static.img_barrier[0].dstAccessMask = vk.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, 0
     vk.vkCmdPipelineBarrier(cb, vk.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, vk.VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nil, 0, nil, 1, static.img_barrier); vk.vkEndCommandBuffer(cb)
@@ -365,6 +378,10 @@ function M.update()
     static.submit_info.pWaitSemaphores, static.submit_info.pWaitDstStageMask, static.submit_info.pCommandBuffers, static.submit_info.pSignalSemaphores = static.sems_wait, static.wait_stages, static.cbs, static.sems_sig
     vk.vkQueueSubmit(queue, 1, static.submit_info, frame_fences[f_idx])
     sw:present(queue, img_idx, sem_finished); current_frame = (current_frame + 1) % MAX_FRAMES_IN_FLIGHT
+end
+
+if jit then
+    jit.off(M.update)
 end
 
 return M

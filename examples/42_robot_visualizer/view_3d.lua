@@ -329,4 +329,8 @@ function M.render_deferred(cb_handle, point_buf_idx, frame_idx, point_count)
     vk.vkCmdPipelineBarrier(cb_handle, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, vk.VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nil, 0, nil, 1, static.img_barrier_b)
 end
 
+if jit then
+    jit.off(M.render_deferred)
+end
+
 return M

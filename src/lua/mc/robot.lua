@@ -22,7 +22,8 @@ ffi.cdef[[
     void mcap_generate_test_file(const char* path);
     McapBridge* mcap_open(const char* path);
     void mcap_close(McapBridge* bridge);
-    bool mcap_next(McapBridge* bridge, McapMessage* out_msg);
+    bool mcap_get_current(McapBridge* bridge, McapMessage* out_msg);
+    void mcap_advance(McapBridge* bridge);
     void mcap_rewind(McapBridge* bridge);
     void mcap_seek(McapBridge* bridge, uint64_t timestamp);
     uint64_t mcap_get_start_time(McapBridge* bridge);
