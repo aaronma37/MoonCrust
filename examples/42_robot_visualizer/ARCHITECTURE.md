@@ -54,6 +54,5 @@ Instead of injecting brittle Vulkan callbacks *inside* the ImGui draw list (whic
 
 ## 🚀 Implementation Roadmap
 1.  **[DONE] Global Telemetry Buffer**: High-speed blitting from C++ to GPU.
-2.  **[CURRENT] Shadow Plotter**: Decoupling the line rendering from the ImGui loop.
-3.  **[NEXT] Scissor Mapping**: Implementing overlapping window safety.
-4.  **[FUTURE] GPU Text Renderer**: Moving the telemetry table to the GPU.
+2.  **[DONE] Render-To-Texture Plotter**: Decoupling line rendering to an offscreen buffer (Aperture Pattern).
+3.  **[CURRENT] GPU Text Renderer**: Moving the telemetry `pretty_viewer` table to the GPU to entirely eliminate CPU string deserialization.
