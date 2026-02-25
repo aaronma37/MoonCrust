@@ -16,8 +16,8 @@ Bare-metal execution speeds without compile-time friction. C++ is strictly a bri
 ### 4. GPU-Native Modular Panels (Immediate Mode)
 A stateless, hyper-lightweight UI footprint. Powered by **Dear ImGui**, the modular panels do not exist in memory. The UI layout is evaluated every frame, compiled into a tiny vertex buffer, and drawn natively on top of 3D viewports at maximum hardware speed.
 
-### 5. The "Callback Hijack" Visualization Strategy
-Render millions of points without breaking a sweat. MoonCrust uses **ImPlot** to draw the UI "shell" (grids and axes). To draw the payload, we use `ImDrawList::AddCallback` to pause the UI renderer and inject a custom Vulkan pipeline. The heavy data never touches the ImGui vertex buffers or CPU math.
+### 5. The "Aperture" Visualization Strategy (Render-to-Texture)
+Render millions of points without breaking a sweat. Instead of injecting brittle callbacks into the UI loop, MoonCrust processes the telemetry payload entirely on the GPU and renders it to a dedicated offscreen texture. We then use **ImPlot** to draw the UI "shell" (grids and axes) and composite the GPU's high-speed texture underneath. The heavy data never touches the ImGui vertex buffers or CPU math.
 
 ### 6. Shared Memory Layouts (The Antidote to Dependency Hell)
 Strict silicon alignment. Using LuaJIT FFI, the Lua UI scripts map exactly to the underlying C-structs of the robot data. The CPU telemetry structs and Vulkan GLSL shaders are mathematically guaranteed to match perfectly, eliminating silent type-coercion bugs.
