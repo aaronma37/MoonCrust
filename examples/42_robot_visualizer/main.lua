@@ -185,7 +185,7 @@ function M.init()
     descriptors.update_buffer_set(device, bindless_set, 0, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, raw_buffers[2].handle, 0, raw_buffers[2].size, 12)
     
     ui_buffers = { mc.buffer(MAX_UI_ELEMENTS * 64, "storage", nil, true), mc.buffer(MAX_UI_ELEMENTS * 64, "storage", nil, true) }
-    text_buffers = { mc.buffer(MAX_TEXT_INSTANCES * 36, "storage", nil, true), mc.buffer(MAX_TEXT_INSTANCES * 36, "storage", nil, true) }
+    text_buffers = { mc.buffer(MAX_TEXT_INSTANCES * 64, "storage", nil, true), mc.buffer(MAX_TEXT_INSTANCES * 64, "storage", nil, true) }
     descriptors.update_buffer_set(device, bindless_set, 0, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, ui_buffers[1].handle, 0, ui_buffers[1].size, 60)
     descriptors.update_buffer_set(device, bindless_set, 0, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, ui_buffers[2].handle, 0, ui_buffers[2].size, 61)
     descriptors.update_buffer_set(device, bindless_set, 0, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, text_buffers[1].handle, 0, text_buffers[1].size, 62)
@@ -253,7 +253,7 @@ function M.update()
     vk.vkResetFences(device, 1, static.fences)
     local now = ffi.C.SDL_GetPerformanceCounter(); local dt = tonumber(now - state.last_perf) / state.perf_freq; state.last_perf = now
     state.frame_times[state.frame_times_idx] = dt; state.frame_times_idx = (state.frame_times_idx % 60) + 1
-    local avg_dt = 0; for i=1, 60 do avg_dt = avg_dt + state.frame_times[i] end; if avg_dt > 0 then state.real_fps = 60.0 / avg_dt end
+    local avg_dt = 0; for i=1, 60 do avg_dt = avg_dt + (state.frame_times[i] or 0) end; if avg_dt > 0 then state.real_fps = 60.0 / avg_dt end
     
     -- INPUT & HOTKEYS
     local ctrl = input.key_down(224) or input.key_down(228)

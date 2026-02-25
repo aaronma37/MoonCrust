@@ -6,7 +6,9 @@ struct TextInstance {
     vec2 size;
     vec2 uv;
     vec2 uv_size;
+    vec4 clip;
     uint color;
+    uint padding[3];
 };
 
 layout(set = 0, binding = 0) readonly buffer TEXT_SSBO {
@@ -21,6 +23,7 @@ layout(push_constant) uniform PC {
 
 layout(location = 0) out vec2 vUV;
 layout(location = 1) out vec4 vColor;
+layout(location = 2) out vec4 vClip;
 
 void main() {
     TextInstance inst = text_data[nonuniformEXT(pc.ssbo_idx)].instances[gl_InstanceIndex];
@@ -34,6 +37,7 @@ void main() {
     
     vec2 p = quad[gl_VertexIndex];
     vUV = inst.uv + p * inst.uv_size;
+    vClip = inst.clip;
     
     // Unpack color (RGBA8_UNORM)
     vColor = vec4(

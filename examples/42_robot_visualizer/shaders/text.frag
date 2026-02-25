@@ -3,13 +3,21 @@
 
 layout(location = 0) in vec2 vUV;
 layout(location = 1) in vec4 vColor;
+layout(location = 2) in vec4 vClip;
 
 layout(set = 0, binding = 1) uniform sampler2D all_textures[];
 
 layout(location = 0) out vec4 oColor;
 
 void main() {
-    // Sample the font atlas (Binding 1, Index 0)
+    // 1. ClipRect Discard
+    vec2 fragCoord = gl_FragCoord.xy;
+    if (fragCoord.x < vClip.x || fragCoord.y < vClip.y || fragCoord.x > vClip.z || fragCoord.y > vClip.w) {
+        discard;
+    }
+
+    // 2. Sample the font atlas (Binding 1, Index 0)
+    // In MoonCrust, the first uploaded font atlas usually lands at index 0 of binding 1.
     vec4 texColor = texture(all_textures[0], vUV);
     
     // ImGui standard fonts store the glyph in the alpha channel or as a white image with alpha.

@@ -24,7 +24,9 @@ ffi.cdef[[
     typedef struct TextInstance {
         float x, y, w, h;
         float u, v, uw, vh;
+        float clip_min_x, clip_min_y, clip_max_x, clip_max_y;
         uint32_t color;
+        uint32_t padding[3];
     } TextInstance;
 
     typedef int ImGuiAxis;
