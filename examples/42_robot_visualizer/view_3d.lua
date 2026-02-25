@@ -171,6 +171,16 @@ function M.on_plot_callback(cb, data_ptr)
     static.pc_plot.uScale[0], static.pc_plot.uScale[1] = 2.0 / io.DisplaySize.x, 2.0 / io.DisplaySize.y
     static.pc_plot.uTranslate[0], static.pc_plot.uTranslate[1] = -1.0 - io.DisplayPos.x * static.pc_plot.uScale[0], -1.0 - io.DisplayPos.y * static.pc_plot.uScale[1]
 
+    local scissor = ffi.new("VkRect2D")
+    scissor.offset.x = math.max(0, math.floor(data.x - io.DisplayPos.x))
+    scissor.offset.y = math.max(0, math.floor(data.y - io.DisplayPos.y))
+    scissor.extent.width = math.floor(data.w)
+    scissor.extent.height = math.floor(data.h)
+    vk.vkCmdSetScissor(cb, 0, 1, ffi.new("VkRect2D[1]", {scissor}))
+
+    local viewport = ffi.new("VkViewport", {0, 0, io.DisplaySize.x, io.DisplaySize.y, 0, 1})
+    vk.vkCmdSetViewport(cb, 0, 1, ffi.new("VkViewport[1]", {viewport}))
+
     vk.vkCmdPushConstants(cb, M.pipe_layout_plot, vk.VK_SHADER_STAGE_VERTEX_BIT, 0, ffi.sizeof("PlotPC"), static.pc_plot)
     vk.vkCmdDraw(cb, playback.HISTORY_MAX, 1, 0, 0)
 end

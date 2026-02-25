@@ -10,6 +10,7 @@ ffi.cdef[[
         float translate[2];
         uint32_t tex_idx;
         uint32_t blur_tex_idx;
+        uint32_t padding;
         float screen_size[2];
         float white_uv[2];
     } ImGuiPC;
@@ -105,7 +106,7 @@ function M.init()
     })
     
     local pipeline_mod = require("vulkan.pipeline")
-    local pc_range = ffi.new("VkPushConstantRange[1]", {{ stageFlags = bit.bor(vk.VK_SHADER_STAGE_VERTEX_BIT, vk.VK_SHADER_STAGE_FRAGMENT_BIT), offset = 0, size = 40 }})
+    local pc_range = ffi.new("VkPushConstantRange[1]", {{ stageFlags = bit.bor(vk.VK_SHADER_STAGE_VERTEX_BIT, vk.VK_SHADER_STAGE_FRAGMENT_BIT), offset = 0, size = 48 }})
     local layout = pipeline_mod.create_layout(d, {gpu.get_bindless_layout()}, pc_range)
     
     M.pipeline = pipeline_mod.create_graphics_pipeline(d, layout, v_mod, f_mod, {
@@ -175,9 +176,18 @@ function M.render(cb, draw_data, frame_idx)
             local cmd = cmd_buffer_data[i]
             if cmd.UserCallback ~= nil then
                 if M.on_callback then M.on_callback(cb, cmd.UserCallback, cmd.UserCallbackData) end
+                
+                -- Restore ImGui render state after callback
+                vk.vkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, M.pipeline)
+                vk.vkCmdSetViewport(cb, 0, 1, s.viewport)
+                vk.vkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, M.layout, 0, 1, s.sets, 0, nil)
+                vk.vkCmdBindVertexBuffers(cb, 0, 1, s.v_buffers, s.v_offsets)
+                vk.vkCmdBindIndexBuffer(cb, i_buffer.handle, 0, vk.VK_INDEX_TYPE_UINT16)
+                -- Also restore the push constants, because they were likely clobbered!
+                vk.vkCmdPushConstants(cb, M.layout, bit.bor(vk.VK_SHADER_STAGE_VERTEX_BIT, vk.VK_SHADER_STAGE_FRAGMENT_BIT), 0, 48, pc)
             else
                 pc.tex_idx = tonumber(ffi.cast("uintptr_t", cmd.TexRef._TexID))
-                vk.vkCmdPushConstants(cb, M.layout, bit.bor(vk.VK_SHADER_STAGE_VERTEX_BIT, vk.VK_SHADER_STAGE_FRAGMENT_BIT), 0, 40, pc)
+                vk.vkCmdPushConstants(cb, M.layout, bit.bor(vk.VK_SHADER_STAGE_VERTEX_BIT, vk.VK_SHADER_STAGE_FRAGMENT_BIT), 0, 48, pc)
                 
                 s.scissor.offset.x = math.max(0, tonumber(cmd.ClipRect.x - draw_data.DisplayPos.x))
                 s.scissor.offset.y = math.max(0, tonumber(cmd.ClipRect.y - draw_data.DisplayPos.y))
