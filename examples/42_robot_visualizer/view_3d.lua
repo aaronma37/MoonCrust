@@ -165,7 +165,12 @@ function M.on_plot_callback(cb, data_ptr)
     for i, ch in ipairs(playback.channels) do if ch.id == data.ch_id then channel_idx = i-1; break end end
     if channel_idx == -1 then return end
     static.pc_plot.gtb_idx, static.pc_plot.slot_offset, static.pc_plot.msg_size, static.pc_plot.head_idx, static.pc_plot.field_offset, static.pc_plot.history_count, static.pc_plot.is_double, static.pc_plot.range_min, static.pc_plot.range_max = 50, channel_idx * slot_size, playback.MSG_SIZE_MAX, playback.get_gtb_slot_index(data.ch_id), data.field_offset, playback.HISTORY_MAX, data.is_double, data.range_min, data.range_max
-    static.pc_plot.view_min[0], static.pc_plot.view_min[1], static.pc_plot.view_max[0], static.pc_plot.view_max[1], static.pc_plot.screen_size[0], static.pc_plot.screen_size[1] = data.x, data.y, data.x + data.w, data.y + data.h, _G._WIN_LW or 1280, _G._WIN_LH or 720
+    static.pc_plot.view_min[0], static.pc_plot.view_min[1], static.pc_plot.view_max[0], static.pc_plot.view_max[1] = data.x, data.y, data.x + data.w, data.y + data.h
+    
+    local io = imgui.gui.igGetIO_Nil()
+    static.pc_plot.uScale[0], static.pc_plot.uScale[1] = 2.0 / io.DisplaySize.x, 2.0 / io.DisplaySize.y
+    static.pc_plot.uTranslate[0], static.pc_plot.uTranslate[1] = -1.0 - io.DisplayPos.x * static.pc_plot.uScale[0], -1.0 - io.DisplayPos.y * static.pc_plot.uScale[1]
+
     vk.vkCmdPushConstants(cb, M.pipe_layout_plot, vk.VK_SHADER_STAGE_VERTEX_BIT, 0, ffi.sizeof("PlotPC"), static.pc_plot)
     vk.vkCmdDraw(cb, playback.HISTORY_MAX, 1, 0, 0)
 end

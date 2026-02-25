@@ -16,7 +16,8 @@ layout(push_constant) uniform PC {
     float range_max;
     vec2 view_min;
     vec2 view_max;
-    vec2 uScreenSize;
+    vec2 uScale;
+    vec2 uTranslate;
 } pc;
 
 layout(location = 0) out vec4 vColor;
@@ -32,7 +33,6 @@ void main() {
     
     float val = 0.0;
     if (pc.is_double != 0) {
-        // Corrected: Pack two u32s into a 64-bit double
         uint low = all_buffers[nonuniformEXT(pc.gtb_idx)].u32[field_u32];
         uint high = all_buffers[nonuniformEXT(pc.gtb_idx)].u32[field_u32 + 1];
         val = float(packDouble2x32(uvec2(low, high)));
@@ -40,15 +40,18 @@ void main() {
         val = uintBitsToFloat(all_buffers[nonuniformEXT(pc.gtb_idx)].u32[field_u32]);
     }
 
-    float norm_y = (val - pc.range_min) / (pc.range_max - pc.range_min);
+    // Normalize value based on provided range
+    float range = pc.range_max - pc.range_min;
+    if (abs(range) < 0.0001) range = 1.0;
+    float norm_y = (val - pc.range_min) / range;
     norm_y = clamp(norm_y, 0.0, 1.0);
 
+    // Map to screen pixels (using the provided ImPlot viewport bounds)
     float x_px = mix(pc.view_min.x, pc.view_max.x, float(i) / float(pc.history_count - 1));
-    float y_px = mix(pc.view_max.y, pc.view_min.y, norm_y);
+    float y_px = mix(pc.view_max.y, pc.view_min.y, norm_y); // Screen Y is down
 
-    // Pixel to NDC: (pos / size) * 2 - 1
-    vec2 ndc = (vec2(x_px, y_px) / pc.uScreenSize) * 2.0 - 1.0;
-    gl_Position = vec4(ndc, 0.0, 1.0);
+    // Final NDC Transform (Must match ImGui renderer exactly)
+    gl_Position = vec4(vec2(x_px, y_px) * pc.uScale + pc.uTranslate, 0.0, 1.0);
     
-    vColor = vec4(0.0, 0.8, 1.0, 1.0); 
+    vColor = vec4(0.0, 0.8, 1.0, 1.0); // Cyan glow
 }

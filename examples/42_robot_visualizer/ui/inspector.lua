@@ -38,7 +38,7 @@ panels.register("pretty_viewer", "Pretty Message Viewer", function(gui, node_id,
     
     if p_state.selected_ch then
         local ch = p_state.selected_ch
-        local buf = playback.message_buffers[ch.id]
+        local buf = playback.get_msg_buffer(ch.id)
         if not p_state.schema then
             local raw = robot.lib.mcap_get_schema_content(playback.bridge, ch.id)
             if raw ~= nil then p_state.schema = decoder.parse_schema(ffi.string(raw)) end
@@ -72,13 +72,19 @@ end)
 
 panels.register("plotter", "Topic Plotter", function(gui, node_id, params)
     if not panels.states[node_id] then
-        panels.states[node_id] = { selected_ch = nil, filter = ffi.new("char[128]"), field_name = nil, schema = nil, flattened = nil, facet_synced = false, gpu_mode = true, range_min = -1.0, range_max = 1.0, callback_pool = ffi.new("PlotCallbackData[16]"), callback_idx = 0 }
+        panels.states[node_id] = { 
+            selected_ch = nil, filter = ffi.new("char[128]"), field_name = nil, schema = nil, flattened = nil, 
+            facet_synced = false, gpu_mode = true, range_min = -1.0, range_max = 1.0, 
+            -- Pre-allocated callback data block (PERSISTENT ANCHOR)
+            cb_data = ffi.new("PlotCallbackData"),
+            p_gpu = ffi.new("bool[1]", true)
+        }
     end
     local p_state = panels.states[node_id]
     local channels = playback.channels or {}
     
     if params and params.topic_name and not p_state.facet_synced then
-        for _, ch in ipairs(channels) do if ch.topic == params.topic_name then p_state.selected_ch, p_state.facet_synced = ch, true break end end
+        for _, ch in ipairs(channels) do if ch.topic == params.topic_name then p_state.selected_ch, p_state.schema, p_state.facet_synced = ch, nil, true break end end
     end
     if params and params.field_name and not p_state.field_name then p_state.field_name = params.field_name end
     
@@ -111,8 +117,8 @@ panels.register("plotter", "Topic Plotter", function(gui, node_id, params)
     end
     
     gui.igSameLine(0, 5)
-    local p_gpu = ffi.new("bool[1]", p_state.gpu_mode)
-    if gui.igCheckbox("GPU", p_gpu) then p_state.gpu_mode = p_gpu[0] end
+    p_state.p_gpu[0] = p_state.gpu_mode
+    if gui.igCheckbox("GPU", p_state.p_gpu) then p_state.gpu_mode = p_state.p_gpu[0] end
 
     if p_state.selected_ch and p_state.field_name and p_state.flattened then
         local target = nil
@@ -122,10 +128,10 @@ panels.register("plotter", "Topic Plotter", function(gui, node_id, params)
                 gui.ImPlot_SetupAxis(0, "History (Time)", 0); gui.ImPlot_SetupAxis(1, "Value", 0)
                 if p_state.gpu_mode then
                     local p_min, p_max = gui.ImPlot_GetPlotPos(), gui.ImPlot_GetPlotSize()
-                    local cb_data = p_state.callback_pool[p_state.callback_idx]; p_state.callback_idx = (p_state.callback_idx + 1) % 16
-                    cb_data.ch_id, cb_data.field_offset, cb_data.is_double = p_state.selected_ch.id, target.offset, target.is_double and 1 or 0
-                    cb_data.range_min, cb_data.range_max, cb_data.x, cb_data.y, cb_data.w, cb_data.h = p_state.range_min, p_state.range_max, p_min.x, p_min.y, p_max.x, p_max.y
-                    gui.ImDrawList_AddCallback(gui.igGetWindowDrawList(), _G._PLOT_CALLBACK, cb_data, 0)
+                    local d = p_state.cb_data
+                    d.ch_id, d.field_offset, d.is_double = p_state.selected_ch.id, target.offset, target.is_double and 1 or 0
+                    d.range_min, d.range_max, d.x, d.y, d.w, d.h = p_state.range_min, p_state.range_max, p_min.x, p_min.y, p_max.x, p_max.y
+                    gui.ImDrawList_AddCallback(gui.igGetWindowDrawList(), _G._PLOT_CALLBACK, d, 0)
                 else
                     local h = playback.request_field_history(p_state.selected_ch.id, target.offset, target.is_double)
                     if h and h.count > 0 then gui.ImPlot_PlotLine_FloatPtrInt(p_state.field_name, h.data, h.count, 1.0, 0.0, ffi.new("ImPlotSpec_c", {Stride=4})) end
