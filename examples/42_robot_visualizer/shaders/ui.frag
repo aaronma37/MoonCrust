@@ -43,7 +43,20 @@ void main() {
         oColor.a *= alpha;
     } else if (vType == 2) { // Plot Area / 3D Viewport (Aperture)
         // Sample telemetry texture using bindless index in vExtra
-        vec4 texColor = texture(all_textures[nonuniformEXT(vExtra)], vUV);
+        uint texIdx = nonuniformEXT(vExtra);
+        vec4 texColor = texture(all_textures[texIdx], vUV);
+        
+        // If it's a plot (Index 105), apply a simple thickness boost via multi-tap sampling
+        if (vExtra == 105) {
+            float off = 0.0015; // Offset for thickening
+            texColor += texture(all_textures[texIdx], vUV + vec2(off, 0));
+            texColor += texture(all_textures[texIdx], vUV + vec2(-off, 0));
+            texColor += texture(all_textures[texIdx], vUV + vec2(0, off));
+            texColor += texture(all_textures[texIdx], vUV + vec2(0, -off));
+            texColor *= 0.25; // Normalize and boost brightness
+            texColor.rgb *= 1.5; 
+        }
+        
         oColor = vec4(texColor.rgb, texColor.a * alpha);
     } else if (vType == 3) { // Slider
         float progress = float(vExtra) / 1000.0;
