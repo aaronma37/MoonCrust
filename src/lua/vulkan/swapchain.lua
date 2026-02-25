@@ -40,6 +40,17 @@ function M.new(instance, physical_device, device, window, old_swapchain, use_srg
         if use_srgb and formats[i].format == vk.VK_FORMAT_B8G8R8A8_SRGB then self.format = formats[i].format break end
     end
 
+    -- Pick Present Mode: Prefer Mailbox (unlocked/low-latency) over FIFO
+    local mode_count = ffi.new("uint32_t[1]")
+    vk.vkGetPhysicalDeviceSurfacePresentModesKHR(physical_device, self.surface, mode_count, nil)
+    local modes = ffi.new("VkPresentModeKHR[?]", mode_count[0])
+    vk.vkGetPhysicalDeviceSurfacePresentModesKHR(physical_device, self.surface, mode_count, modes)
+    
+    local present_mode = vk.VK_PRESENT_MODE_FIFO_KHR
+    for i=0, mode_count[0]-1 do
+        if modes[i] == vk.VK_PRESENT_MODE_MAILBOX_KHR then present_mode = modes[i] break end
+    end
+
     local createInfo = ffi.new("VkSwapchainCreateInfoKHR", {
         sType = vk.VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
         surface = self.surface,
@@ -52,7 +63,7 @@ function M.new(instance, physical_device, device, window, old_swapchain, use_srg
         imageSharingMode = vk.VK_SHARING_MODE_EXCLUSIVE,
         preTransform = caps.currentTransform,
         compositeAlpha = vk.VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
-        presentMode = vk.VK_PRESENT_MODE_FIFO_KHR, 
+        presentMode = present_mode, 
         clipped = vk.VK_TRUE,
         oldSwapchain = old_swapchain or nil
     })
