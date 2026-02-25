@@ -114,6 +114,26 @@ function M.wrap(gui)
             type = 4 -- Separator
         })
     end
+
+    local old_ImPlot_PlotImage = gui.ImPlot_PlotImage
+    gui.ImPlot_PlotImage = function(label_id, tex_ref, bounds_min, bounds_max, uv0, uv1, tint_col, spec)
+        local pos = gui.ImPlot_GetPlotPos()
+        local size = gui.ImPlot_GetPlotSize()
+        local w_pos = gui.igGetWindowPos()
+        local w_size = gui.igGetWindowSize()
+        
+        local tex_id = tonumber(ffi.cast("uintptr_t", tex_ref._TexID))
+        
+        M.push({
+            x = pos.x, y = pos.y, w = size.x, h = size.y,
+            r = 1, g = 1, b = 1, a = 1,
+            clip_min_x = w_pos.x, clip_min_y = w_pos.y,
+            clip_max_x = w_pos.x + w_size.x, clip_max_y = w_pos.y + w_size.y,
+            type = 2, -- Aperture
+            extra = tex_id
+        })
+        -- We don't need to call old_ImPlot_PlotImage because we are headless!
+    end
 end
 
 return M

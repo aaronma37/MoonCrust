@@ -11,7 +11,7 @@ local playback = require("examples.42_robot_visualizer.playback")
 local primitives = require("examples.42_robot_visualizer.primitives")
 local robot = require("mc.robot")
 local imgui = require("imgui")
-local ui = require("examples.42_robot_visualizer.ui.consts")
+local ui_context = require("examples.42_robot_visualizer.ui.context")
 
 local M = {
     cam = { orbit_x = 45, orbit_y = 45, dist = 50, target = ffi.new("float[3]", {0, 0, 5}), ortho = false, follow = true },
@@ -148,22 +148,26 @@ end
 
 function M.reset_frame() end
 
-local igImage_hack = nil
 function M.register_panels()
     panels.register("view3d", "3D Scene", function(gui, node_id, params)
-        if not igImage_hack then igImage_hack = ffi.cast("void(*)(void*, uint64_t, ImVec2_c, ImVec2_c, ImVec2_c)", gui.igImage) end
         M.current_params = params
         local s = gui.igGetContentRegionAvail()
+        local pos = gui.igGetCursorScreenPos()
+        
         gui.igInvisibleButton("##scene_hit", s, 0)
         M.is_hovered = gui.igIsItemHovered(0)
         
-        local aspect = M.w / M.h
-        local avail_aspect = s.x / s.y
-        local img_s = ffi.new("ImVec2_c", {s.x, s.y})
-        if avail_aspect > aspect then img_s.x = s.y * aspect else img_s.y = s.x / aspect end
-        local offset_x, offset_y = (s.x - img_s.x) * 0.5, (s.y - img_s.y) * 0.5
-        gui.igSetCursorPos(ffi.new("ImVec2_c", {gui.igGetCursorPosX() + offset_x, gui.igGetCursorPosY() - s.y + offset_y}))
-        igImage_hack(nil, M.final_color_idx, img_s, ffi.new("ImVec2_c", {0,0}), ffi.new("ImVec2_c", {1,1}))
+        local w_pos = gui.igGetWindowPos()
+        local w_size = gui.igGetWindowSize()
+
+        ui_context.push({
+            x = pos.x, y = pos.y, w = s.x, h = s.y,
+            r = 1, g = 1, b = 1, a = 1,
+            clip_min_x = w_pos.x, clip_min_y = w_pos.y,
+            clip_max_x = w_pos.x + w_size.x, clip_max_y = w_pos.y + w_size.y,
+            type = 2, -- Aperture
+            extra = M.final_color_idx
+        })
     end)
 end
 

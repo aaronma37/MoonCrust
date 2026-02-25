@@ -15,8 +15,8 @@ The traditional ImGui pipeline (CPU generates thousands of vertices -> Upload to
 
 ## 🏗️ Architectural Pillars
 
-### 1. The 64-Byte `UIElement` (The "Atomic Metadata")
-Every UI widget (button, frame, plot area) is reduced to a single 64-byte packet. This size is optimized for cache-line alignment and maximum memory bandwidth during upload.
+### 1. The 64-Byte "Masterpiece" Structs
+To ensure perfect alignment with Vulkan `std430` layout rules and maximum cache-line efficiency, all metadata packets are standardized to exactly 64 bytes.
 
 ```cpp
 // std430 alignment (64 bytes)
@@ -29,48 +29,55 @@ struct UIElement {
     uint flags;    // State flags (Bit 0: Hovered, Bit 1: Active)
     float rounding;// Corner radius for SDF rounding
     uint extra;    // Multi-purpose (Texture ID, Plot Index, etc.)
+    uint padding[4]; 
+};
+
+struct TextInstance {
+    vec2 pos;      // Character position
+    vec2 size;     // Character size
+    vec2 uv;       // Font atlas start
+    vec2 uv_size;  // Font atlas delta
+    vec4 clip;     // The ImGui ClipRect
+    uint color;    // Packed RGBA8
+    uint padding[3];
 };
 ```
 
 ### 2. The Persistent Ring Buffer (Zero-Stutter Updates)
 We avoid mid-frame Vulkan allocations. Instead, we use a **Persistent Mapped Ring Buffer**:
-*   **Size**: Allocated for `N` frames-in-flight (usually 2 or 3).
-*   **Mapping**: The buffer is mapped once at startup.
-*   **Slicing**: Every frame, the CPU harvsters memcpy's the `UIElement` array into the current frame's slice using a dynamic offset.
+*   **Capacity**: 10,000 UI Elements and 20,000 Text Instances per frame.
+*   **Double Buffering**: Two slices (Frame 0, Frame 1) indexed via dynamic bindless descriptors (60-63).
+*   **Efficiency**: CPU performs a single `memcpy` per frame; GPU reads directly from host-visible VRAM.
 
 ### 3. Hardware Instancing & The Uber-Shader
-We don't use a fullscreen fragment shader or compute shaders for the UI. We use the standard Graphics Pipeline:
-*   **Geometry**: A single `1.0x1.0` unit quad stored in a vertex buffer.
-*   **Draw Call**: `vkCmdDrawInstanced(count = total_widgets)`.
-*   **Vertex Shader**: Uses `gl_InstanceIndex` to pull the `UIElement` from the SSBO. It scales the unit quad by `size` and translates it by `pos`.
-*   **Fragment Shader**: A high-performance "Uber-Shader" that uses `type` to branch to specific SDF logic. It respects the `clip` rect by discarding fragments that fall outside the window's scroll area.
+We use the standard Graphics Pipeline for maximum performance:
+*   **Geometry**: A single `1.0x1.0` unit quad.
+*   **Draw Call**: `vkCmdDraw(count = 4, instances = total_elements)`.
+*   **Vertex Shader**: Uses `gl_InstanceIndex` to pull metadata. It maps (0,0) to (-1,-1) and (W,H) to (1,1) in NDC.
+*   **Fragment Shader**: Evaluates SDFs for rounding and anti-aliasing. Uses the `flat` qualifier to ensure widget types and flags don't interpolate across pixels.
 
 ### 4. The Hybrid Text Strategy
-Text is the only exception to the "Zero Geometry" rule. 
-*   **CPU**: ImGui calculates exact character positions (x, y) and UVs for our **SDF Font Atlas**.
-*   **Geometry**: We push a lightweight array of quads (4 vertices per character) to a separate vertex buffer.
-*   **GPU**: A specialized text shader instances these quads, sampling the SDF atlas for mathematically perfect, anti-aliased text at any scale.
+Text leverages ImGui's layout engine but uses our custom GPU renderer:
+*   **Harvester**: Iterates through the ImGui `DrawList`, extracting character quads.
+*   **Heuristic**: Uses the font atlas `white_uv` pixel coordinates to distinguish actual characters from solid UI widgets.
+*   **Rasterized Sampling**: Samples the MoonCrust font atlas (Binding 1, Index 0) with a specialized alpha-channel shader.
 
 ---
 
 ## 🛡️ The "Silent Killer": ClipRect
-Traditional custom UI renderers often fail because they ignore the **ClipRect**. In ImGui, widgets inside scrolling windows or docking nodes must be clipped to their parent's bounds. 
-Our `UIElement` struct includes the `clip` vector. The fragment shader is mathematically guaranteed to discard any pixel outside this box, ensuring that 3D LiDAR data or complex plots never "bleed" out of their designated ImGui windows.
+Every UI element and text character carries its parent window's `ClipRect`. The fragment shader performs a per-pixel discard if `gl_FragCoord` falls outside these bounds. This ensures 3D data and scrolling lists never "bleed" across the dashboard.
 
 ---
 
-## 📈 Performance & Scaling
-| Metric | Traditional ImGui | MoonCrust Headless |
-| :--- | :--- | :--- |
-| **CPU Work** | Vertex Gen + Index Gen | **Bounds Math Only** |
-| **GPU Work** | Triangle Rasterization | **SDF Evaluation (Higher Quality)** |
-| **Memory Bandwidth** | High (MBs of Vertices) | **Ultra-Low (KBs of Metadata)** |
-| **Flexibility** | Fixed Look-and-Feel | **Programmable Aesthetics** |
+## 🚀 Accomplishments
+- [x] **Headless Bridge**: ImGui functions (igButton, igBegin, etc.) wrapped to harvest metadata.
+- [x] **Zero-Copy Pipeline**: No CPU vertex generation or heavy memory movement.
+- [x] **Instanced Text**: Full words and sentences rendered via GPU instances.
+- [x] **SDF Aesthetic**: Rounded corners and anti-aliased widgets integrated.
 
 ---
 
-## 🚀 Implementation Roadmap
-1.  **[ ] Hollow out `imgui.render`**: Remove the internal vertex/index generation.
-2.  **[ ] The Harvester**: Implement the Lua-to-C++ loop that converts `ImDrawList` into `UIElement` packets.
-3.  **[ ] UI Uber-Shader**: Write the GLSL SDF logic for the standard ImGui widget set.
-4.  **[ ] Text SDF Pipeline**: Integrate the `Roboto` SDF atlas into the instanced quad renderer.
+## 📈 Next Steps
+1.  **[ ] Telemetry Compositing**: Map the LiDAR and Plot data textures into the UI "Apertures" (Type 2 widgets).
+2.  **[ ] Dynamic Themeing**: Expose the Uber-shader constants to Lua for real-time dashboard styling.
+3.  **[ ] SDF Font Atlas**: Generate a true SDF atlas for infinite-resolution text zooming.

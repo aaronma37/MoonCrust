@@ -1,4 +1,6 @@
 #version 450
+#extension GL_EXT_nonuniform_qualifier : enable
+
 layout(location = 0) in flat vec2 vPos;
 layout(location = 1) in flat vec2 vSize;
 layout(location = 2) in flat vec4 vColor;
@@ -9,6 +11,8 @@ layout(location = 6) in flat float vRounding;
 layout(location = 7) in vec2 vUV;
 layout(location = 8) in flat uint vExtra;
 
+layout(set = 0, binding = 1) uniform sampler2D all_textures[];
+
 layout(location = 0) out vec4 oColor;
 
 float sdRoundedRect(vec2 p, vec2 b, float r) {
@@ -17,9 +21,8 @@ float sdRoundedRect(vec2 p, vec2 b, float r) {
 }
 
 void main() {
-    // 1. ClipRect Discard (Vulkan gl_FragCoord is top-left origin by default)
+    // 1. ClipRect Discard
     vec2 fragCoord = gl_FragCoord.xy;
-    
     if (fragCoord.x < vClip.x || fragCoord.y < vClip.y || fragCoord.x > vClip.z || fragCoord.y > vClip.w) {
         discard;
     }
@@ -28,8 +31,6 @@ void main() {
     vec2 center = vPos + vSize * 0.5;
     vec2 p = fragCoord - center;
     float d = sdRoundedRect(p, vSize * 0.5, vRounding);
-    
-    // Antialiasing
     float alpha = 1.0 - smoothstep(-0.5, 0.5, d);
     
     if (vType == 0) { // Frame / Window
@@ -37,13 +38,13 @@ void main() {
         oColor.a *= alpha;
     } else if (vType == 1) { // Button
         oColor = vColor;
-        // Simple hover effect if flags bit 0 is set
         if ((vFlags & 1) != 0) oColor.rgb += 0.1;
-        // Simple active effect if flags bit 1 is set
         if ((vFlags & 2) != 0) oColor.rgb -= 0.1;
         oColor.a *= alpha;
-    } else if (vType == 2) { // Plot Area (Aperture)
-        oColor = vec4(vColor.rgb, vColor.a * alpha);
+    } else if (vType == 2) { // Plot Area / 3D Viewport (Aperture)
+        // Sample telemetry texture using bindless index in vExtra
+        vec4 texColor = texture(all_textures[nonuniformEXT(vExtra)], vUV);
+        oColor = vec4(texColor.rgb, texColor.a * alpha);
     } else if (vType == 3) { // Slider
         float progress = float(vExtra) / 1000.0;
         if (vUV.x < progress) {
