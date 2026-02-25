@@ -24,12 +24,14 @@ local M = {
     -- GTB (Global Telemetry Buffer)
     gtb = nil,
     _gtb_ref = nil, -- Anchor to prevent GC
+    _persistence = {}, -- Global FFI anchor
+    _msg_anchor = nil,
     HISTORY_MAX = 1000, 
     MSG_SIZE_MAX = 8192, 
     
     -- STATIC MESSAGE POOL (The "Crash Killer")
-    -- Pre-allocate 64 slots of 1MB to avoid runtime allocations
-    MAX_TOPICS = 64,
+    -- Pre-allocate slots to avoid runtime allocations
+    MAX_TOPICS = 128,
     MSG_BUF_SIZE = 1048576,
     message_buffers = {},
 }
@@ -42,7 +44,7 @@ function M.init()
     end
     
     if #M.message_buffers == 0 then
-        print("Playback: Allocating Static Message Pool (64 x 1MB)...")
+        print("Playback: Allocating Static Message Pool (128 x 1MB)...")
         for i=1, M.MAX_TOPICS do
             M.message_buffers[i] = {
                 data = ffi.new("uint8_t[1048576]"),
@@ -71,8 +73,10 @@ end
 function M.request_field_history(ch_id, offset, is_double)
     if not M.plot_history[ch_id] then M.plot_history[ch_id] = {} end
     if not M.plot_history[ch_id][offset] then
+        local data = ffi.new("float[1000]")
+        table.insert(M._persistence, data) -- Anchor
         M.plot_history[ch_id][offset] = { 
-            data = ffi.new("float[1000]"), 
+            data = data, 
             head = 0, 
             count = 0,
             is_double = is_double or false
@@ -90,12 +94,17 @@ function M.load_mcap(path)
     M.bridge = robot.lib.mcap_open(M.mcap_path)
     if M.bridge == nil then return false end
     
-    robot.lib.mcap_set_gtb(M.bridge, ffi.cast("uint8_t*", M.gtb.allocation.ptr), M.gtb.size)
+    local gtb_ptr = ffi.cast("uint8_t*", M.gtb.allocation.ptr)
+    table.insert(M._persistence, gtb_ptr) -- Anchor ptr
+    robot.lib.mcap_set_gtb(M.bridge, gtb_ptr, M.gtb.size)
     M.start_time = robot.lib.mcap_get_start_time(M.bridge)
     M.end_time = robot.lib.mcap_get_end_time(M.bridge)
     M.current_time_ns, M.playback_time_ns, M.paused = M.start_time, M.start_time, true 
     
     M.discover_topics()
+    
+    M._msg_anchor = ffi.new("McapMessage")
+    M.current_msg = M._msg_anchor
     robot.lib.mcap_next(M.bridge, M.current_msg)
     return true
 end
@@ -106,14 +115,20 @@ function M.discover_topics()
     local info = ffi.new("McapChannelInfo")
     local slot_size = M.MSG_SIZE_MAX * M.HISTORY_MAX
     
+    local configured_count = 0
     for i=0, count-1 do
         if robot.lib.mcap_get_channel_info(M.bridge, i, info) then
             if info.topic ~= nil then
                 local t = ffi.string(info.topic)
-                table.insert(M.channels, { id = info.id, topic = t, encoding = ffi.string(info.message_encoding or "u"), schema = ffi.string(info.schema_name or "u"), active = true })
-                local offset = i * slot_size
+                local ch = { id = info.id, topic = t, encoding = ffi.string(info.message_encoding or "u"), schema = ffi.string(info.schema_name or "u"), active = true, gtb_offset = nil }
+                table.insert(M.channels, ch)
+                
+                -- Only configure if we have space in GTB
+                local offset = configured_count * slot_size
                 if offset + slot_size <= M.gtb.size then
                     robot.lib.mcap_configure_gtb_slot(M.bridge, info.id, offset, M.MSG_SIZE_MAX, M.HISTORY_MAX)
+                    ch.gtb_offset = offset
+                    configured_count = configured_count + 1
                 end
             end
         end

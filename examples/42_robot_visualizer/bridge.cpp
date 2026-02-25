@@ -187,7 +187,8 @@ EXPORT bool mcap_next(McapBridge* b, McapMessage* out) {
         uint64_t write_offset = slot.base_offset + (static_cast<uint64_t>(slot.current_index) * slot.msg_size);
         uint64_t sz = std::min(static_cast<uint64_t>(m.message.dataSize), static_cast<uint64_t>(slot.msg_size));
         
-        if (write_offset + sz <= b->gtb_size) {
+        // CRITICAL SAFETY CHECK: Prevent buffer overflow
+        if (write_offset + sz <= b->gtb_size && (static_cast<uint64_t>(slot.current_index) * slot.msg_size + sz) <= (slot.history_max * slot.msg_size)) {
             std::memcpy(b->gtb_ptr + write_offset, m.message.data, sz);
             // Advance head
             slot.current_index = (slot.current_index + 1) % slot.history_max;

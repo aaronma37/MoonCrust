@@ -201,12 +201,15 @@ function M.update_robot_buffer(frame_idx, params)
                         if M.pose_schema then
                             local vals = require("examples.42_robot_visualizer.decoder").decode(buf.data, buf.size, M.pose_schema)
                             for _, v in ipairs(vals) do
-                                if (v.name:lower():find("position") or v.name:lower():find("point")) then
-                                    if v.name:find("%.x$") or v.name == "x" then px = tonumber(v.value)
-                                    elseif v.name:find("%.y$") or v.name == "y" then py = tonumber(v.value)
-                                    elseif v.name:find("%.z$") or v.name == "z" then pz = tonumber(v.value) end
+                                local num = tonumber(v.value)
+                                if num then
+                                    if (v.name:lower():find("position") or v.name:lower():find("point")) then
+                                        if v.name:find("%.x$") or v.name == "x" then px = num
+                                        elseif v.name:find("%.y$") or v.name == "y" then py = num
+                                        elseif v.name:find("%.z$") or v.name == "z" then pz = num end
+                                    end
+                                    if v.name:find("yaw") or v.name:find("heading") then yaw = num end
                                 end
-                                if v.name:find("yaw") or v.name:find("heading") then yaw = tonumber(v.value) end
                             end
                         end
                     end
@@ -238,21 +241,21 @@ function M.render_deferred(cb_handle, point_buf_idx, frame_idx, point_count)
         vk.vkCmdSetScissor(cb_handle, 0, 1, ffi.new("VkRect2D[1]", {scissor}))
 
         local slot_size = playback.MSG_SIZE_MAX * playback.HISTORY_MAX
-        for _, p in ipairs(M.plot_queue) do
-            local channel_idx = -1
+        for _, plot_item in ipairs(M.plot_queue) do
+            local ch = nil
             if playback.channels then
-                for i, ch in ipairs(playback.channels) do if ch.id == p.ch_id then channel_idx = i-1; break end end
+                for _, c in ipairs(playback.channels) do if c.id == plot_item.ch_id then ch = c; break end end
             end
-            if channel_idx ~= -1 then
+            if ch and ch.gtb_offset then
                 static.pc_plot.gtb_idx = 50
-                static.pc_plot.slot_offset = channel_idx * slot_size
+                static.pc_plot.slot_offset = ch.gtb_offset
                 static.pc_plot.msg_size = playback.MSG_SIZE_MAX
-                static.pc_plot.head_idx = playback.get_gtb_slot_index(p.ch_id)
-                static.pc_plot.field_offset = p.field_offset
+                static.pc_plot.head_idx = playback.get_gtb_slot_index(plot_item.ch_id)
+                static.pc_plot.field_offset = plot_item.field_offset
                 static.pc_plot.history_count = playback.HISTORY_MAX
-                static.pc_plot.is_double = p.is_double
-                static.pc_plot.range_min = p.range_min
-                static.pc_plot.range_max = p.range_max
+                static.pc_plot.is_double = plot_item.is_double
+                static.pc_plot.range_min = plot_item.range_min
+                static.pc_plot.range_max = plot_item.range_max
                 
                 static.pc_plot.view_min[0] = -1.0
                 static.pc_plot.view_min[1] = -1.0
@@ -280,9 +283,9 @@ function M.render_deferred(cb_handle, point_buf_idx, frame_idx, point_count)
     static.cam_pos.x = static.cam_target.x + M.cam.dist * math.cos(ry) * math.cos(rx)
     static.cam_pos.y = static.cam_target.y + M.cam.dist * math.cos(ry) * math.sin(rx)
     static.cam_pos.z = static.cam_target.z + M.cam.dist * math.sin(ry)
-    local p = mc.mat4_perspective(mc.rad(45), M.w/M.h, 0.1, 10000.0, static.m_proj)
-    local v = mc.mat4_look_at({static.cam_pos.x, static.cam_pos.y, static.cam_pos.z}, {static.cam_target.x, static.cam_target.y, static.cam_target.z}, {0,0,1}, static.m_view)
-    local mvp = mc.mat4_multiply(p, v, static.m_mvp)
+    local mat_proj = mc.mat4_perspective(mc.rad(45), M.w/M.h, 0.1, 10000.0, static.m_proj)
+    local mat_view = mc.mat4_look_at({static.cam_pos.x, static.cam_pos.y, static.cam_pos.z}, {static.cam_target.x, static.cam_target.y, static.cam_target.z}, {0,0,1}, static.m_view)
+    local mvp = mc.mat4_multiply(mat_proj, mat_view, static.m_mvp)
     for i=0,15 do static.pc_r.view_proj[i] = mvp.m[i] end
     static.pc_r.buf_idx, static.pc_r.point_size, static.pc_r.viewport_size[0], static.pc_r.viewport_size[1] = point_buf_idx or 11, 2.0, M.w, M.h
     local lidar_obj = nil
