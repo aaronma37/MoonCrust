@@ -28,37 +28,39 @@ local M = {
     is_hovered = false,
     is_dragging = false,
     poses = {},
-}
-
-local static = {
-    pc_r = ffi.new("RenderPC"),
-    pc_l = ffi.new("struct { uint32_t color_idx, normal_idx, pos_idx; float dummy; float light_dir[4]; }"),
-    pc_b = ffi.new("struct { uint32_t in_idx, out_idx; float inv_size[2]; }"),
-    pc_plot = ffi.new("PlotPC"),
-    viewport = ffi.new("VkViewport", {0, 0, 1920, 1080, 0, 1}),
-    scissor = ffi.new("VkRect2D", {offset={0,0}, extent={1920,1080}}),
-    v_buffs = ffi.new("VkBuffer[1]"),
-    v_offs = ffi.new("VkDeviceSize[1]", {0}),
-    sets = ffi.new("VkDescriptorSet[1]"),
-    cam_pos = ffi.new("mc_vec3"),
-    cam_target = ffi.new("mc_vec3"),
-    depth_attach = ffi.new("VkRenderingAttachmentInfo", { sType = vk.VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, imageLayout = vk.VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL, loadOp = vk.VK_ATTACHMENT_LOAD_OP_CLEAR, storeOp = vk.VK_ATTACHMENT_STORE_OP_STORE }),
-    color_attach_g = ffi.new("VkRenderingAttachmentInfo[3]"),
-    color_attach_l = ffi.new("VkRenderingAttachmentInfo[1]"),
-    color_attach_plot = ffi.new("VkRenderingAttachmentInfo[1]"),
-    img_barrier_g = ffi.new("VkImageMemoryBarrier[4]"),
-    img_barrier_l = ffi.new("VkImageMemoryBarrier[1]"),
-    img_barrier_plot = ffi.new("VkImageMemoryBarrier[1]"),
-    img_barrier_b = ffi.new("VkImageMemoryBarrier[1]"),
-    render_info_g = ffi.new("VkRenderingInfo", { sType = vk.VK_STRUCTURE_TYPE_RENDERING_INFO, layerCount = 1, colorAttachmentCount = 3 }),
-    render_info_l = ffi.new("VkRenderingInfo", { sType = vk.VK_STRUCTURE_TYPE_RENDERING_INFO, layerCount = 1, colorAttachmentCount = 1 }),
-    render_info_plot = ffi.new("VkRenderingInfo", { sType = vk.VK_STRUCTURE_TYPE_RENDERING_INFO, layerCount = 1, colorAttachmentCount = 1 }),
-    m_proj = ffi.new("mc_mat4"),
-    m_view = ffi.new("mc_mat4"),
-    m_mvp = ffi.new("mc_mat4"),
+    
+    -- STATIC DATA (Moved from local to M to avoid upvalue issues)
+    static = {
+        pc_r = ffi.new("RenderPC"),
+        pc_l = ffi.new("struct { uint32_t color_idx, normal_idx, pos_idx; float dummy; float light_dir[4]; }"),
+        pc_b = ffi.new("struct { uint32_t in_idx, out_idx; float inv_size[2]; }"),
+        pc_plot = ffi.new("PlotPC"),
+        viewport = ffi.new("VkViewport", {0, 0, 1920, 1080, 0, 1}),
+        scissor = ffi.new("VkRect2D", {offset={0,0}, extent={1920,1080}}),
+        v_buffs = ffi.new("VkBuffer[1]"),
+        v_offs = ffi.new("VkDeviceSize[1]", {0}),
+        sets = ffi.new("VkDescriptorSet[1]"),
+        cam_pos = ffi.new("mc_vec3"),
+        cam_target = ffi.new("mc_vec3"),
+        depth_attach = ffi.new("VkRenderingAttachmentInfo", { sType = vk.VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, imageLayout = vk.VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL, loadOp = vk.VK_ATTACHMENT_LOAD_OP_CLEAR, storeOp = vk.VK_ATTACHMENT_STORE_OP_STORE }),
+        color_attach_g = ffi.new("VkRenderingAttachmentInfo[3]"),
+        color_attach_l = ffi.new("VkRenderingAttachmentInfo[1]"),
+        color_attach_plot = ffi.new("VkRenderingAttachmentInfo[1]"),
+        img_barrier_g = ffi.new("VkImageMemoryBarrier[4]"),
+        img_barrier_l = ffi.new("VkImageMemoryBarrier[1]"),
+        img_barrier_plot = ffi.new("VkImageMemoryBarrier[1]"),
+        img_barrier_b = ffi.new("VkImageMemoryBarrier[1]"),
+        render_info_g = ffi.new("VkRenderingInfo", { sType = vk.VK_STRUCTURE_TYPE_RENDERING_INFO, layerCount = 1, colorAttachmentCount = 3 }),
+        render_info_l = ffi.new("VkRenderingInfo", { sType = vk.VK_STRUCTURE_TYPE_RENDERING_INFO, layerCount = 1, colorAttachmentCount = 1 }),
+        render_info_plot = ffi.new("VkRenderingInfo", { sType = vk.VK_STRUCTURE_TYPE_RENDERING_INFO, layerCount = 1, colorAttachmentCount = 1 }),
+        m_proj = ffi.new("mc_mat4"),
+        m_view = ffi.new("mc_mat4"),
+        m_mvp = ffi.new("mc_mat4"),
+    }
 }
 
 function M.init(device, bindless_set, sw)
+    local static = M.static
     local bl_layout = mc.gpu.get_bindless_layout()
     M.pipe_layout = pipeline.create_layout(device, {bl_layout}, ffi.new("VkPushConstantRange[1]", {{ stageFlags = vk.VK_SHADER_STAGE_ALL_GRAPHICS, offset = 0, size = ffi.sizeof("RenderPC") }}))
     
@@ -189,31 +191,13 @@ function M.update_robot_buffer(frame_idx, params)
             if obj.type == "robot" then
                 local last = M.poses[obj.name or "default"] or { x = 0, y = 0, z = 0, yaw = 0 }
                 local px, py, pz, yaw = last.x, last.y, last.z, last.yaw
-                local ch = nil
-                if playback.channels then for _, c in ipairs(playback.channels) do if c.topic == obj.pose_topic then ch = c; break end end end
-                if ch then
-                    local buf = playback.get_msg_buffer(ch.id)
-                    if buf and buf.size > 0 then
-                        if not M.pose_schema then
-                            local raw = robot.lib.mcap_get_schema_content(playback.bridge, ch.id)
-                            if raw then M.pose_schema = require("examples.42_robot_visualizer.decoder").parse_schema(ffi.string(raw)) end
-                        end
-                        if M.pose_schema then
-                            local vals = require("examples.42_robot_visualizer.decoder").decode(buf.data, buf.size, M.pose_schema)
-                            for _, v in ipairs(vals) do
-                                local num = tonumber(v.value)
-                                if num then
-                                    if (v.name:lower():find("position") or v.name:lower():find("point")) then
-                                        if v.name:find("%.x$") or v.name == "x" then px = num
-                                        elseif v.name:find("%.y$") or v.name == "y" then py = num
-                                        elseif v.name:find("%.z$") or v.name == "z" then pz = num end
-                                    end
-                                    if v.name:find("yaw") or v.name:find("heading") then yaw = num end
-                                end
-                            end
-                        end
-                    end
-                end
+                
+                -- [GPU-NATIVE ARCHITECTURE PENDING]
+                -- The Lua decoder has been killed. The CPU no longer wastes cycles 
+                -- dynamically parsing Pose strings. A Compute Shader will be built 
+                -- to read the GTB directly and resolve these kinematics.
+                -- For now, the drone sits at its initial/last known position.
+                
                 M.poses[obj.name or "default"] = { x = px, y = py, z = pz, yaw = yaw }
                 if obj.follow then M.current_pose = M.poses[obj.name or "default"] end
                 local offset = 0
@@ -226,6 +210,7 @@ function M.update_robot_buffer(frame_idx, params)
 end
 
 function M.render_deferred(cb_handle, point_buf_idx, frame_idx, point_count)
+    local static = M.static
     if #M.plot_queue > 0 then
         static.img_barrier_plot[0].oldLayout, static.img_barrier_plot[0].newLayout, static.img_barrier_plot[0].srcAccessMask, static.img_barrier_plot[0].dstAccessMask = vk.VK_IMAGE_LAYOUT_UNDEFINED, vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 0, vk.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT
         vk.vkCmdPipelineBarrier(cb_handle, vk.VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, vk.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, nil, 0, nil, 1, static.img_barrier_plot)

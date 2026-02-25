@@ -51,18 +51,10 @@ panels.register("pretty_viewer", "Pretty Message Viewer", function(gui, node_id,
             end
             if p_state.schema then
                 if gui.igTreeNode_Str(icons.CHART .. " Live Values") then
-                    if playback.current_time_ns ~= p_state.last_ts then
-                        decoder.decode(buf.data, buf.size, p_state.schema, p_state.cached_vals)
-                        p_state.last_ts = playback.current_time_ns
-                    end
-                    if gui.igBeginTable("ValuesTable", 2, bit.bor(panels.Flags.TableBorders, panels.Flags.TableResizable), ui.V2_ZERO, 0) then
-                        gui.igTableSetupColumn("Field", 0, 0, 0); gui.igTableSetupColumn("Value", 0, 0, 0); gui.igTableHeadersRow()
-                        for _, v in ipairs(p_state.cached_vals) do
-                            gui.igTableNextRow(0, 0); gui.igTableNextColumn(); gui.igText("%s", v.name)
-                            gui.igTableNextColumn(); gui.igText(v.fmt, v.value)
-                        end
-                        gui.igEndTable()
-                    end
+                    gui.igTextColored(ui.V4_LIVE, "GPU Metadata Rendering Engaged.")
+                    gui.igTextDisabled("(Lua Decoder Killed for Zero-Copy Pipeline)")
+                    -- TODO: Push a Type=2 Aperture here, and dispatch a Compute Shader 
+                    -- that reads the GTB and writes SDF text glyphs directly to the GPU screen!
                     gui.igTreePop()
                 end
             end

@@ -30,10 +30,11 @@ local M = {
     MSG_SIZE_MAX = 8192, 
     
     -- STATIC MESSAGE POOL (The "Crash Killer")
-    -- Pre-allocate slots to avoid runtime allocations
     MAX_TOPICS = 128,
     MSG_BUF_SIZE = 1048576,
     message_buffers = {},
+    buffers_by_id = {}, -- O(1) lookup
+    channels_by_id = {}, -- O(1) lookup
 }
 
 function M.init()
@@ -56,14 +57,14 @@ function M.init()
 end
 
 function M.get_msg_buffer(ch_id)
-    -- Fast lookup for existing topic slot
-    for i=1, M.MAX_TOPICS do
-        if M.message_buffers[i].active_ch == ch_id then return M.message_buffers[i] end
-    end
+    local existing = M.buffers_by_id[ch_id]
+    if existing then return existing end
+    
     -- Assign new slot
     for i=1, M.MAX_TOPICS do
         if M.message_buffers[i].active_ch == -1 then
             M.message_buffers[i].active_ch = ch_id
+            M.buffers_by_id[ch_id] = M.message_buffers[i]
             return M.message_buffers[i]
         end
     end
@@ -114,6 +115,7 @@ end
 function M.discover_topics()
     local count = robot.lib.mcap_get_channel_count(M.bridge)
     M.channels = {}
+    M.channels_by_id = {}
     local info = ffi.new("McapChannelInfo")
     local slot_size = M.MSG_SIZE_MAX * M.HISTORY_MAX
     
@@ -124,6 +126,7 @@ function M.discover_topics()
                 local t = ffi.string(info.topic)
                 local ch = { id = info.id, topic = t, encoding = ffi.string(info.message_encoding or "u"), schema = ffi.string(info.schema_name or "u"), active = true, gtb_offset = nil }
                 table.insert(M.channels, ch)
+                M.channels_by_id[ch.id] = ch
                 
                 -- Only configure if we have space in GTB
                 local offset = configured_count * slot_size
@@ -156,6 +159,7 @@ function M.update(dt, raw_buffer)
     while (not M.paused or M.seek_to) and M.current_msg.log_time < M.playback_time_ns do
         if msgs_processed > 1000 then break end -- Safety throttle
         local ch_id = M.current_msg.channel_id
+        
         if M.current_msg.data ~= nil then 
             local buf = M.get_msg_buffer(ch_id)
             if buf then
@@ -163,29 +167,16 @@ function M.update(dt, raw_buffer)
                 ffi.copy(buf.data, M.current_msg.data, sz)
                 buf.size = sz
             end
-            
-            local channel_history = M.plot_history[ch_id]
-            if channel_history then
-                for offset, h in pairs(channel_history) do
-                    if tonumber(M.current_msg.data_size) >= offset + (h.is_double and 8 or 4) then
-                        local ptr = ffi.cast(h.is_double and "double*" or "float*", M.current_msg.data + offset)
-                        h.data[h.head] = tonumber(ptr[0])
-                        h.head = (h.head + 1) % 1000
-                        if h.count < 1000 then h.count = h.count + 1 end
-                    end
-                end
-            end
         end
         
-        if ch_id == M.lidar_ch_id and raw_buffer and raw_buffer.allocation.ptr ~= nil then 
-            local sz = math.min(tonumber(M.current_msg.data_size), raw_buffer.size)
-            ffi.copy(raw_buffer.allocation.ptr, M.current_msg.data, sz)
+        -- LiDAR point count logic (ZERO-COPY: No redundant Lua-side ffi.copy)
+        if ch_id == M.lidar_ch_id then 
             if M.current_msg.data_size > 32 and ffi.string(M.current_msg.data + 4, 5) == "livox" then
                 M.last_lidar_points = ffi.cast("uint32_t*", M.current_msg.data + 24)[0]
-            else M.last_lidar_points = math.floor(sz / 12) end
+            else M.last_lidar_points = math.floor(tonumber(M.current_msg.data_size) / 12) end
         end
         
-        -- Advance C++ iterator AFTER Lua is done with the pointer
+        -- Advance C++ iterator
         robot.lib.mcap_advance(M.bridge)
         
         if not robot.lib.mcap_get_current(M.bridge, M.current_msg) then

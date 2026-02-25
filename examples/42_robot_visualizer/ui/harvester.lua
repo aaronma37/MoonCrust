@@ -6,6 +6,7 @@ pcall(ffi.cdef, [[
         float u, v, uw, vh;
         float clip_min_x, clip_min_y, clip_max_x, clip_max_y;
         uint32_t color;
+        uint32_t padding[3];
     } TextInstance;
 ]])
 
@@ -14,6 +15,7 @@ local M = {
 }
 
 function M.harvest_text(draw_data, text_buffer)
+    if not draw_data then return 0 end
     local instances = ffi.cast("TextInstance*", text_buffer.allocation.ptr)
     local count = 0
     local max_instances = 20000 -- Matches MAX_TEXT_INSTANCES
@@ -26,6 +28,7 @@ function M.harvest_text(draw_data, text_buffer)
         
         local cmd_buffer = ffi.cast("ImDrawCmd*", cmd_list.CmdBuffer.Data)
         for i = 0, cmd_list.CmdBuffer.Size - 1 do
+            if count >= max_instances then goto done end
             local cmd = cmd_buffer[i]
             local tex_id = tonumber(ffi.cast("uintptr_t", cmd.TexRef._TexID))
             
@@ -40,7 +43,7 @@ function M.harvest_text(draw_data, text_buffer)
             end
 
             for j = 0, elem_count - 1, 6 do
-                if count >= max_instances then break end
+                if count >= max_instances then goto done end
                 
                 local i0 = idx_buffer[idx_offset + j] + vtx_offset
                 local i2 = idx_buffer[idx_offset + j + 2] + vtx_offset
@@ -78,6 +81,7 @@ function M.harvest_text(draw_data, text_buffer)
         end
     end
     
+    ::done::
     return count
 end
 

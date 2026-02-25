@@ -339,7 +339,10 @@ function M.update()
     
     imgui.gui.igRender()
     local draw_data = imgui.gui.igGetDrawData()
-    local text_count = harvester.harvest_text(draw_data, text_buffers[f_idx + 1])
+    local text_count = 0
+    if draw_data ~= nil then
+        text_count = harvester.harvest_text(draw_data, text_buffers[f_idx + 1])
+    end
     state.last_text_count = text_count
     
     local ui_pc = ffi.new("struct { uint32_t idx; uint32_t pad; float screen[2]; }", { 60 + f_idx, 0, {tonumber(win_w), tonumber(win_h)} })
