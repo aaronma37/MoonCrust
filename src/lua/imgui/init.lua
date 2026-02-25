@@ -148,5 +148,5 @@ function M.render(cb)
     renderer.render(cb, draw_data)
 end
 
-M.gui = ffi_lib
+M.gui = setmetatable({}, { __index = ffi_lib })
 return M

@@ -10,6 +10,23 @@ ffi.cdef[[
     typedef struct LidarCallbackData { float x, y, w, h; } LidarCallbackData;
     typedef struct PlotCallbackData { uint32_t ch_id, field_offset, is_double; float range_min, range_max; float x, y, w, h; } PlotCallbackData;
     
+    typedef struct UIElement {
+        float x, y;
+        float w, h;
+        float r, g, b, a;
+        float clip_min_x, clip_min_y, clip_max_x, clip_max_y;
+        uint32_t type;
+        uint32_t flags;
+        float rounding;
+        uint32_t extra;
+    } UIElement;
+
+    typedef struct TextInstance {
+        float x, y, w, h;
+        float u, v, uw, vh;
+        uint32_t color;
+    } TextInstance;
+
     typedef int ImGuiAxis;
     typedef struct ImDrawList ImDrawList;
     typedef void (*ImDrawCallback)(const ImDrawList* parent_list, const void* draw_cmd);
@@ -32,6 +49,7 @@ ffi.cdef[[
     void igEndPopup(void);
     void igCloseCurrentPopup(void);
     bool igIsItemClicked(int mouse_button);
+    bool igIsItemActive(void);
     bool igIsKeyPressed_Bool(int key, bool repeat);
     void igSetNextWindowFocus(void);
     void igSeparatorText(const char* label);

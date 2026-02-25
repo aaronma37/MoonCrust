@@ -20,6 +20,8 @@ local panels = require("examples.42_robot_visualizer.ui.panels")
 local config = require("examples.42_robot_visualizer.config")
 local theme = require("examples.42_robot_visualizer.ui.theme")
 local ui_consts = require("examples.42_robot_visualizer.ui.consts")
+local ui_context = require("examples.42_robot_visualizer.ui.context")
+local harvester = require("examples.42_robot_visualizer.ui.harvester")
 require("examples.42_robot_visualizer.ui.telemetry")
 require("examples.42_robot_visualizer.ui.inspector")
 require("examples.42_robot_visualizer.ui.perf")
@@ -55,6 +57,9 @@ _G._PICKER_STATE, _G._PERF_STATS = state.picker, state
 
 local M = {}
 local device, queue, graphics_family, sw, surface, pipe_parse, layout_parse, bindless_set, raw_buffers
+local ui_buffers, text_buffers
+local MAX_UI_ELEMENTS = 10000
+local MAX_TEXT_INSTANCES = 20000
 local MAX_FRAMES_IN_FLIGHT = 2
 local current_frame = 0
 local frame_fences = ffi.new("VkFence[2]")
@@ -72,6 +77,8 @@ local static = {
     submit_info = ffi.new("VkSubmitInfo", { sType = vk.VK_STRUCTURE_TYPE_SUBMIT_INFO, waitSemaphoreCount = 1, commandBufferCount = 1, signalSemaphoreCount = 1 }),
     wait_stages = ffi.new("VkPipelineStageFlags[1]", {vk.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT}),
     sems_wait = ffi.new("VkSemaphore[1]"), sems_sig = ffi.new("VkSemaphore[1]"), cbs = ffi.new("VkCommandBuffer[1]"), sets = ffi.new("VkDescriptorSet[1]"), v2_pos = ffi.new("ImVec2_c"), v2_size = ffi.new("ImVec2_c"), fences = ffi.new("VkFence[1]"),
+    viewport = ffi.new("VkViewport", {0, 0, 0, 0, 0, 1}),
+    scissor = ffi.new("VkRect2D"),
 }
 
 local function split_focused(direction)
@@ -176,9 +183,36 @@ function M.init()
     raw_buffers = { mc.buffer(view_3d.points_count * 12, "storage", nil, true), mc.buffer(view_3d.points_count * 12, "storage", nil, true) }
     descriptors.update_buffer_set(device, bindless_set, 0, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, raw_buffers[1].handle, 0, raw_buffers[1].size, 10)
     descriptors.update_buffer_set(device, bindless_set, 0, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, raw_buffers[2].handle, 0, raw_buffers[2].size, 12)
+    
+    ui_buffers = { mc.buffer(MAX_UI_ELEMENTS * 64, "storage", nil, true), mc.buffer(MAX_UI_ELEMENTS * 64, "storage", nil, true) }
+    text_buffers = { mc.buffer(MAX_TEXT_INSTANCES * 36, "storage", nil, true), mc.buffer(MAX_TEXT_INSTANCES * 36, "storage", nil, true) }
+    descriptors.update_buffer_set(device, bindless_set, 0, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, ui_buffers[1].handle, 0, ui_buffers[1].size, 60)
+    descriptors.update_buffer_set(device, bindless_set, 0, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, ui_buffers[2].handle, 0, ui_buffers[2].size, 61)
+    descriptors.update_buffer_set(device, bindless_set, 0, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, text_buffers[1].handle, 0, text_buffers[1].size, 62)
+    descriptors.update_buffer_set(device, bindless_set, 0, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, text_buffers[2].handle, 0, text_buffers[2].size, 63)
+    
+    ui_context.init(ui_buffers[1].allocation.ptr, MAX_UI_ELEMENTS)
+    ui_context.wrap(imgui.gui)
+
     view_3d.init(device, bindless_set, sw); view_3d.register_panels()
     local bl_layout = mc.gpu.get_bindless_layout()
     layout_parse = pipeline.create_layout(device, {bl_layout}, ffi.new("VkPushConstantRange[1]", {{ stageFlags = vk.VK_SHADER_STAGE_COMPUTE_BIT, offset = 0, size = ffi.sizeof("ParserPC") }}))
+    
+    local ui_pc_range = ffi.new("VkPushConstantRange[1]", {{ stageFlags = vk.VK_SHADER_STAGE_VERTEX_BIT, offset = 0, size = 12 }})
+    local layout_ui = pipeline.create_layout(device, {bl_layout}, ui_pc_range)
+    local pipe_ui = pipeline.create_graphics_pipeline(device, layout_ui, 
+        shader.create_module(device, shader.compile_glsl(io.open("examples/42_robot_visualizer/shaders/ui.vert"):read("*all"), vk.VK_SHADER_STAGE_VERTEX_BIT)),
+        shader.create_module(device, shader.compile_glsl(io.open("examples/42_robot_visualizer/shaders/ui.frag"):read("*all"), vk.VK_SHADER_STAGE_FRAGMENT_BIT)),
+        { topology = vk.VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP, alpha_blend = true, color_formats = { sw.format } }
+    )
+    
+    local pipe_text = pipeline.create_graphics_pipeline(device, layout_ui, 
+        shader.create_module(device, shader.compile_glsl(io.open("examples/42_robot_visualizer/shaders/text.vert"):read("*all"), vk.VK_SHADER_STAGE_VERTEX_BIT)),
+        shader.create_module(device, shader.compile_glsl(io.open("examples/42_robot_visualizer/shaders/text.frag"):read("*all"), vk.VK_SHADER_STAGE_FRAGMENT_BIT)),
+        { topology = vk.VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP, alpha_blend = true, color_formats = { sw.format } }
+    )
+    M.pipe_ui, M.pipe_text, M.layout_ui = pipe_ui, pipe_text, layout_ui
+
     pipe_parse = pipeline.create_compute_pipeline(device, layout_parse, shader.create_module(device, shader.compile_glsl(io.open("examples/42_robot_visualizer/shaders/parser.comp"):read("*all"), vk.VK_SHADER_STAGE_COMPUTE_BIT)))
     local pool = command.create_pool(device, graphics_family); local cbs_list = command.allocate_buffers(device, pool, 2)
     for i=0, 1 do
@@ -193,6 +227,13 @@ function M.init()
     local icons = require("examples.42_robot_visualizer.ui.icons")
     imgui.add_font("examples/42_robot_visualizer/fa-solid-900.otf", 16.0, true, ffi.new("ImWchar[3]", {icons.GLYPH_MIN, icons.GLYPH_MAX, 0}))
     imgui.build_and_upload_fonts(); theme.apply(imgui.gui); state.last_perf = ffi.C.SDL_GetPerformanceCounter(); M.header = require("examples.42_robot_visualizer.ui.header")
+    
+    local ir = require("imgui.renderer")
+    harvester.white_uv = ir.white_uv
+    
+    ui_context.init(ui_buffers[1].allocation.ptr, MAX_UI_ELEMENTS)
+    ui_context.wrap(imgui.gui)
+
     if _ARGS then for _, arg in pairs(_ARGS) do if type(arg) == "string" then
         if arg == "--maximized" then sdl.SDL_MaximizeWindow(_G._SDL_WINDOW)
         elseif arg:find("%.mcap$") then local p = arg:gsub("^@", ""); if playback.load_mcap(p) then playback.paused = false; playback.seek_to = playback.start_time; _G._ACTIVE_MCAP = p:match("([^/]+)$") end end
@@ -255,6 +296,10 @@ function M.update()
 
     view_3d.reset_frame(); collectgarbage("step", 100)
     local win_w, win_h = _G._WIN_LW or 1280, _G._WIN_LH or 720
+    
+    ui_context.init(ui_buffers[f_idx + 1].allocation.ptr, MAX_UI_ELEMENTS)
+    ui_context.reset()
+    
     imgui.new_frame(); theme.apply(imgui.gui); M.header.draw(imgui.gui); render_node(state.layout, 0, 50, win_w, win_h - 50, imgui.gui)
     local cb = command_buffers[f_idx]; vk.vkResetCommandBuffer(cb, 0); vk.vkBeginCommandBuffer(cb, static.cb_begin)
     local in_idx, out_idx, pt_cnt = (f_idx == 0) and 10 or 12, (f_idx == 0) and 11 or 13, playback.last_lidar_points
@@ -287,7 +332,31 @@ function M.update()
     static.attachments[0].imageView = ffi.cast("VkImageView", sw.views[img_idx])
     static.attachments[0].clearValue.color.float32[0], static.attachments[0].clearValue.color.float32[1], static.attachments[0].clearValue.color.float32[2] = 0.02, 0.02, 0.03
     static.render_info.renderArea.extent = sw.extent; static.render_info.pColorAttachments = static.attachments
-    vk.vkCmdBeginRendering(cb, static.render_info); imgui.render(cb, nil, f_idx); vk.vkCmdEndRendering(cb)
+    vk.vkCmdBeginRendering(cb, static.render_info)
+    
+    imgui.gui.igRender()
+    local draw_data = imgui.gui.igGetDrawData()
+    local text_count = harvester.harvest_text(draw_data, text_buffers[f_idx + 1])
+    
+    local ui_pc = ffi.new("struct { uint32_t idx; uint32_t pad; float screen[2]; }", { 60 + f_idx, 0, {tonumber(win_w), tonumber(win_h)} })
+    
+    static.viewport.width, static.viewport.height = win_w, win_h
+    vk.vkCmdSetViewport(cb, 0, 1, static.viewport)
+    static.scissor.extent.width, static.scissor.extent.height = win_w, win_h
+    static.scissor.offset.x, static.scissor.offset.y = 0, 0
+    vk.vkCmdSetScissor(cb, 0, 1, static.scissor)
+
+    vk.vkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, M.pipe_ui)
+    static.sets[0] = bindless_set; vk.vkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, M.layout_ui, 0, 1, static.sets, 0, nil)
+    vk.vkCmdPushConstants(cb, M.layout_ui, vk.VK_SHADER_STAGE_VERTEX_BIT, 0, 16, ui_pc)
+    if ui_context.count > 0 then vk.vkCmdDraw(cb, 4, ui_context.count, 0, 0) end
+    
+    local text_pc = ffi.new("struct { uint32_t idx; uint32_t pad; float screen[2]; }", { 62 + f_idx, 0, {tonumber(win_w), tonumber(win_h)} })
+    vk.vkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, M.pipe_text)
+    vk.vkCmdPushConstants(cb, M.layout_ui, vk.VK_SHADER_STAGE_VERTEX_BIT, 0, 16, text_pc)
+    if text_count > 0 then vk.vkCmdDraw(cb, 4, text_count, 0, 0) end
+    
+    vk.vkCmdEndRendering(cb)
     static.img_barrier[0].oldLayout, static.img_barrier[0].newLayout = vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, vk.VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
     static.img_barrier[0].srcAccessMask, static.img_barrier[0].dstAccessMask = vk.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, 0
     vk.vkCmdPipelineBarrier(cb, vk.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, vk.VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nil, 0, nil, 1, static.img_barrier); vk.vkEndCommandBuffer(cb)
