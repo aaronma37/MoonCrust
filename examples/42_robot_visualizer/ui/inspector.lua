@@ -131,7 +131,8 @@ panels.register("plotter", "Topic Plotter", function(gui, node_id, params)
                     local d = p_state.cb_data
                     d.ch_id, d.field_offset, d.is_double = p_state.selected_ch.id, target.offset, target.is_double and 1 or 0
                     d.range_min, d.range_max, d.x, d.y, d.w, d.h = p_state.range_min, p_state.range_max, p_min.x, p_min.y, p_max.x, p_max.y
-                    gui.ImDrawList_AddCallback(gui.igGetWindowDrawList(), _G._PLOT_CALLBACK, d, 0)
+                    require("examples.42_robot_visualizer.view_3d").enqueue_plot(d)
+                    gui.ImPlot_PlotImage("##gpu_plot", ffi.new("ImTextureRef_c", { _TexID = 105ULL }), ffi.new("ImPlotPoint_c", {x=0, y=p_state.range_min}), ffi.new("ImPlotPoint_c", {x=playback.HISTORY_MAX, y=p_state.range_max}), ffi.new("ImVec2_c", {0, 1}), ffi.new("ImVec2_c", {1, 0}), ui.V4_LIVE, ffi.new("ImPlotSpec_c"))
                 else
                     local h = playback.request_field_history(p_state.selected_ch.id, target.offset, target.is_double)
                     if h and h.count > 0 then gui.ImPlot_PlotLine_FloatPtrInt(p_state.field_name, h.data, h.count, 1.0, 0.0, ffi.new("ImPlotSpec_c", {Stride=4})) end

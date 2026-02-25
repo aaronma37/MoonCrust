@@ -25,9 +25,9 @@ This document tracks the progress of the high-performance robotics visualizer pr
 - [x] High-DPI and pixel-perfect coordinate alignment
 - [ ] **Next:** Draggable/dockable visualization modules.
 
-### 5. The "Callback Hijack" Strategy
+### 5. The "Aperture" Strategy (Render-to-Texture)
 - [x] ImPlot "Shell" integration
-- [x] Successful UI-to-Vulkan pipeline injection
+- [x] GPU-side telemetry rendering to offscreen texture
 - [ ] **Next:** Depth-buffer sharing between custom 3D passes and ImGui.
 
 ### 6. Shared Memory Layouts

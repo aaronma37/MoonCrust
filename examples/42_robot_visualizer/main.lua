@@ -158,7 +158,10 @@ local function render_node(node, x, y, w, h, gui, id_path)
             local vt, pms = node.view_type, nil
             if node.facet and config.facets and config.facets[node.facet] then local f = config.facets[node.facet]; vt, pms = f.panel, f.params end
             local p = panels.list[vt]
-            if p then pcall(p.render, gui, node.id, pms) end
+            if p then 
+                local ok, err = pcall(p.render, gui, node.id, pms)
+                if not ok then print("ERROR IN PANEL [" .. node.title .. "]: " .. tostring(err)) end
+            end
         end
         gui.igEnd()
     end
@@ -186,8 +189,6 @@ function M.init()
         vk.vkCreateSemaphore(device, ffi.new("VkSemaphoreCreateInfo", { sType = vk.VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO }), nil, pS); render_finished_sems[i] = pS[0]
     end
     imgui.init(); imgui_renderer = require("imgui.renderer"); imgui_renderer.blur_tex_idx = 104
-    _G._PLOT_CALLBACK = ffi.cast("ImDrawCallback", function(p, c) end)
-    imgui_renderer.on_callback = function(c, p, d) if p == _G._PLOT_CALLBACK then view_3d.on_plot_callback(c, d) end end
     imgui.add_font("examples/41_imgui_visualizer/cimgui/imgui/misc/fonts/Roboto-Medium.ttf", 18.0, false, imgui.get_glyph_ranges_default())
     local icons = require("examples.42_robot_visualizer.ui.icons")
     imgui.add_font("examples/42_robot_visualizer/fa-solid-900.otf", 16.0, true, ffi.new("ImWchar[3]", {icons.GLYPH_MIN, icons.GLYPH_MAX, 0}))

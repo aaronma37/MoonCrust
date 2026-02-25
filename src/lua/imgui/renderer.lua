@@ -175,6 +175,15 @@ function M.render(cb, draw_data, frame_idx)
             local cmd = cmd_buffer_data[i]
             if cmd.UserCallback ~= nil then
                 if M.on_callback then M.on_callback(cb, cmd.UserCallback, cmd.UserCallbackData) end
+                
+                -- Restore ImGui render state after callback
+                vk.vkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, M.pipeline)
+                vk.vkCmdSetViewport(cb, 0, 1, s.viewport)
+                vk.vkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, M.layout, 0, 1, s.sets, 0, nil)
+                vk.vkCmdBindVertexBuffers(cb, 0, 1, s.v_buffers, s.v_offsets)
+                vk.vkCmdBindIndexBuffer(cb, i_buffer.handle, 0, vk.VK_INDEX_TYPE_UINT16)
+                -- Also restore the push constants, because they were likely clobbered!
+                vk.vkCmdPushConstants(cb, M.layout, bit.bor(vk.VK_SHADER_STAGE_VERTEX_BIT, vk.VK_SHADER_STAGE_FRAGMENT_BIT), 0, 40, pc)
             else
                 pc.tex_idx = tonumber(ffi.cast("uintptr_t", cmd.TexRef._TexID))
                 vk.vkCmdPushConstants(cb, M.layout, bit.bor(vk.VK_SHADER_STAGE_VERTEX_BIT, vk.VK_SHADER_STAGE_FRAGMENT_BIT), 0, 40, pc)

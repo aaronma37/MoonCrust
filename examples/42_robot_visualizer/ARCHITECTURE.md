@@ -7,21 +7,19 @@ To be faster than Rust-based tools like Rerun, we cannot simply optimize CPU cod
 
 ---
 
-## 🏗️ The "Shadow Pass" Architecture (Director/Performer)
+## 🏗️ The "Aperture Pattern" Architecture (Render-to-Texture)
 
-Instead of injecting Vulkan code *inside* ImGui (which is brittle), we use a decoupled pass system:
+Instead of injecting brittle Vulkan callbacks *inside* the ImGui draw list (which corrupts pipeline state), we use a decoupled Aperture pattern:
 
-### 1. The ImGui Pass (The "Director" / Aperture)
+### 1. The ImGui Pass (The "Aperture")
 *   **Role**: Handles window management, docking, splitting, and user input.
-*   **Aperture Pattern**: ImGui defines a "hole" on the screen (a rectangle). 
-*   **Coord Sync**: Lua reads the window's position and size (`igGetWindowPos()`) and stores them in a **Shadow Draw List**.
-*   **Interaction**: ImGui provides the mouse hit-boxes and scroll offsets.
+*   **Aperture**: ImPlot defines a "hole" on the screen (the plot axes). 
+*   **Compositing**: ImPlot natively draws a pre-rendered GPU texture (`ImPlot_PlotImage`) inside the axes bounds, allowing perfect handling of overlapping windows (like file pickers) without artifacting.
 
-### 2. The MoonCrust Pass (The "Performer" / Payload)
-*   **Role**: Executes the high-throughput rendering (Plots, Lidar, 3D Models, Text Kernels).
-*   **Timing**: Runs **AFTER** the ImGui pass has finished its logic but **BEFORE** the final present call.
-*   **Scissor Mapping**: To handle overlapping windows, we use Vulkan scissoring. If ImGui reports that only a portion of our window is visible, we apply that as a hardware-level scissor rect.
-*   **Payload**: The GPU reads directly from the **Global Telemetry Buffer (GTB)** and draws directly into the framebuffer.
+### 2. The MoonCrust Pass (The "Payload")
+*   **Role**: Executes the high-throughput rendering (Plots, Lidar, 3D Models, Text Kernels) onto an offscreen texture.
+*   **Timing**: Runs asynchronously *before* the ImGui pass begins.
+*   **Payload**: The GPU reads directly from the **Global Telemetry Buffer (GTB)** and draws directly into the offscreen framebuffer (`M.plot_image`).
 
 ---
 
@@ -56,6 +54,5 @@ Instead of injecting Vulkan code *inside* ImGui (which is brittle), we use a dec
 
 ## 🚀 Implementation Roadmap
 1.  **[DONE] Global Telemetry Buffer**: High-speed blitting from C++ to GPU.
-2.  **[CURRENT] Shadow Plotter**: Decoupling the line rendering from the ImGui loop.
-3.  **[NEXT] Scissor Mapping**: Implementing overlapping window safety.
-4.  **[FUTURE] GPU Text Renderer**: Moving the telemetry table to the GPU.
+2.  **[DONE] Render-To-Texture Plotter**: Decoupling line rendering to an offscreen buffer (Aperture Pattern).
+3.  **[CURRENT] GPU Text Renderer**: Moving the telemetry `pretty_viewer` table to the GPU to entirely eliminate CPU string deserialization.
