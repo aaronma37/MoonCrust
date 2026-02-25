@@ -307,22 +307,26 @@ function M.update()
     
     imgui.new_frame(); theme.apply(imgui.gui); M.header.draw(imgui.gui); render_node(state.layout, 0, 50, win_w, win_h - 50, imgui.gui)
     local cb = command_buffers[f_idx]; vk.vkResetCommandBuffer(cb, 0); vk.vkBeginCommandBuffer(cb, static.cb_begin)
-    local in_idx, out_idx, pt_cnt = (f_idx == 0) and 10 or 12, (f_idx == 0) and 11 or 13, playback.last_lidar_points
+    local out_idx, pt_cnt = (f_idx == 0) and 11 or 13, playback.last_lidar_points
     local in_off, str_u, pos_off = 0, 3, 0
+    
+    -- Find LiDAR GTB Offset
+    local lidar_gtb_off = 0
+    if playback.channels_by_id and playback.lidar_ch_id then
+        local ch = playback.channels_by_id[playback.lidar_ch_id]
+        if ch and ch.gtb_offset then 
+            local slot_idx = playback.get_gtb_slot_index(playback.lidar_ch_id)
+            lidar_gtb_off = ch.gtb_offset + (slot_idx * playback.MSG_SIZE_MAX)
+        end
+    end
+
     local v3d_pms = find_pms(state.layout, config)
-    if type(v3d_pms) == "boolean" then v3d_pms = nil end -- Normalize
+    if type(v3d_pms) == "boolean" then v3d_pms = nil end 
     
     if v3d_pms and v3d_pms.objects then for _, o in ipairs(v3d_pms.objects) do if o.type == "lidar" and o.topic == "/livox/lidar" then in_off, str_u, pos_off = 8, 5, 1; break end end end
-    if playback.channels and #playback.channels > 0 then
-        local tid, req = -1, nil
-        if v3d_pms and v3d_pms.objects then for _, o in ipairs(v3d_pms.objects) do if o.type == "lidar" and o.topic then req = o.topic; break end end end
-        if not req and v3d_pms then req = v3d_pms.topic_name end
-        if req then for _, c in ipairs(playback.channels) do if c.topic == req then tid = c.id; break end end end
-        if tid == -1 then for _, c in ipairs(playback.channels) do if c.schema:find("PointCloud2") or c.topic:lower():find("lidar") then tid = c.id; break end end end
-        playback.lidar_ch_id = tid
-    end
-    playback.update(dt, raw_buffers[f_idx + 1]); view_3d.update_robot_buffer(f_idx, v3d_pms)
-    static.pc_p.in_buf_idx, static.pc_p.in_offset_u32, static.pc_p.out_buf_idx, static.pc_p.count, static.pc_p.in_stride_u32, static.pc_p.in_pos_offset_u32 = in_idx, in_off, out_idx, pt_cnt, str_u, pos_off
+    
+    playback.update(dt, nil); view_3d.update_robot_buffer(f_idx, v3d_pms)
+    static.pc_p.in_buf_idx, static.pc_p.in_offset_u32, static.pc_p.out_buf_idx, static.pc_p.count, static.pc_p.in_stride_u32, static.pc_p.in_pos_offset_u32 = 50, lidar_gtb_off / 4, out_idx, pt_cnt, str_u, pos_off
     vk.vkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_parse); static.sets[0] = bindless_set
     vk.vkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, layout_parse, 0, 1, static.sets, 0, nil) 
     vk.vkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_COMPUTE, layout_parse, 0, 1, static.sets, 0, nil)

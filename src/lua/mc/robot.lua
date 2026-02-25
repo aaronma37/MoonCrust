@@ -8,6 +8,7 @@ ffi.cdef[[
         uint32_t sequence;
         const uint8_t* data;
         uint64_t data_size;
+        uint32_t point_count;
     } McapMessage;
 
     typedef struct McapChannelInfo {

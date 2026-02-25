@@ -20,6 +20,8 @@ local M = {
     robot_pose = { x = 0, y = 0, z = 0, yaw = 0 },
     plot_history = {}, 
     last_lidar_points = 0,
+    last_seek_time = 0ULL, -- Throttle seeks
+    just_sought = false,
     
     -- GTB (Global Telemetry Buffer)
     gtb = nil,
@@ -147,17 +149,25 @@ end
 
 function M.update(dt, raw_buffer)
     if not M.bridge then return end
+    
+    local now_ms = ffi.C.SDL_GetTicks()
     if M.seek_to then
-        robot.lib.mcap_seek(M.bridge, M.seek_to)
-        M.playback_time_ns, M.seek_to = M.seek_to, nil
-        robot.lib.mcap_get_current(M.bridge, M.current_msg)
+        -- Throttle seeks to 60Hz (once every 16ms)
+        if tonumber(now_ms - M.last_seek_time) > 16 then
+            robot.lib.mcap_seek(M.bridge, M.seek_to)
+            M.playback_time_ns, M.seek_to = M.seek_to, nil
+            robot.lib.mcap_get_current(M.bridge, M.current_msg)
+            M.last_seek_time = now_ms
+            M.just_sought = true
+        end
     elseif not M.paused then
         M.playback_time_ns = M.playback_time_ns + ffi.cast("uint64_t", dt * 1e9 * M.speed)
     end
 
     local msgs_processed = 0
-    while (not M.paused or M.seek_to) and M.current_msg.log_time < M.playback_time_ns do
-        if msgs_processed > 1000 then break end -- Safety throttle
+    -- Condition: Process if live, or if we JUST sought (to update the frame)
+    while (not M.paused or M.just_sought) and M.current_msg.log_time <= M.playback_time_ns do
+        if msgs_processed > 1000 then break end 
         local ch_id = M.current_msg.channel_id
         
         if M.current_msg.data ~= nil then 
@@ -169,14 +179,11 @@ function M.update(dt, raw_buffer)
             end
         end
         
-        -- LiDAR point count logic (ZERO-COPY: No redundant Lua-side ffi.copy)
+        -- LiDAR point count (ZERO-COPY Silicon Extraction)
         if ch_id == M.lidar_ch_id then 
-            if M.current_msg.data_size > 32 and ffi.string(M.current_msg.data + 4, 5) == "livox" then
-                M.last_lidar_points = ffi.cast("uint32_t*", M.current_msg.data + 24)[0]
-            else M.last_lidar_points = math.floor(tonumber(M.current_msg.data_size) / 12) end
+            M.last_lidar_points = M.current_msg.point_count
         end
         
-        -- Advance C++ iterator
         robot.lib.mcap_advance(M.bridge)
         
         if not robot.lib.mcap_get_current(M.bridge, M.current_msg) then
@@ -186,6 +193,7 @@ function M.update(dt, raw_buffer)
             break
         end
         msgs_processed = msgs_processed + 1
+        M.just_sought = false -- Only need one loop to update the frame
     end
     M.current_time_ns = M.playback_time_ns
 end

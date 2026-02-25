@@ -19,6 +19,7 @@ struct McapMessage {
     uint32_t sequence;
     const uint8_t* data;
     uint64_t data_size;
+    uint32_t point_count;
 };
 
 struct McapChannelInfoInternal {
@@ -180,6 +181,16 @@ EXPORT bool mcap_get_current(McapBridge* b, McapMessage* out) {
     out->sequence = m.message.sequence;
     out->data = reinterpret_cast<const uint8_t*>(m.message.data);
     out->data_size = m.message.dataSize;
+    
+    // Automatic point count extraction (Silicon-Native)
+    out->point_count = 0;
+    if (out->data_size > 32) {
+        if (std::memcmp(out->data + 4, "livox", 5) == 0) {
+            out->point_count = *reinterpret_cast<const uint32_t*>(out->data + 24);
+        } else {
+            out->point_count = static_cast<uint32_t>(out->data_size / 12);
+        }
+    }
     return true;
 }
 
