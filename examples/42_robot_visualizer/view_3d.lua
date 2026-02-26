@@ -280,7 +280,7 @@ function M.render_deferred(cb_handle, point_buf_idx, frame_idx, point_count)
     static.pc_r.z_near, static.pc_r.z_far = 0.1, 10000.0
     static.pc_r.cluster_x, static.pc_r.cluster_y, static.pc_r.cluster_z = CLUSTER_X, CLUSTER_Y, CLUSTER_Z
     static.pc_r.buf_idx = point_buf_idx or 11
-    static.pc_r.point_size = 100.0
+    static.pc_r.point_size = 10.0
     
     local lidar_obj = nil
     if params.objects then for _, obj in ipairs(params.objects) do if obj.type == "lidar" then lidar_obj = obj; break end end end

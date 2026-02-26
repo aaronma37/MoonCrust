@@ -4,13 +4,23 @@
 layout(location = 0) out vec4 vColor;
 layout(location = 1) out vec3 vPos;
 layout(location = 2) out vec2 vUV;
-layout(location = 3) out vec3 vViewPos;
+layout(location = 3) out vec3 vLitColor;
 
-layout(set = 0, binding = 0) buffer Data
-{
-  vec4 pos[];
-}
-all_buffers[];
+layout(set = 0, binding = 0) buffer Data { vec4 pos[]; } all_buffers[];
+
+struct Light {
+    vec4 pos_radius; // view space
+    vec4 color;
+};
+
+struct ClusterItem {
+    uint offset;
+    uint count;
+};
+
+layout(std430, set = 1, binding = 0) buffer LightBuffer { Light lights[]; };
+layout(std430, set = 1, binding = 1) buffer ClusterItemBuffer { ClusterItem cluster_items[]; };
+layout(std430, set = 1, binding = 2) buffer LightIndexBuffer { uint light_indices[]; };
 
 layout(push_constant) uniform PC
 {
@@ -22,8 +32,7 @@ layout(push_constant) uniform PC
   uint buf_idx;
   float point_size;
   float pose_x, pose_y, pose_z, pose_yaw;
-}
-pc;
+} pc;
 
 void main()
 {
@@ -32,7 +41,7 @@ void main()
 
   vec4 p = all_buffers[nonuniformEXT(pc.buf_idx)].pos[pt_idx];
 
-  // Rotate and Translate
+  // 1. World & View Transform
   float s = sin(pc.pose_yaw);
   float c = cos(pc.pose_yaw);
   vec3 worldPos;
@@ -41,22 +50,61 @@ void main()
   worldPos.z = p.z + pc.pose_z;
 
   vec4 viewPos = pc.view * vec4(worldPos, 1.0);
-  vViewPos = viewPos.xyz;
+  vec4 clipPos = pc.view_proj * vec4(worldPos, 1.0);
 
-  // Quad corner offsets (-1 to 1)
+  // 2. Cluster Lighting (Once per point!)
+  // Convert clip space to screen-ish cluster coords
+  vec3 ndc = clipPos.xyz / clipPos.w;
+  uint cx = uint(clamp((ndc.x * 0.5 + 0.5) * float(pc.cluster_x), 0.0, float(pc.cluster_x - 1)));
+  uint cy = uint(clamp((ndc.y * 0.5 + 0.5) * float(pc.cluster_y), 0.0, float(pc.cluster_y - 1)));
+  
+  float viewZ = -viewPos.z;
+  uint cz = 0;
+  if (viewZ > pc.z_near) {
+      cz = uint(float(pc.cluster_z) * log(viewZ / pc.z_near) / log(pc.z_far / pc.z_near));
+  }
+  cz = min(cz, pc.cluster_z - 1);
+  uint cluster_index = cx + cy * pc.cluster_x + cz * pc.cluster_x * pc.cluster_y;
+
+  ClusterItem item = cluster_items[cluster_index];
+  
+  // Bright HDR Blue base
+  float h = p.z * 0.2 + 0.5;
+  vec3 albedo = vec3(0.0, 0.5, 1.0) * h + vec3(0.0, 0.1, 0.4);
+  vec3 total_light = vec3(0.2) * albedo; // Ambient
+
+  vec3 N = vec3(0.0, 0.0, 1.0); // Simple Billboard Normal
+  
+  for (uint i = 0; i < item.count; i++) {
+      uint light_idx = light_indices[item.offset + i];
+      Light l = lights[light_idx];
+      
+      vec3 L_vec = l.pos_radius.xyz - viewPos.xyz;
+      float dist = length(L_vec);
+      float radius = l.pos_radius.w;
+      
+      if (dist < radius) {
+          vec3 L = normalize(L_vec);
+          float nDotL = max(dot(N, L), 0.0);
+          float attenuation = clamp(1.0 - (dist * dist) / (radius * radius), 0.0, 1.0);
+          attenuation *= attenuation;
+          total_light += albedo * l.color.rgb * l.color.w * nDotL * attenuation;
+      }
+  }
+  vLitColor = total_light;
+
+  // 3. Quad Output
   vec2 corners[4] = vec2[](vec2(-1.0, -1.0), vec2(1.0, -1.0), vec2(-1.0, 1.0), vec2(1.0, 1.0));
   vec2 offset = corners[v_idx];
   vUV = offset;
 
-  float ps = pc.point_size * 0.1; // Scale down a bit for cleaner look
+  float ps = pc.point_size;
   vec2 vs = (pc.vw < 1.0) ? vec2(1920.0, 1080.0) : vec2(pc.vw, pc.vh);
   vec2 size = vec2(ps) / vs;
 
-  gl_Position = pc.view_proj * vec4(worldPos, 1.0);
-  gl_Position.xy += offset * size * gl_Position.w;
+  gl_Position = clipPos;
+  gl_Position.xy += offset * size * clipPos.w;
 
-  // Bright HDR Blue for maximum visibility
-  float h = p.z * 0.2 + 0.5;
-  vColor = vec4(vec3(0.0, 0.5, 1.0) * h + vec3(0.0, 0.1, 0.4), 1.0);
+  vColor = vec4(albedo, 1.0);
   vPos = worldPos;
 }
