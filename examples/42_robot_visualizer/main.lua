@@ -151,7 +151,7 @@ local function render_node(node, x, y, w, h, gui, id_path)
         if gui.igBegin("split" .. id_path, nil, bit.bor(panels.Flags.NoDecoration, panels.Flags.NoSavedSettings, panels.Flags.NoBackground)) then
             local io = gui.igGetIO_Nil()
             if gui.igIsWindowFocused(0) and io.MouseDown[0] then
-                local min_px = 100
+                local min_px = 250
                 if node.direction == "v" then 
                     local target_ratio = (io.MousePos.x - x) / w
                     node.ratio = math.max(min_px / w, math.min((w - min_px) / w, target_ratio))
@@ -260,6 +260,7 @@ function M.init()
     end
     imgui.init(); imgui_renderer = require("imgui.renderer"); imgui_renderer.blur_tex_idx = 104
     imgui.add_font("examples/41_imgui_visualizer/cimgui/imgui/misc/fonts/Roboto-Medium.ttf", 18.0, false, imgui.get_glyph_ranges_default())
+    imgui.add_font("examples/41_imgui_visualizer/cimgui/imgui/misc/fonts/Roboto-Medium.ttf", 14.0, false, imgui.get_glyph_ranges_default())
     local icons = require("examples.42_robot_visualizer.ui.icons")
     imgui.add_font("examples/42_robot_visualizer/fa-solid-900.otf", 16.0, true, ffi.new("ImWchar[3]", {icons.GLYPH_MIN, icons.GLYPH_MAX, 0}))
     imgui.build_and_upload_fonts(); theme.apply(imgui.gui); state.last_perf = ffi.C.SDL_GetPerformanceCounter(); M.header = require("examples.42_robot_visualizer.ui.header")

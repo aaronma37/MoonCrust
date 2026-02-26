@@ -53,6 +53,8 @@ ffi.cdef[[
     bool igDragFloat(const char* label, float* v, float v_speed, float v_min, float v_max, const char* format, int flags);
     void igSetNextWindowPos(const ImVec2_c pos, int cond, const ImVec2_c pivot);
     void igSetNextWindowSize(const ImVec2_c size, int cond);
+    void igPushFont(void* font);
+    void igPopFont(void);
     bool igIsWindowHovered(int flags);
     bool igIsWindowFocused(int flags);
     void igSameLine(float offset_from_start_x, float spacing);

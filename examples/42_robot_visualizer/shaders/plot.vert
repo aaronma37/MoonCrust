@@ -46,6 +46,6 @@ void main() {
     float y_ndc = norm_y * 2.0 - 1.0;
 
     gl_Position = vec4(x_ndc, y_ndc, 0.0, 1.0);
-    gl_PointSize = 4.0;
+    gl_PointSize = 8.0;
     vColor = vec4(0.0, 0.9, 1.0, 1.0); // Cyan
 }

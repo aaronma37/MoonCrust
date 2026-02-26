@@ -50,6 +50,10 @@ panels.register("pretty_viewer", "Pretty Message Viewer", function(gui, node_id,
             if _G._GPU_INSPECTOR and _G._GPU_INSPECTOR.ch and _G._GPU_INSPECTOR.ch.id == ch.id then
                 if gui.igTreeNode_Str(icons.CHART .. " Live Values (GPU Parsed)") then
                     gui.igTextColored(ui.V4_LIVE, "SILICON-DIRECT PIPELINE ACTIVE")
+                    
+                    local small_font = imgui.get_font(1)
+                    if small_font then gui.igPushFont(small_font) end
+                    
                     if gui.igBeginTable("ValueTable", 2, bit.bor(panels.Flags.TableBorders, panels.Flags.TableResizable), ui.V2_ZERO, 0) then
                         gui.igTableSetupColumn("Field", 0, 0, 0); gui.igTableSetupColumn("Value", 0, 0, 0); gui.igTableHeadersRow()
                         
@@ -73,6 +77,8 @@ panels.register("pretty_viewer", "Pretty Message Viewer", function(gui, node_id,
                         end
                         gui.igEndTable()
                     end
+                    
+                    if small_font then gui.igPopFont() end
                     gui.igTreePop()
                 end
             end
@@ -145,7 +151,8 @@ panels.register("plotter", "Topic Plotter", function(gui, node_id, params)
         for _, f in ipairs(p_state.flattened) do if f.name == p_state.field_name then target = f; break end end
         if target then
             if gui.ImPlot_BeginPlot(string.format("%s: %s", p_state.selected_ch.topic, p_state.field_name), ui.V2_FULL, 0) then
-                gui.ImPlot_SetupAxis(0, "History (Time)", 0); gui.ImPlot_SetupAxis(1, "Value", 0)
+                gui.ImPlot_SetupAxis(0, "History (Time)", 0); 
+                gui.ImPlot_SetupAxis(3, "Value", 0)
                 
                 if trigger_fit then
                     gui.ImPlot_SetupAxisLimits(0, 0, playback.HISTORY_MAX, 1) -- 1 = Always
