@@ -40,8 +40,10 @@ void main() {
     if (abs(range) < 0.0001) range = 1.0;
     float norm_y = (val - pc.range_min) / range;
     
+    // Map to NDC (-1 to 1)
+    // In Vulkan NDC, -1 is TOP and 1 is BOTTOM.
     float x_ndc = (float(i) / float(pc.history_count - 1)) * 2.0 - 1.0;
-    float y_ndc = norm_y * 2.0 - 1.0;
+    float y_ndc = 1.0 - (norm_y * 2.0);
 
     gl_Position = vec4(x_ndc, y_ndc, 0.0, 1.0);
     gl_PointSize = 32.0;

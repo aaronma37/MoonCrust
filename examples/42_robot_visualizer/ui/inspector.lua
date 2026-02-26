@@ -152,22 +152,23 @@ panels.register("plotter", "Topic Plotter", function(gui, node_id, params)
         for _, f in ipairs(p_state.flattened) do if f.name == p_state.field_name then target = f; break end end
         if target then
             if gui.ImPlot_BeginPlot(string.format("%s: %s", p_state.selected_ch.topic, p_state.field_name), ui.V2_FULL, 0) then
-                gui.ImPlot_SetupAxis(0, "History (Time)", 0); 
+                gui.ImPlot_SetupAxis(0, "Samples (Last 1000)", 0); 
                 gui.ImPlot_SetupAxis(3, "Value", 0)
                 
                 if trigger_fit then
-                    gui.ImPlot_SetupAxisLimits(0, 0, playback.HISTORY_MAX, 1) -- 1 = Always
-                    gui.ImPlot_SetupAxisLimits(3, 0, 20, 1)
+                    gui.ImPlot_SetupAxisLimits(0, 0, playback.HISTORY_MAX, 1) 
+                    gui.ImPlot_SetupAxisLimits(3, 0, 20, 1) -- Default snap range
                 end
 
                 p_state.p_limits[0] = gui.ImPlot_GetPlotLimits(0, 3)
-                local cur_min, cur_max = p_state.p_limits[0].Y.Min, p_state.p_limits[0].Y.Max
+                local cur_min = tonumber(p_state.p_limits[0].Y.Min)
+                local cur_max = tonumber(p_state.p_limits[0].Y.Max)
                 
                 if p_state.gpu_mode then
-                    local p_min, p_max = gui.ImPlot_GetPlotPos(), gui.ImPlot_GetPlotSize()
+                    local p_pos, p_size = gui.ImPlot_GetPlotPos(), gui.ImPlot_GetPlotSize()
                     local d = p_state.cb_data
                     d.ch_id, d.field_offset, d.is_double = p_state.selected_ch.id, target.offset, target.is_double and 1 or 0
-                    d.range_min, d.range_max, d.x, d.y, d.w, d.h = cur_min, cur_max, p_min.x, p_min.y, p_max.x, p_max.y
+                    d.range_min, d.range_max, d.x, d.y, d.w, d.h = cur_min, cur_max, p_pos.x, p_pos.y, p_size.x, p_size.y
                     require("examples.42_robot_visualizer.view_3d").enqueue_plot(d)
                     
                     p_state.p_p1.x, p_state.p_p1.y = 0, cur_min

@@ -21,8 +21,15 @@ float sdRoundedRect(vec2 p, vec2 b, float r) {
 }
 
 void main() {
+    // 1. ClipRect Discard
+    vec2 fragCoord = gl_FragCoord.xy;
+    if (fragCoord.x < vClip.x || fragCoord.y < vClip.y || fragCoord.x > vClip.z || fragCoord.y > vClip.w) {
+        discard;
+    }
+
+    // 2. SDF Rendering
     vec2 center = vPos + vSize * 0.5;
-    vec2 p = gl_FragCoord.xy - center;
+    vec2 p = fragCoord - center;
     float d = sdRoundedRect(p, vSize * 0.5, vRounding);
     float alpha = 1.0 - smoothstep(-0.5, 0.5, d);
     
@@ -47,6 +54,13 @@ void main() {
             }
             
             oColor = vec4(texColor.rgb, texColor.a * alpha);
+        }
+    } else if (vType == 3) { // Slider
+        float progress = float(vExtra) / 1000.0;
+        if (vUV.x < progress) {
+            oColor = vec4(vColor.rgb * 1.5, vColor.a * alpha);
+        } else {
+            oColor = vec4(vColor.rgb * 0.5, vColor.a * alpha);
         }
     } else {
         oColor = vColor;

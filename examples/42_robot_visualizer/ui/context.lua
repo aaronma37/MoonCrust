@@ -19,9 +19,6 @@ end
 
 function M.push(e)
     if M.count >= M.max_elements then return end
-    if e.type == 2 then
-        print(string.format("UI Context: Pushing Aperture (Type 2) at %.1f, %.1f | size %.1f x %.1f | extra %d", e.x, e.y, e.w, e.h, e.extra))
-    end
     local dest = M.elements[M.count]
     dest.x, dest.y = e.x, e.y
     dest.w, dest.h = e.w, e.h
@@ -120,7 +117,6 @@ function M.wrap(gui)
 
     local old_ImPlot_PlotImage = gui.ImPlot_PlotImage
     gui.ImPlot_PlotImage = function(label_id, tex_ref, bounds_min, bounds_max, uv0, uv1, tint_col, spec)
-        print("WRAPPER: PlotImage called for " .. tostring(label_id))
         local pos = gui.ImPlot_GetPlotPos()
         local size = gui.ImPlot_GetPlotSize()
         local w_pos = gui.igGetWindowPos()
