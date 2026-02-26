@@ -33,15 +33,17 @@ void main() {
             uint texIdx = nonuniformEXT(vExtra);
             vec4 texColor = texture(all_textures[texIdx], vUV);
             
-            // THICKENING KERNEL for Plots
+            // 25-TAP 5x5 BOX KERNEL for Plots (Extreme Thickness)
             if (vExtra == 105) {
-                float off = 0.0015; // Sample offset
-                texColor += texture(all_textures[texIdx], vUV + vec2(off, 0));
-                texColor += texture(all_textures[texIdx], vUV + vec2(-off, 0));
-                texColor += texture(all_textures[texIdx], vUV + vec2(0, off));
-                texColor += texture(all_textures[texIdx], vUV + vec2(0, -off));
-                texColor *= 0.5; // Merge and boost
-                texColor.rgb *= 2.0; 
+                float off = 0.0012; 
+                texColor = vec4(0.0);
+                for(int y = -2; y <= 2; y++) {
+                    for(int x = -2; x <= 2; x++) {
+                        texColor += texture(all_textures[texIdx], vUV + vec2(x * off, y * off));
+                    }
+                }
+                texColor /= 9.0; // Boosted normalization
+                texColor.rgb *= 1.8;
             }
             
             oColor = vec4(texColor.rgb, texColor.a * alpha);

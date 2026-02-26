@@ -102,7 +102,7 @@ function M.init(device, bindless_set, sw)
 
     M.pipe_layout_plot = pipeline.create_layout(device, {bl_layout}, ffi.new("VkPushConstantRange[1]", {{ stageFlags = vk.VK_SHADER_STAGE_VERTEX_BIT, offset = 0, size = ffi.sizeof("PlotPC") }}))
     M.pipe_plot = pipeline.create_graphics_pipeline(device, M.pipe_layout_plot, shader.create_module(device, shader.compile_glsl(io.open("examples/42_robot_visualizer/shaders/plot.vert"):read("*all"), vk.VK_SHADER_STAGE_VERTEX_BIT)), shader.create_module(device, shader.compile_glsl(io.open("examples/42_robot_visualizer/shaders/plot.frag"):read("*all"), vk.VK_SHADER_STAGE_FRAGMENT_BIT)), {
-        topology = vk.VK_PRIMITIVE_TOPOLOGY_LINE_STRIP, alpha_blend = true, depth_test = false, depth_write = false, color_formats = { vk.VK_FORMAT_B8G8R8A8_UNORM }
+        topology = vk.VK_PRIMITIVE_TOPOLOGY_POINT_LIST, alpha_blend = true, depth_test = false, depth_write = false, color_formats = { vk.VK_FORMAT_B8G8R8A8_UNORM }
     })
 
     M.point_buffers = { mc.buffer(M.points_count * 16, "storage", nil, false), mc.buffer(M.points_count * 16, "storage", nil, false) }

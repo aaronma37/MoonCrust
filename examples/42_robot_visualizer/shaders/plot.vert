@@ -44,6 +44,6 @@ void main() {
     float y_ndc = norm_y * 2.0 - 1.0;
 
     gl_Position = vec4(x_ndc, y_ndc, 0.0, 1.0);
-    gl_PointSize = 8.0;
-    vColor = vec4(0.0, 1.5, 2.0, 1.0); // Super-bright Cyan
+    gl_PointSize = 32.0;
+    vColor = vec4(0.0, 1.5, 2.0, 1.0); // HDR Cyan
 }
