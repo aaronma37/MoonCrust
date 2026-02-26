@@ -148,8 +148,8 @@ panels.register("plotter", "Topic Plotter", function(gui, node_id, params)
                 gui.ImPlot_SetupAxis(0, "History (Time)", 0); gui.ImPlot_SetupAxis(1, "Value", 0)
                 
                 if trigger_fit then
-                    gui.ImPlot_SetupAxisLimits(0, 0, playback.HISTORY_MAX, 2)
-                    gui.ImPlot_SetupAxisLimits(3, 0, 20, 2)
+                    gui.ImPlot_SetupAxisLimits(0, 0, playback.HISTORY_MAX, 1) -- 1 = Always
+                    gui.ImPlot_SetupAxisLimits(3, 0, 20, 1)
                 end
 
                 p_state.p_limits[0] = gui.ImPlot_GetPlotLimits(0, 3)

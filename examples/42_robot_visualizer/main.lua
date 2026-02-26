@@ -151,8 +151,14 @@ local function render_node(node, x, y, w, h, gui, id_path)
         if gui.igBegin("split" .. id_path, nil, bit.bor(panels.Flags.NoDecoration, panels.Flags.NoSavedSettings, panels.Flags.NoBackground)) then
             local io = gui.igGetIO_Nil()
             if gui.igIsWindowFocused(0) and io.MouseDown[0] then
-                if node.direction == "v" then node.ratio = math.max(0.05, math.min(0.95, (io.MousePos.x - x) / w))
-                else node.ratio = math.max(0.05, math.min(0.95, (io.MousePos.y - y) / h)) end
+                local min_px = 100
+                if node.direction == "v" then 
+                    local target_ratio = (io.MousePos.x - x) / w
+                    node.ratio = math.max(min_px / w, math.min((w - min_px) / w, target_ratio))
+                else 
+                    local target_ratio = (io.MousePos.y - y) / h
+                    node.ratio = math.max(min_px / h, math.min((h - min_px) / h, target_ratio))
+                end
             end
         end
         gui.igEnd()
