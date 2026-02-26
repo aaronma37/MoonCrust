@@ -20,7 +20,7 @@ ffi.cdef[[
         float range_min, range_max; 
     } PlotPC;
     typedef struct LidarCallbackData { float x, y, w, h; } LidarCallbackData;
-    typedef struct PlotCallbackData { uint32_t ch_id, field_offset, is_double; float range_min, range_max; float x, y, w, h; } PlotCallbackData;
+    typedef struct PlotCallbackData { uint32_t ch_id, field_offset, is_double, tex_idx; float range_min, range_max; float x, y, w, h; } PlotCallbackData;
     
     typedef struct UIElement {
         float x, y;

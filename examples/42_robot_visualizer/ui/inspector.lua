@@ -87,23 +87,28 @@ panels.register("pretty_viewer", "Pretty Message Viewer", function(gui, node_id,
 end)
 
 panels.register("plotter", "Topic Plotter", function(gui, node_id, params)
-            if not panels.states[node_id] then
-                local tex = ffi.new("ImTextureRef_c")
-                tex._TexID = 105ULL
-                panels.states[node_id] = { 
-                    selected_ch = nil, filter = ffi.new("char[128]"), field_name = nil, schema = nil, flattened = nil, 
-                    facet_synced = false, gpu_mode = true, range_min = 0.0, range_max = 20.0, 
-                    -- Pre-allocated callback data block (PERSISTENT ANCHOR)
-                    cb_data = ffi.new("PlotCallbackData"),
-                    p_gpu = ffi.new("bool[1]", true),
-                    p_limits = ffi.new("ImPlotRect_c[1]"),
-                    p_tex = tex,
-                    p_p1 = ffi.new("ImPlotPoint_c"),            p_p2 = ffi.new("ImPlotPoint_c"),
-            p_uv0 = ffi.new("ImVec2_c", {0, 1}),
-            p_uv1 = ffi.new("ImVec2_c", {1, 0}),
-            p_spec = ffi.new("ImPlotSpec_c")
-        }
-    end
+                    if not panels.states[node_id] then
+                        local pool_idx = (node_id % 8) + 1
+                        local tex_bindless_idx = 104 + pool_idx
+                        local tex = ffi.new("ImTextureRef_c")
+                        tex._TexID = ffi.cast("ImTextureID", tex_bindless_idx)
+                        
+                        panels.states[node_id] = { 
+                            selected_ch = nil, filter = ffi.new("char[128]"), field_name = nil, schema = nil, flattened = nil, 
+                            facet_synced = false, gpu_mode = true, range_min = 0.0, range_max = 20.0, 
+                            -- Pre-allocated callback data block (PERSISTENT ANCHOR)
+                            cb_data = ffi.new("PlotCallbackData"),
+                            p_gpu = ffi.new("bool[1]", true),
+                            p_limits = ffi.new("ImPlotRect_c[1]"),
+                            p_tex = tex,
+                            p_tex_idx = pool_idx - 1,
+                            p_p1 = ffi.new("ImPlotPoint_c"),
+                            p_p2 = ffi.new("ImPlotPoint_c"),
+                            p_uv0 = ffi.new("ImVec2_c", {0, 1}),
+                            p_uv1 = ffi.new("ImVec2_c", {1, 0}),
+                            p_spec = ffi.new("ImPlotSpec_c")
+                        }
+                    end
     local p_state = panels.states[node_id]
     local channels = playback.channels or {}
     
@@ -151,7 +156,7 @@ panels.register("plotter", "Topic Plotter", function(gui, node_id, params)
         local target = nil
         for _, f in ipairs(p_state.flattened) do if f.name == p_state.field_name then target = f; break end end
         if target then
-            if gui.ImPlot_BeginPlot(string.format("%s: %s", p_state.selected_ch.topic, p_state.field_name), ui.V2_FULL, 0) then
+            if gui.ImPlot_BeginPlot(string.format("%s: %s###%d", p_state.selected_ch.topic, p_state.field_name, node_id), ui.V2_FULL, 0) then
                 gui.ImPlot_SetupAxis(0, "Samples (Last 1000)", 0); 
                 gui.ImPlot_SetupAxis(3, "Value", 0)
                 
@@ -164,13 +169,13 @@ panels.register("plotter", "Topic Plotter", function(gui, node_id, params)
                 local cur_min = tonumber(p_state.p_limits[0].Y.Min)
                 local cur_max = tonumber(p_state.p_limits[0].Y.Max)
                 
-                if p_state.gpu_mode then
-                    local p_pos, p_size = gui.ImPlot_GetPlotPos(), gui.ImPlot_GetPlotSize()
-                    local d = p_state.cb_data
-                    d.ch_id, d.field_offset, d.is_double = p_state.selected_ch.id, target.offset, target.is_double and 1 or 0
-                    d.range_min, d.range_max, d.x, d.y, d.w, d.h = cur_min, cur_max, p_pos.x, p_pos.y, p_size.x, p_size.y
-                    require("examples.42_robot_visualizer.view_3d").enqueue_plot(d)
-                    
+                                    if p_state.gpu_mode then
+                                        local p_pos, p_size = gui.ImPlot_GetPlotPos(), gui.ImPlot_GetPlotSize()
+                                        local d = p_state.cb_data
+                                        d.ch_id, d.field_offset, d.is_double = p_state.selected_ch.id, target.offset, target.is_double and 1 or 0
+                                        d.tex_idx = p_state.p_tex_idx
+                                        d.range_min, d.range_max, d.x, d.y, d.w, d.h = cur_min, cur_max, p_pos.x, p_pos.y, p_size.x, p_size.y
+                                        require("examples.42_robot_visualizer.view_3d").enqueue_plot(d)                    
                     p_state.p_p1.x, p_state.p_p1.y = 0, cur_min
                     p_state.p_p2.x, p_state.p_p2.y = playback.HISTORY_MAX, cur_max
                     gui.ImPlot_PlotImage("##gpu_plot", p_state.p_tex, p_state.p_p1, p_state.p_p2, ui.V2_ZERO, ui.V2_ONE, ui.V4_WHITE, p_state.p_spec)

@@ -194,6 +194,7 @@ function M.init()
     local results_buffer = mc.buffer(1024 * 1024, "storage", nil, true) -- 1MB for parsed results
     local schema_buffer = mc.buffer(256 * 1024, "storage", nil, true)  -- 256KB for instructions
     descriptors.update_buffer_set(device, bindless_set, 0, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, results_buffer.handle, 0, results_buffer.size, 14)
+    descriptors.update_buffer_set(device, bindless_set, 0, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, schema_buffer.handle, 0, schema_buffer.size, 15)
     M.results_buffer, M.schema_buffer = results_buffer, schema_buffer
     
     _G._GPU_INSPECTOR = {

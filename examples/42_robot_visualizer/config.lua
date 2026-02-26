@@ -34,9 +34,12 @@ M.facets = {
 			field_name = "angular_velocity.x",
 		},
 	},
-	MarsFlightStatus = {
-		panel = "pretty_viewer",
-		params = { topic_name = "/dji_osdk_ros/flight_status" },
+	MarsBatteryPlot = {
+		panel = "plotter",
+		params = { 
+			topic_name = "/dji_osdk_ros/battery_state",
+			field_name = "voltage"
+		},
 	},
 }
 
@@ -60,13 +63,13 @@ M.layout = {
 					direction = "h",
 					ratio = 0.33,
 					children = {
-						{ type = "view", facet = "MarsTelemetryInspector", id = 2, title = "Battery/Power###2" },
+						{ type = "view", facet = "MarsTelemetryInspector", id = 2, title = "Battery Info###2" },
 						{
 							type = "split",
 							direction = "h",
 							ratio = 0.5,
 							children = {
-								{ type = "view", facet = "MarsFlightStatus", id = 3, title = "Flight Status###3" },
+								{ type = "view", facet = "MarsBatteryPlot", id = 3, title = "Battery Voltage###3" },
 								{ type = "view", facet = "MarsIMUPlot", id = 5, title = "IMU Realtime###5" },
 							},
 						},
