@@ -47,10 +47,14 @@ void main() {
         uint type_id = all_buffers[nonuniformEXT(pc.instr_buf_idx)].u32[instr_base + 2];
 
         uint src_u32_idx = pc.in_offset_u32 + (src_off / 4);
-        uint val = all_buffers[nonuniformEXT(pc.in_buf_idx)].u32[src_u32_idx];
-
-        // For now, just copy the raw bits. 
-        // More complex type handling (doubles, etc.) can be added here.
-        all_buffers[nonuniformEXT(pc.out_buf_idx)].u32[dst_slot] = val;
+        
+        if (type_id >= 3) {
+            // 64-bit types (double, int64, uint64)
+            all_buffers[nonuniformEXT(pc.out_buf_idx)].u32[dst_slot * 2 + 0] = all_buffers[nonuniformEXT(pc.in_buf_idx)].u32[src_u32_idx + 0];
+            all_buffers[nonuniformEXT(pc.out_buf_idx)].u32[dst_slot * 2 + 1] = all_buffers[nonuniformEXT(pc.in_buf_idx)].u32[src_u32_idx + 1];
+        } else {
+            // 32-bit types
+            all_buffers[nonuniformEXT(pc.out_buf_idx)].u32[dst_slot * 2] = all_buffers[nonuniformEXT(pc.in_buf_idx)].u32[src_u32_idx];
+        }
     }
 }

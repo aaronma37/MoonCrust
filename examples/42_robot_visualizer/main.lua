@@ -187,8 +187,31 @@ function M.init()
     local results_buffer = mc.buffer(1024 * 1024, "storage", nil, true) -- 1MB for parsed results
     local schema_buffer = mc.buffer(256 * 1024, "storage", nil, true)  -- 256KB for instructions
     descriptors.update_buffer_set(device, bindless_set, 0, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, results_buffer.handle, 0, results_buffer.size, 14)
-    descriptors.update_buffer_set(device, bindless_set, 0, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, schema_buffer.handle, 0, schema_buffer.size, 15)
     M.results_buffer, M.schema_buffer = results_buffer, schema_buffer
+    
+    _G._GPU_INSPECTOR = {
+        ch = nil,
+        instr_count = 0,
+        flattened = nil,
+        dirty = false,
+        results_ptr = ffi.cast("uint32_t*", results_buffer.allocation.ptr)
+    }
+    
+    function _G._GPU_INSPECTOR.set_channel(ch)
+        if not ch or ( _G._GPU_INSPECTOR.ch and _G._GPU_INSPECTOR.ch.id == ch.id) then return end
+        local raw = robot.lib.mcap_get_schema_content(playback.bridge, ch.id)
+        if not raw then return end
+        local schema = decoder.parse_schema(ffi.string(raw))
+        local instr, count = decoder.get_gpu_instructions(schema)
+        
+        -- Upload instructions to GPU
+        ffi.copy(M.schema_buffer.allocation.ptr, instr, count * 16)
+        _G._GPU_INSPECTOR.ch = ch
+        _G._GPU_INSPECTOR.instr_count = count
+        _G._GPU_INSPECTOR.flattened = decoder.get_flattened_fields(schema)
+        _G._GPU_INSPECTOR.dirty = true
+        print(string.format("GPU Inspector: Monitoring %s (%d fields)", ch.topic, count))
+    end
     
     ui_buffers = { mc.buffer(MAX_UI_ELEMENTS * 64, "storage", nil, true), mc.buffer(MAX_UI_ELEMENTS * 64, "storage", nil, true) }
     text_buffers = { mc.buffer(MAX_TEXT_INSTANCES * 64, "storage", nil, true), mc.buffer(MAX_TEXT_INSTANCES * 64, "storage", nil, true) }
@@ -343,6 +366,32 @@ function M.update()
     vk.vkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_COMPUTE, layout_parse, 0, 1, static.sets, 0, nil)
     vk.vkCmdPushConstants(cb, layout_parse, vk.VK_SHADER_STAGE_COMPUTE_BIT, 0, 24, static.pc_p)
     if pt_cnt > 0 then vk.vkCmdDispatch(cb, math.ceil(pt_cnt / 256), 1, 1) end
+
+    -- UNIVERSAL TELEMETRY PARSING (GPU-Native)
+    if _G._GPU_INSPECTOR.ch then
+        local ch = _G._GPU_INSPECTOR.ch
+        local gtb_off = 0
+        if playback.channels_by_id[ch.id] then
+            local p_ch = playback.channels_by_id[ch.id]
+            if p_ch.gtb_offset then
+                local slot_idx = playback.get_gtb_slot_index(ch.id)
+                gtb_off = p_ch.gtb_offset + (slot_idx * playback.MSG_SIZE_MAX)
+            end
+        end
+        
+        static.pc_p.in_buf_idx = 50
+        static.pc_p.in_offset_u32 = gtb_off / 4
+        static.pc_p.out_buf_idx = 14 -- results_buffer
+        static.pc_p.count = _G._GPU_INSPECTOR.instr_count
+        static.pc_p.mode = 1 -- Universal Telemetry Mode
+        static.pc_p.instr_buf_idx = 15 -- schema_buffer
+        
+        vk.vkCmdPushConstants(cb, layout_parse, vk.VK_SHADER_STAGE_COMPUTE_BIT, 0, ffi.sizeof("ParserPC"), static.pc_p)
+        if _G._GPU_INSPECTOR.instr_count > 0 then
+            vk.vkCmdDispatch(cb, math.ceil(_G._GPU_INSPECTOR.instr_count / 256), 1, 1)
+        end
+    end
+
     vk.vkCmdPipelineBarrier(cb, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, vk.VK_PIPELINE_STAGE_VERTEX_SHADER_BIT, 0, 1, static.mem_barrier, 0, nil, 0, nil)
     view_3d.render_deferred(cb, out_idx, f_idx, pt_cnt)
     static.img_barrier[0].oldLayout, static.img_barrier[0].newLayout, static.img_barrier[0].image, static.img_barrier[0].dstAccessMask = vk.VK_IMAGE_LAYOUT_UNDEFINED, vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, ffi.cast("VkImage", sw.images[img_idx]), vk.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT

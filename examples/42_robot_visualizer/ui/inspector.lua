@@ -38,23 +38,41 @@ panels.register("pretty_viewer", "Pretty Message Viewer", function(gui, node_id,
     
     if p_state.selected_ch then
         local ch = p_state.selected_ch
+        if _G._GPU_INSPECTOR then _G._GPU_INSPECTOR.set_channel(ch) end
+        
         local buf = playback.get_msg_buffer(ch.id)
-        if not p_state.schema then
-            local raw = robot.lib.mcap_get_schema_content(playback.bridge, ch.id)
-            if raw ~= nil then p_state.schema = decoder.parse_schema(ffi.string(raw)) end
-        end
-
         if buf and buf.size > 0 then
             if gui.igTreeNode_Str(icons.LIST .. " Metadata") then 
                 gui.igText("Topic: %s", ch.topic); gui.igText("Type: %s", ch.schema); gui.igText("Size: %d bytes", buf.size)
                 gui.igTreePop() 
             end
-            if p_state.schema then
-                if gui.igTreeNode_Str(icons.CHART .. " Live Values") then
-                    gui.igTextColored(ui.V4_LIVE, "GPU Metadata Rendering Engaged.")
-                    gui.igTextDisabled("(Lua Decoder Killed for Zero-Copy Pipeline)")
-                    -- TODO: Push a Type=2 Aperture here, and dispatch a Compute Shader 
-                    -- that reads the GTB and writes SDF text glyphs directly to the GPU screen!
+
+            if _G._GPU_INSPECTOR and _G._GPU_INSPECTOR.ch and _G._GPU_INSPECTOR.ch.id == ch.id then
+                if gui.igTreeNode_Str(icons.CHART .. " Live Values (GPU Parsed)") then
+                    gui.igTextColored(ui.V4_LIVE, "SILICON-DIRECT PIPELINE ACTIVE")
+                    if gui.igBeginTable("ValueTable", 2, bit.bor(panels.Flags.TableBorders, panels.Flags.TableResizable), ui.V2_ZERO, 0) then
+                        gui.igTableSetupColumn("Field", 0, 0, 0); gui.igTableSetupColumn("Value", 0, 0, 0); gui.igTableHeadersRow()
+                        
+                        local results = _G._GPU_INSPECTOR.results_ptr
+                        for i, f in ipairs(_G._GPU_INSPECTOR.flattened) do
+                            gui.igTableNextRow(0, 0); gui.igTableNextColumn(); gui.igText("%s", f.name)
+                            gui.igTableNextColumn()
+                            
+                            local base = (i-1) * 2
+                            if f.type:find("64") or f.type == "double" then
+                                local d_val = ffi.cast("double*", ffi.new("uint32_t[2]", {results[base], results[base+1]}))[0]
+                                gui.igText("%.6f", d_val)
+                            elseif f.type:find("float") then
+                                local f_val = ffi.cast("float*", ffi.new("uint32_t[1]", results[base]))[0]
+                                gui.igText("%.4f", f_val)
+                            elseif f.type:find("uint") then
+                                gui.igText("%u", results[base])
+                            else
+                                gui.igText("%d", ffi.cast("int32_t", results[base]))
+                            end
+                        end
+                        gui.igEndTable()
+                    end
                     gui.igTreePop()
                 end
             end
