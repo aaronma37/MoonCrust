@@ -35,6 +35,8 @@ ffi.cdef[[
     bool mcap_get_channel_info(McapBridge* bridge, uint32_t index, McapChannelInfo* out_info);
     const char* mcap_get_schema_content(McapBridge* bridge, uint32_t channel_id);
     void mcap_set_gtb(McapBridge* bridge, uint8_t* ptr, uint64_t size);
+    void mcap_load_into_gtb(McapBridge* bridge, uint64_t offset, uint32_t size, uint32_t channel_id);
+    void mcap_load_into_buffer(McapBridge* bridge, uint64_t offset, uint32_t size, uint8_t* target);
     void mcap_configure_gtb_slot(McapBridge* bridge, uint32_t channel_id, uint64_t base_offset, uint32_t msg_size, uint32_t history_max);
     uint32_t mcap_get_gtb_slot_index(McapBridge* bridge, uint32_t channel_id);
 ]]

@@ -274,6 +274,39 @@ EXPORT void mcap_set_gtb(McapBridge* b, uint8_t* ptr, uint64_t size) {
     b->gtb_size = size;
 }
 
+EXPORT void mcap_load_into_gtb(McapBridge* b, uint64_t offset, uint32_t size, uint32_t channel_id) {
+    if (!b || !b->gtb_ptr || !b->slots.count(channel_id)) return;
+    
+    auto& slot = b->slots[channel_id];
+    uint64_t write_offset = slot.base_offset + (static_cast<uint64_t>(slot.current_index) * slot.msg_size);
+    uint32_t sz = std::min(size, slot.msg_size);
+    
+    if (write_offset + sz <= b->gtb_size) {
+        // Read directly from the underlying stream
+        // The McapReader has a data source we can access
+        auto data_source = b->reader.dataSource();
+        if (data_source) {
+            std::byte* internal_ptr = nullptr;
+            uint64_t read_bytes = data_source->read(&internal_ptr, offset, sz);
+            if (read_bytes > 0 && internal_ptr) {
+                std::memcpy(b->gtb_ptr + write_offset, internal_ptr, std::min((uint64_t)sz, read_bytes));
+            }
+        }
+    }
+}
+
+EXPORT void mcap_load_into_buffer(McapBridge* b, uint64_t offset, uint32_t size, uint8_t* target) {
+    if (!b || !target) return;
+    auto data_source = b->reader.dataSource();
+    if (data_source) {
+        std::byte* internal_ptr = nullptr;
+        uint64_t read_bytes = data_source->read(&internal_ptr, offset, size);
+        if (read_bytes > 0 && internal_ptr) {
+            std::memcpy(target, internal_ptr, std::min((uint64_t)size, read_bytes));
+        }
+    }
+}
+
 EXPORT void mcap_configure_gtb_slot(McapBridge* b, uint32_t channel_id, uint64_t base_offset, uint32_t msg_size, uint32_t history_max) {
     if (!b) return;
     GtbSlot slot;

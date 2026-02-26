@@ -161,6 +161,24 @@ function M.update(dt, raw_buffer)
             if entry then
                 robot.lib.mcap_seek_offset(M.bridge, entry.offset)
                 M.playback_time_ns, M.seek_to = M.seek_to, nil
+                
+                -- Full-State Reconstruction: Load latest for EVERY active channel
+                for _, ch in ipairs(M.channels) do
+                    local latest = indexer.find_latest_for_channel(ch.id, M.playback_time_ns)
+                    if latest then
+                        -- 1. Load into GPU (GTB)
+                        robot.lib.mcap_load_into_gtb(M.bridge, latest.offset, latest.size, ch.id)
+                        
+                        -- 2. Load into CPU (message_buffers for Pretty Viewer)
+                        local buf = M.get_msg_buffer(ch.id)
+                        if buf then
+                            local sz = math.min(tonumber(latest.size), M.MSG_BUF_SIZE)
+                            robot.lib.mcap_load_into_buffer(M.bridge, latest.offset, sz, buf.data)
+                            buf.size = sz
+                        end
+                    end
+                end
+                
                 robot.lib.mcap_get_current(M.bridge, M.current_msg)
                 M.last_seek_time = now_ms
                 M.just_sought = true
