@@ -26,6 +26,7 @@ local M = {
     is_hovered = false,
     is_dragging = false,
     poses = {},
+    p_point_size = ffi.new("float[1]", 2.0),
     
     graph = nil,
     res = {},
@@ -113,7 +114,7 @@ function M.init(device, bindless_set, sw)
     M.pipes.fp_point = pipeline.create_graphics_pipeline(device, M.pipes.layout_fp, 
         shader.create_module(device, shader.compile_glsl(io.open("examples/42_robot_visualizer/shaders/fp_point.vert"):read("*all"), vk.VK_SHADER_STAGE_VERTEX_BIT)), 
         shader.create_module(device, shader.compile_glsl(io.open("examples/42_robot_visualizer/shaders/fp_point.frag"):read("*all"), vk.VK_SHADER_STAGE_FRAGMENT_BIT)), 
-        { topology = vk.VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP, alpha_blend = true, color_formats = { vk.VK_FORMAT_R8G8B8A8_UNORM }, depth_test = true, depth_write = true })
+        { topology = vk.VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP, alpha_blend = true, color_formats = { vk.VK_FORMAT_R8G8B8A8_UNORM }, depth_test = true, depth_write = false })
 
     M.pipes.fp_line = pipeline.create_graphics_pipeline(device, M.pipes.layout_fp, 
         shader.create_module(device, shader.compile_glsl(io.open("examples/42_robot_visualizer/shaders/fp_line.vert"):read("*all"), vk.VK_SHADER_STAGE_VERTEX_BIT)), 
@@ -280,11 +281,15 @@ function M.render_deferred(cb_handle, point_buf_idx, frame_idx, point_count)
     static.pc_r.z_near, static.pc_r.z_far = 0.1, 10000.0
     static.pc_r.cluster_x, static.pc_r.cluster_y, static.pc_r.cluster_z = CLUSTER_X, CLUSTER_Y, CLUSTER_Z
     static.pc_r.buf_idx = point_buf_idx or 11
-    static.pc_r.point_size = 10.0
     
     local lidar_obj = nil
     if params.objects then for _, obj in ipairs(params.objects) do if obj.type == "lidar" then lidar_obj = obj; break end end end
-    if lidar_obj then static.pc_r.point_size = lidar_obj.point_size or 100.0 end
+    if lidar_obj and not M.point_size_initialized then 
+        M.p_point_size[0] = lidar_obj.point_size or 50.0 
+        M.point_size_initialized = true
+    end
+    static.pc_r.point_size = M.p_point_size[0]
+    
     local p_off = {0,0,0,0}
     if lidar_obj and lidar_obj.attach_to and M.poses[lidar_obj.attach_to] then
         local p = M.poses[lidar_obj.attach_to]; p_off = {p.x, p.y, p.z, p.yaw}
@@ -350,6 +355,7 @@ function M.render_deferred(cb_handle, point_buf_idx, frame_idx, point_count)
         vk.vkCmdBindPipeline(cmd, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, M.pipes.fp_grid)
         local grid_pc = ffi.new("RenderPC", static.pc_r)
         grid_pc.pose_x, grid_pc.pose_y = M.cam.target[0], M.cam.target[1]
+        grid_pc.point_size = 1.0
         vk.vkCmdPushConstants(cmd, M.pipes.layout_fp, bit.bor(vk.VK_SHADER_STAGE_VERTEX_BIT, vk.VK_SHADER_STAGE_FRAGMENT_BIT), 0, ffi.sizeof("RenderPC"), grid_pc)
         vk.vkCmdDraw(cmd, 4, 1, 0, 0)
 
@@ -357,6 +363,7 @@ function M.render_deferred(cb_handle, point_buf_idx, frame_idx, point_count)
         vk.vkCmdBindPipeline(cmd, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, M.pipes.fp_line)
         local robot_pc = ffi.new("RenderPC", static.pc_r)
         robot_pc.buf_idx = (frame_idx == 0) and 14 or 15
+        robot_pc.point_size = 2.0
         vk.vkCmdPushConstants(cmd, M.pipes.layout_fp, bit.bor(vk.VK_SHADER_STAGE_VERTEX_BIT, vk.VK_SHADER_STAGE_FRAGMENT_BIT), 0, ffi.sizeof("RenderPC"), robot_pc)
         vk.vkCmdDraw(cmd, (M.active_robot_line_count or 0) / 2 * 6, 1, 0, 0)
 
@@ -368,9 +375,9 @@ function M.render_deferred(cb_handle, point_buf_idx, frame_idx, point_count)
         vk.vkCmdEndRendering(cmd)
     end):using(M.res.final_color, vk.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, vk.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL)
        :using(M.res.depth, vk.VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT, vk.VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT, vk.VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL)
-       :using(M.res.cluster_items, vk.VK_ACCESS_SHADER_READ_BIT, vk.VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT)
-       :using(M.res.light_indices, vk.VK_ACCESS_SHADER_READ_BIT, vk.VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT)
-       :using(M.res.lights, vk.VK_ACCESS_SHADER_READ_BIT, vk.VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT)
+       :using(M.res.cluster_items, vk.VK_ACCESS_SHADER_READ_BIT, bit.bor(vk.VK_PIPELINE_STAGE_VERTEX_SHADER_BIT, vk.VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT))
+       :using(M.res.light_indices, vk.VK_ACCESS_SHADER_READ_BIT, bit.bor(vk.VK_PIPELINE_STAGE_VERTEX_SHADER_BIT, vk.VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT))
+       :using(M.res.lights, vk.VK_ACCESS_SHADER_READ_BIT, bit.bor(vk.VK_PIPELINE_STAGE_VERTEX_SHADER_BIT, vk.VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT))
 
     M.graph:execute(cb_handle)
 end

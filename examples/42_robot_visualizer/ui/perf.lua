@@ -22,6 +22,10 @@ panels.register("perf", "Performance Stats", function(gui, node_id)
     
     local view3d = require("examples.42_robot_visualizer.view_3d")
     gui.igSeparator()
+    gui.igText("Visualization Settings")
+    gui.igDragFloat("Lidar Point Size", view3d.p_point_size, 0.5, 0.1, 500.0, "%.1f", 0)
+    
+    gui.igSeparator()
     gui.igText("3D Scene Status")
     if view3d.current_pose then
         gui.igText(string.format("Robot XYZ: %.1f, %.1f, %.1f", view3d.current_pose.x, view3d.current_pose.y, view3d.current_pose.z))
