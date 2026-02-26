@@ -26,7 +26,7 @@ local M = {
     is_hovered = false,
     is_dragging = false,
     poses = {},
-    p_point_size = ffi.new("float[1]", 2.0),
+    p_point_size = ffi.new("float[1]", 3.0),
     
     graph = nil,
     res = {},

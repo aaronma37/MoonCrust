@@ -286,6 +286,10 @@ function M.init()
     imgui.add_font("examples/42_robot_visualizer/fa-solid-900.otf", 14.0, true, icon_ranges)
     imgui.build_and_upload_fonts(); theme.apply(imgui.gui); state.last_perf = ffi.C.SDL_GetPerformanceCounter(); M.header = require("examples.42_robot_visualizer.ui.header")
     
+    -- GC TUNING: Low-latency incremental mode
+    collectgarbage("setpause", 110)
+    collectgarbage("setstepmul", 400)
+    
     local ir = require("imgui.renderer")
     harvester.white_uv = ir.white_uv
     
@@ -357,7 +361,7 @@ function M.update()
         if wheel ~= 0 then view_3d.cam.dist = math.max(1, view_3d.cam.dist - wheel * view_3d.cam.dist * 0.1); _G._MOUSE_WHEEL = 0 end
     end
 
-    view_3d.reset_frame(); collectgarbage("step", 100)
+    view_3d.reset_frame()
     local win_w, win_h = _G._WIN_LW or 1280, _G._WIN_LH or 720
     
     ui_context.init(ui_buffers[f_idx + 1].allocation.ptr, MAX_UI_ELEMENTS)
@@ -374,7 +378,7 @@ function M.update()
         local ch = playback.channels_by_id[playback.lidar_ch_id]
         if ch and ch.gtb_offset then 
             local slot_idx = playback.get_gtb_slot_index(playback.lidar_ch_id)
-            lidar_gtb_off = ch.gtb_offset + (slot_idx * playback.MSG_SIZE_MAX)
+            lidar_gtb_off = ch.gtb_offset + (slot_idx * ch.msg_size)
         end
     end
 
@@ -384,7 +388,6 @@ function M.update()
         if v3d_pms and v3d_pms.objects then 
         for _, o in ipairs(v3d_pms.objects) do 
             if o.type == "lidar" and o.topic == playback.lidar_topic then 
-                in_off, str_u, pos_off = 8, 5, 1
                 if playback.channels then
                     for _, ch in ipairs(playback.channels) do
                         if ch.topic == o.topic then playback.lidar_ch_id = ch.id; break end
@@ -396,11 +399,27 @@ function M.update()
     end
     
     playback.update(dt, nil); view_3d.update_robot_buffer(f_idx, v3d_pms)
-    static.pc_p.in_buf_idx, static.pc_p.in_offset_u32, static.pc_p.out_buf_idx, static.pc_p.count = 50, lidar_gtb_off / 4, out_idx, pt_cnt
+    
+    local final_in_off = in_off
+    local final_stride = str_u
+    local final_pos_off = pos_off
+
+    -- Allow config to override Lidar layout
+    if v3d_pms and v3d_pms.objects then
+        for _, o in ipairs(v3d_pms.objects) do
+            if o.type == "lidar" and o.topic == playback.lidar_topic then
+                if o.stride then final_stride = o.stride end
+                if o.pos_offset then final_pos_off = o.pos_offset end
+                if o.header_skip then final_in_off = o.header_skip end
+            end
+        end
+    end
+
+    static.pc_p.in_buf_idx, static.pc_p.in_offset_u32, static.pc_p.out_buf_idx, static.pc_p.count = 50, (lidar_gtb_off / 4) + final_in_off, out_idx, pt_cnt
     static.pc_p.mode = 0
     static.pc_p.instr_buf_idx = 0
-    static.pc_p.in_stride_u32 = str_u
-    static.pc_p.in_pos_offset_u32 = pos_off
+    static.pc_p.in_stride_u32 = final_stride
+    static.pc_p.in_pos_offset_u32 = final_pos_off
     
     vk.vkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_parse); static.sets[0] = bindless_set
     vk.vkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, layout_parse, 0, 1, static.sets, 0, nil) 

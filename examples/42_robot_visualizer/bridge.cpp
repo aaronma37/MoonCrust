@@ -319,5 +319,7 @@ EXPORT void mcap_configure_gtb_slot(McapBridge* b, uint32_t channel_id, uint64_t
 
 EXPORT uint32_t mcap_get_gtb_slot_index(McapBridge* b, uint32_t channel_id) {
     if (!b || !b->slots.count(channel_id)) return 0;
-    return b->slots[channel_id].current_index;
+    auto& slot = b->slots[channel_id];
+    // Return the index of the LAST written message
+    return (slot.current_index + slot.history_max - 1) % slot.history_max;
 }

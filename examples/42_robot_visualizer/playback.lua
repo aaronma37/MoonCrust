@@ -27,13 +27,19 @@ local M = {
     bytes_processed = 0,
     throughput_mbs = 0,
     
+    _last_msg_ch = {}, -- Reusable table
+    _last_msg_offsets = {}, -- Reusable offsets
+    _ch_msg_sizes = {}, -- Reusable msg sizes
+    
     -- GTB (Global Telemetry Buffer)
     gtb = nil,
     _gtb_ref = nil, -- Anchor to prevent GC
     _persistence = {}, -- Global FFI anchor
     _msg_anchor = nil,
-    HISTORY_MAX = 1000, 
-    MSG_SIZE_MAX = 8192, 
+    HISTORY_MAX = 50, -- Reduced history to fit larger messages
+    MSG_SIZE_LIDAR = 24 * 1024 * 1024, -- 24MB for massive point clouds
+    MSG_SIZE_DEFAULT = 64 * 1024,      -- 64KB for standard telemetry
+    MSG_SIZE_MAX = 24 * 1024 * 1024,   -- For compatibility
     
     -- STATIC MESSAGE POOL (The "Crash Killer")
     MAX_TOPICS = 128,
@@ -124,25 +130,28 @@ function M.discover_topics()
     M.channels = {}
     M.channels_by_id = {}
     local info = ffi.new("McapChannelInfo")
-    local slot_size = M.MSG_SIZE_MAX * M.HISTORY_MAX
     
-    local configured_count = 0
+    local current_offset = 0
     for i=0, count-1 do
         if robot.lib.mcap_get_channel_info(M.bridge, i, info) then
-                local t = ffi.string(info.topic)
-                if t == M.lidar_topic then M.lidar_ch_id = info.id end
             if info.topic ~= nil then
                 local t = ffi.string(info.topic)
-                local ch = { id = info.id, topic = t, encoding = ffi.string(info.message_encoding or "u"), schema = ffi.string(info.schema_name or "u"), active = true, gtb_offset = nil }
+                if t == M.lidar_topic then M.lidar_ch_id = info.id end
+                
+                local is_lidar = (t:find("lidar") or t:find("points"))
+                local msg_size = is_lidar and M.MSG_SIZE_LIDAR or M.MSG_SIZE_DEFAULT
+                local history = is_lidar and 4 or M.HISTORY_MAX -- Fewer Lidar frames to save RAM
+                
+                local ch = { id = info.id, topic = t, encoding = ffi.string(info.message_encoding or "u"), schema = ffi.string(info.schema_name or "u"), active = true, gtb_offset = nil, msg_size = msg_size }
                 table.insert(M.channels, ch)
                 M.channels_by_id[ch.id] = ch
+                M._ch_msg_sizes[ch.id] = msg_size
                 
-                -- Only configure if we have space in GTB
-                local offset = configured_count * slot_size
-                if offset + slot_size <= M.gtb.size then
-                    robot.lib.mcap_configure_gtb_slot(M.bridge, info.id, offset, M.MSG_SIZE_MAX, M.HISTORY_MAX)
-                    ch.gtb_offset = offset
-                    configured_count = configured_count + 1
+                local slot_size = msg_size * history
+                if current_offset + slot_size <= M.gtb.size then
+                    robot.lib.mcap_configure_gtb_slot(M.bridge, info.id, current_offset, msg_size, history)
+                    ch.gtb_offset = current_offset
+                    current_offset = current_offset + slot_size
                 end
             end
         end
@@ -157,7 +166,8 @@ end
 function M.update(dt, raw_buffer)
     if not M.bridge then return end
     
-    local now_ms = ffi.C.SDL_GetTicks()
+    local start_update_ticks = ffi.C.SDL_GetTicks()
+    local now_ms = start_update_ticks
     M.bytes_processed = 0
     if M.seek_to then
         -- Throttle seeks to 60Hz (once every 16ms)
@@ -195,11 +205,14 @@ function M.update(dt, raw_buffer)
     end
 
     local msgs_processed = 0
-    local last_msg_for_ch = {} -- Track the last message seen this frame for each channel
+    -- Clear reusable tracking tables
+    for k in pairs(M._last_msg_ch) do M._last_msg_ch[k] = nil end
+    for k in pairs(M._last_msg_offsets) do M._last_msg_offsets[k] = nil end
 
     -- Condition: Process if live, or if we JUST sought (to update the frame)
+    -- Added 5ms time budget per frame to prevent UI stalls during high-speed bursts
     while (not M.paused or M.just_sought) and M.current_msg.log_time <= M.playback_time_ns do
-        if msgs_processed > 20000 then break end 
+        if msgs_processed > 100000 or (ffi.C.SDL_GetTicks() - start_update_ticks) > 5 then break end 
         local ch_id = M.current_msg.channel_id
         
         -- LiDAR point count (ZERO-COPY Silicon Extraction)
@@ -207,16 +220,13 @@ function M.update(dt, raw_buffer)
             M.last_lidar_points = M.current_msg.point_count
         end
 
-        -- Record that we saw a message for this channel
-        last_msg_for_ch[ch_id] = true
+        -- Record that we saw a message and capture its location
+        M._last_msg_ch[ch_id] = true
+        M._last_msg_offsets[ch_id] = { offset = M.current_msg.offset, size = M.current_msg.data_size }
+        
         M.bytes_processed = M.bytes_processed + tonumber(M.current_msg.data_size)
         
         robot.lib.mcap_advance(M.bridge)
-        
-        -- If the NEXT message is for a different time or we hit the end, 
-        -- we should capture the data for the UI if needed. 
-        -- But actually, it's simpler: just capture the "current" data into the buffer 
-        -- only for the VERY LAST message processed in this loop.
         
         if not robot.lib.mcap_get_current(M.bridge, M.current_msg) then
             robot.lib.mcap_rewind(M.bridge)
@@ -228,20 +238,13 @@ function M.update(dt, raw_buffer)
         M.just_sought = false 
     end
 
-    -- POST-LOOP: Synchronize the CPU buffers only for the channels that actually changed.
-    -- This ensures we only do ONE ffi.copy per active channel per frame,
-    -- instead of 5,000+ copies.
-    for ch_id, _ in pairs(last_msg_for_ch) do
+    -- POST-LOOP: Synchronize CPU buffers using captured offsets
+    for ch_id, info in pairs(M._last_msg_offsets) do
         local buf = M.get_msg_buffer(ch_id)
         if buf then
-            -- We need to get the "latest" for this channel specifically
-            -- because the global iterator has already moved past it.
-            local latest = indexer.find_latest_for_channel(ch_id, M.playback_time_ns)
-            if latest then
-                local sz = math.min(tonumber(latest.size), M.MSG_BUF_SIZE)
-                robot.lib.mcap_load_into_buffer(M.bridge, latest.offset, sz, buf.data)
-                buf.size = sz
-            end
+            local sz = math.min(tonumber(info.size), M.MSG_BUF_SIZE)
+            robot.lib.mcap_load_into_buffer(M.bridge, info.offset, sz, buf.data)
+            buf.size = sz
         end
     end
     
