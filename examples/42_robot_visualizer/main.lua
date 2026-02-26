@@ -142,11 +142,28 @@ local function render_node(node, x, y, w, h, gui, id_path)
     id_path = id_path or "root"
     if node.type == "split" then
         local ratio = node.ratio
-        local split_x, split_y = x + (node.direction == "v" and w * ratio or 0), y + (node.direction == "h" and h * ratio or 0)
-        if node.direction == "v" then local w1 = w * ratio; render_node(node.children[1], x, y, w1, h, gui, id_path .. "1"); render_node(node.children[2], x+w1, y, w-w1, h, gui, id_path .. "2")
-        else local h1 = h * ratio; render_node(node.children[1], x, y, w, h1, gui, id_path .. "1"); render_node(node.children[2], x, y+h1, w, h - h1, gui, id_path .. "2") end
-        local sw_h, sh_h = (node.direction == "v") and 8 or w, (node.direction == "v") and h or 8
-        static.v2_pos.x, static.v2_pos.y, static.v2_size.x, static.v2_size.y = (node.direction == "v") and (split_x - 4) or x, (node.direction == "v") and y or (split_y - 4), sw_h, sh_h
+        if node.direction == "v" then 
+            local w1 = w * ratio
+            if node.children[1].max_w and w1 > node.children[1].max_w then w1 = node.children[1].max_w; node.ratio = w1 / w end
+            if node.children[2].max_w and (w - w1) > node.children[2].max_w then w1 = w - node.children[2].max_w; node.ratio = w1 / w end
+            
+            render_node(node.children[1], x, y, w1, h, gui, id_path .. "1")
+            render_node(node.children[2], x+w1, y, w-w1, h, gui, id_path .. "2")
+            
+            local split_x = x + w1
+            static.v2_pos.x, static.v2_pos.y, static.v2_size.x, static.v2_size.y = split_x - 4, y, 8, h
+        else 
+            local h1 = h * ratio
+            if node.children[1].max_h and h1 > node.children[1].max_h then h1 = node.children[1].max_h; node.ratio = h1 / h end
+            if node.children[2].max_h and (h - h1) > node.children[2].max_h then h1 = h - node.children[2].max_h; node.ratio = h1 / h end
+            
+            render_node(node.children[1], x, y, w, h1, gui, id_path .. "1")
+            render_node(node.children[2], x, y+h1, w, h - h1, gui, id_path .. "2") 
+            
+            local split_y = y + h1
+            static.v2_pos.x, static.v2_pos.y, static.v2_size.x, static.v2_size.y = x, split_y - 4, w, 8
+        end
+        
         gui.igSetNextWindowPos(static.v2_pos, 0, ui_consts.V2_ZERO); gui.igSetNextWindowSize(static.v2_size, 0)
         if gui.igBegin("split" .. id_path, nil, bit.bor(panels.Flags.NoDecoration, panels.Flags.NoSavedSettings, panels.Flags.NoBackground)) then
             local io = gui.igGetIO_Nil()
@@ -260,9 +277,12 @@ function M.init()
     end
     imgui.init(); imgui_renderer = require("imgui.renderer"); imgui_renderer.blur_tex_idx = 104
     imgui.add_font("examples/41_imgui_visualizer/cimgui/imgui/misc/fonts/Roboto-Medium.ttf", 18.0, false, imgui.get_glyph_ranges_default())
-    imgui.add_font("examples/41_imgui_visualizer/cimgui/imgui/misc/fonts/Roboto-Medium.ttf", 14.0, false, imgui.get_glyph_ranges_default())
     local icons = require("examples.42_robot_visualizer.ui.icons")
-    imgui.add_font("examples/42_robot_visualizer/fa-solid-900.otf", 16.0, true, ffi.new("ImWchar[3]", {icons.GLYPH_MIN, icons.GLYPH_MAX, 0}))
+    local icon_ranges = ffi.new("ImWchar[3]", {icons.GLYPH_MIN, icons.GLYPH_MAX, 0})
+    imgui.add_font("examples/42_robot_visualizer/fa-solid-900.otf", 16.0, true, icon_ranges)
+    
+    imgui.add_font("examples/41_imgui_visualizer/cimgui/imgui/misc/fonts/Roboto-Medium.ttf", 14.0, false, imgui.get_glyph_ranges_default())
+    imgui.add_font("examples/42_robot_visualizer/fa-solid-900.otf", 14.0, true, icon_ranges)
     imgui.build_and_upload_fonts(); theme.apply(imgui.gui); state.last_perf = ffi.C.SDL_GetPerformanceCounter(); M.header = require("examples.42_robot_visualizer.ui.header")
     
     local ir = require("imgui.renderer")

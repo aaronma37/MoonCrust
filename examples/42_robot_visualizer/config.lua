@@ -78,7 +78,7 @@ M.layout = {
 			},
 		},
 		-- Bottom: Playback (Full Width)
-		{ type = "view", view_type = "telemetry", id = 4, title = "Mars Playback###4" },
+		{ type = "view", view_type = "telemetry", id = 4, title = "Mars Playback###4", max_h = 120 },
 	},
 }
 

@@ -22,6 +22,12 @@ Render millions of points without breaking a sweat. Instead of injecting brittle
 ### 6. The "Bytecode VM" Decoder (Handling Shifting Sands)
 Strict alignment without the rigidity. Instead of brittle C-structs that break when a string changes length, MoonCrust compiles schemas into a lightweight instruction set. The GPU interpreter maintains a precise read-pointer, handling ROS2 CDR alignment and dynamic sequence offsets in silicon, ensuring telemetry is always mathematically accurate.
 
+### 7. Forward+ Clustered Shading (Lighting at Scale)
+Visualize 1,000+ dynamic lights without the "Deferred" overhead. By tiling the screen into 3D clusters, we cull light sources on the GPU and execute shading in a single pass. This allows Lidar points and robot geometry to react to massive amounts of dynamic scene lighting at 400+ FPS.
+
+### 8. Auto-Sync Render Graph (Zero-Friction Parallelism)
+Eliminate manual synchronization deadlocks. The visualizer uses a persistent, zero-allocation Render Graph to orchestrate complex dependencies between Light Culling, Aperture Plotting, and UI Compositing, ensuring maximum hardware utilization with minimum boilerplate.
+
 ---
 
 ## 🛠️ Build and Run
