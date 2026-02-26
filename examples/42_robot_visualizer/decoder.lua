@@ -183,38 +183,48 @@ local TYPE_MAP = {
     ["uint32"] = 2,
     ["float64"] = 3, ["double"] = 3,
     ["int64"] = 4, ["uint64"] = 5,
+    ["int8"] = 6, ["uint8"] = 7, ["byte"] = 7, ["bool"] = 7, ["char"] = 7,
+    ["int16"] = 8, ["uint16"] = 9,
 }
 
-function M.get_gpu_instructions(schema)
-    local flattened = M.get_flattened_fields(schema)
-    local count = #flattened
-    local buf = ffi.new("uint32_t[?]", count * 4) -- 16 bytes per instruction
-    
-    for i=1, count do
-        local f = flattened[i]
-        local base = (i-1) * 4
-        buf[base + 0] = f.offset
-        buf[base + 1] = i - 1 -- Destination slot in results buffer
-        buf[base + 2] = TYPE_MAP[f.type] or 0
-        buf[base + 3] = 0 -- Padding
-    end
-    
-    return buf, count
-end
+local OP_STATIC = 0
+local OP_STRING = 1
+local OP_DYN_ARRAY = 2
 
-function M.get_flattened_fields(schema)
-    if not schema then return {} end
+function M.get_gpu_instructions(schema)
+    if not schema then return nil, 0, {} end
     local flattened = {}
+    local instructions = {}
+    local slot = 0
+    
     local function resolve(fields, prefix, offset)
         for _, f in ipairs(fields) do
             local name = (prefix == "") and f.name or (prefix .. "." .. f.name)
-            if f.is_array and not f.array_size then offset = align(offset, 4) + 4
+            if f.is_array and not f.array_size then
+                local sub = PRIMITIVES[f.type] and { { type = f.type, name = "", is_array = false } } or (schema.lib[f.type] or schema.lib[f.type:gsub(".*/", "")])
+                local elem_size = sub and calculate_static_size(schema, sub) or 1
+                offset = align(offset, 4)
+                table.insert(flattened, { name = name .. ".count", type = "uint32", is_double = false, offset = offset })
+                table.insert(instructions, { op = OP_DYN_ARRAY, dst_slot = slot, type_id = TYPE_MAP["uint32"] or 2, size = elem_size })
+                slot = slot + 1
+                offset = offset + 4 -- This is a lie for the payload, but correct for the count field
             elseif f.is_array and f.array_size then
                 local sub = PRIMITIVES[f.type] and { { type = f.type, name = "", is_array = false } } or (schema.lib[f.type] or schema.lib[f.type:gsub(".*/", "")])
                 if sub then for i=0, f.array_size-1 do offset = resolve(sub, name .. "[" .. i .. "]", offset) end end
             elseif PRIMITIVES[f.type] then
-                local info = PRIMITIVES[f.type]; offset = align(offset, info.size); table.insert(flattened, { name = name, offset = offset, type = f.type, is_double = (f.type:find("64") or f.type == "double") }); offset = offset + info.size
-            elseif f.type == "string" then offset = align(offset, 4) + 4
+                local info = PRIMITIVES[f.type]
+                local align_req = (info.size < 8) and info.size or 8
+                offset = align(offset, align_req)
+                table.insert(flattened, { name = name, type = f.type, is_double = (f.type:find("64") or f.type == "double"), offset = offset })
+                table.insert(instructions, { op = OP_STATIC, dst_slot = slot, type_id = TYPE_MAP[f.type] or 0, size = info.size })
+                slot = slot + 1
+                offset = offset + info.size
+            elseif f.type == "string" then
+                offset = align(offset, 4)
+                table.insert(flattened, { name = name, type = "string", is_double = false, offset = offset })
+                table.insert(instructions, { op = OP_STRING, dst_slot = slot, type_id = 0, size = 0 })
+                slot = slot + 1
+                offset = offset + 4 -- Lie
             else
                 local sub = schema.lib[f.type] or schema.lib[f.type:gsub(".*/", "")]
                 if sub then offset = resolve(sub, name, offset) end
@@ -222,7 +232,25 @@ function M.get_flattened_fields(schema)
         end
         return offset
     end
+    
     resolve(schema.main, "", 4)
+    
+    local count = #instructions
+    local buf = ffi.new("uint32_t[?]", count * 4)
+    for i, inst in ipairs(instructions) do
+        local base = (i-1) * 4
+        buf[base + 0] = inst.op
+        buf[base + 1] = inst.dst_slot
+        buf[base + 2] = inst.type_id
+        buf[base + 3] = inst.size
+    end
+    
+    M._last_flattened = flattened
+    return buf, count, flattened
+end
+
+function M.get_flattened_fields(schema)
+    local _, _, flattened = M.get_gpu_instructions(schema)
     return flattened
 end
 

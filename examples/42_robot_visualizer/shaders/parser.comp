@@ -23,10 +23,9 @@ layout(push_constant) uniform PC {
 } pc;
 
 void main() {
-    uint idx = gl_GlobalInvocationID.x;
-    if (idx >= pc.count) return;
-
     if (pc.mode == 0) {
+        uint idx = gl_GlobalInvocationID.x;
+        if (idx >= pc.count) return;
         // LIDAR MODE (Points)
         uint base = pc.in_offset_u32 + (idx * pc.in_stride_u32) + pc.in_pos_offset_u32;
         float x = uintBitsToFloat(all_buffers[nonuniformEXT(pc.in_buf_idx)].u32[base + 0]);
@@ -40,21 +39,65 @@ void main() {
         all_buffers[nonuniformEXT(pc.out_buf_idx)].u32[out_base + 3] = floatBitsToUint(1.0);
     } else {
         // UNIVERSAL TELEMETRY MODE (Fields)
-        // Use instr_buf_idx to read instructions
-        uint instr_base = idx * 4;
-        uint src_off = all_buffers[nonuniformEXT(pc.instr_buf_idx)].u32[instr_base + 0];
-        uint dst_slot = all_buffers[nonuniformEXT(pc.instr_buf_idx)].u32[instr_base + 1];
-        uint type_id = all_buffers[nonuniformEXT(pc.instr_buf_idx)].u32[instr_base + 2];
+        // Uses a sequential VM, so we only use thread 0
+        if (gl_GlobalInvocationID.x != 0) return;
 
-        uint src_u32_idx = pc.in_offset_u32 + (src_off / 4);
-        
-        if (type_id >= 3) {
-            // 64-bit types (double, int64, uint64)
-            all_buffers[nonuniformEXT(pc.out_buf_idx)].u32[dst_slot * 2 + 0] = all_buffers[nonuniformEXT(pc.in_buf_idx)].u32[src_u32_idx + 0];
-            all_buffers[nonuniformEXT(pc.out_buf_idx)].u32[dst_slot * 2 + 1] = all_buffers[nonuniformEXT(pc.in_buf_idx)].u32[src_u32_idx + 1];
-        } else {
-            // 32-bit types
-            all_buffers[nonuniformEXT(pc.out_buf_idx)].u32[dst_slot * 2] = all_buffers[nonuniformEXT(pc.in_buf_idx)].u32[src_u32_idx];
+        uint read_offset = pc.in_offset_u32 * 4 + 4; // Absolute Byte offset + 4 bytes CDR header
+
+        for (uint i = 0; i < pc.count; ++i) {
+            uint instr_base = i * 4;
+            uint op       = all_buffers[nonuniformEXT(pc.instr_buf_idx)].u32[instr_base + 0];
+            uint dst_slot = all_buffers[nonuniformEXT(pc.instr_buf_idx)].u32[instr_base + 1];
+            uint type_id  = all_buffers[nonuniformEXT(pc.instr_buf_idx)].u32[instr_base + 2];
+            uint sz       = all_buffers[nonuniformEXT(pc.instr_buf_idx)].u32[instr_base + 3];
+
+            if (op == 0) { // OP_STATIC
+                uint align_req = (sz < 8) ? sz : 8;
+                if (sz == 0) align_req = 1; // Prevent div by zero, though sz=0 shouldn't happen for OP_STATIC
+                read_offset = (read_offset + align_req - 1) & ~(align_req - 1);
+                
+                uint u32_idx = read_offset / 4;
+                if (type_id >= 3 && type_id <= 5) { // 64-bit
+                    all_buffers[nonuniformEXT(pc.out_buf_idx)].u32[dst_slot * 2 + 0] = all_buffers[nonuniformEXT(pc.in_buf_idx)].u32[u32_idx + 0];
+                    all_buffers[nonuniformEXT(pc.out_buf_idx)].u32[dst_slot * 2 + 1] = all_buffers[nonuniformEXT(pc.in_buf_idx)].u32[u32_idx + 1];
+                } else if (type_id >= 6 && type_id <= 7) { // 8-bit
+                    uint word = all_buffers[nonuniformEXT(pc.in_buf_idx)].u32[u32_idx];
+                    uint shift = (read_offset % 4) * 8;
+                    uint val = (word >> shift) & 0xFF;
+                    if (type_id == 6 && (val & 0x80) != 0) val |= 0xFFFFFF00; // Sign extend int8
+                    all_buffers[nonuniformEXT(pc.out_buf_idx)].u32[dst_slot * 2 + 0] = val;
+                    all_buffers[nonuniformEXT(pc.out_buf_idx)].u32[dst_slot * 2 + 1] = 0;
+                } else if (type_id >= 8 && type_id <= 9) { // 16-bit
+                    uint word = all_buffers[nonuniformEXT(pc.in_buf_idx)].u32[u32_idx];
+                    uint shift = (read_offset % 4) * 8;
+                    uint val = (word >> shift) & 0xFFFF;
+                    if (type_id == 8 && (val & 0x8000) != 0) val |= 0xFFFF0000; // Sign extend int16
+                    all_buffers[nonuniformEXT(pc.out_buf_idx)].u32[dst_slot * 2 + 0] = val;
+                    all_buffers[nonuniformEXT(pc.out_buf_idx)].u32[dst_slot * 2 + 1] = 0;
+                } else { // 32-bit
+                    all_buffers[nonuniformEXT(pc.out_buf_idx)].u32[dst_slot * 2 + 0] = all_buffers[nonuniformEXT(pc.in_buf_idx)].u32[u32_idx];
+                    all_buffers[nonuniformEXT(pc.out_buf_idx)].u32[dst_slot * 2 + 1] = 0;
+                }
+                read_offset += sz;
+            } else if (op == 1) { // OP_STRING
+                read_offset = (read_offset + 3) & ~3; // Align string length (4 bytes)
+                uint len = all_buffers[nonuniformEXT(pc.in_buf_idx)].u32[read_offset / 4];
+                all_buffers[nonuniformEXT(pc.out_buf_idx)].u32[dst_slot * 2 + 0] = len; // Output length
+                all_buffers[nonuniformEXT(pc.out_buf_idx)].u32[dst_slot * 2 + 1] = 0;
+                read_offset += 4 + len;
+            } else if (op == 2) { // OP_DYN_ARRAY
+                read_offset = (read_offset + 3) & ~3; // Align array length (4 bytes)
+                uint len = all_buffers[nonuniformEXT(pc.in_buf_idx)].u32[read_offset / 4];
+                all_buffers[nonuniformEXT(pc.out_buf_idx)].u32[dst_slot * 2 + 0] = len; // Output count
+                all_buffers[nonuniformEXT(pc.out_buf_idx)].u32[dst_slot * 2 + 1] = 0;
+
+                uint align_req = (sz < 8) ? sz : 8;
+                if (sz == 0) align_req = 1;
+                uint payload_start = read_offset + 4;
+                payload_start = (payload_start + align_req - 1) & ~(align_req - 1);
+
+                read_offset = payload_start + (len * sz);
+            }
         }
     }
 }

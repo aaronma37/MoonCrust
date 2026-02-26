@@ -210,14 +210,13 @@ function M.init()
         local raw = robot.lib.mcap_get_schema_content(playback.bridge, ch.id)
         if not raw then return end
         local schema = decoder.parse_schema(ffi.string(raw))
-        local instr, count = decoder.get_gpu_instructions(schema)
+                local instr, count, flattened = decoder.get_gpu_instructions(schema)
         
-        -- Upload instructions to GPU
-        ffi.copy(M.schema_buffer.allocation.ptr, instr, count * 16)
-        _G._GPU_INSPECTOR.ch = ch
-        _G._GPU_INSPECTOR.instr_count = count
-        _G._GPU_INSPECTOR.flattened = decoder.get_flattened_fields(schema)
-        _G._GPU_INSPECTOR.dirty = true
+                -- Upload instructions to GPU
+                ffi.copy(M.schema_buffer.allocation.ptr, instr, count * 16)
+                _G._GPU_INSPECTOR.ch = ch
+                _G._GPU_INSPECTOR.instr_count = count
+                _G._GPU_INSPECTOR.flattened = flattened        _G._GPU_INSPECTOR.dirty = true
         print(string.format("GPU Inspector: Monitoring %s (%d fields)", ch.topic, count))
     end
     
@@ -397,7 +396,7 @@ function M.update()
         
         vk.vkCmdPushConstants(cb, layout_parse, vk.VK_SHADER_STAGE_COMPUTE_BIT, 0, ffi.sizeof("ParserPC"), static.pc_p)
         if _G._GPU_INSPECTOR.instr_count > 0 then
-            vk.vkCmdDispatch(cb, math.ceil(_G._GPU_INSPECTOR.instr_count / 256), 1, 1)
+            vk.vkCmdDispatch(cb, 1, 1, 1)
         end
     end
 

@@ -172,7 +172,7 @@ panels.register("plotter", "Topic Plotter", function(gui, node_id, params)
                                     if p_state.gpu_mode then
                                         local p_pos, p_size = gui.ImPlot_GetPlotPos(), gui.ImPlot_GetPlotSize()
                                         local d = p_state.cb_data
-                                        d.ch_id, d.field_offset, d.is_double = p_state.selected_ch.id, target.offset, target.is_double and 1 or 0
+                                        d.ch_id, d.field_offset, d.is_double = p_state.selected_ch.id, target.offset or 0, target.is_double and 1 or 0
                                         d.tex_idx = p_state.p_tex_idx
                                         d.range_min, d.range_max, d.x, d.y, d.w, d.h = cur_min, cur_max, p_pos.x, p_pos.y, p_size.x, p_size.y
                                         require("examples.42_robot_visualizer.view_3d").enqueue_plot(d)                    
