@@ -87,7 +87,14 @@ panels.register("plotter", "Topic Plotter", function(gui, node_id, params)
             facet_synced = false, gpu_mode = true, range_min = 0.0, range_max = 20.0, 
             -- Pre-allocated callback data block (PERSISTENT ANCHOR)
             cb_data = ffi.new("PlotCallbackData"),
-            p_gpu = ffi.new("bool[1]", true)
+            p_gpu = ffi.new("bool[1]", true),
+            p_limits = ffi.new("ImPlotRect_c[1]"),
+            p_tex = ffi.new("ImTextureRef_c", { nil, 105ULL }),
+            p_p1 = ffi.new("ImPlotPoint_c"),
+            p_p2 = ffi.new("ImPlotPoint_c"),
+            p_uv0 = ffi.new("ImVec2_c", {0, 1}),
+            p_uv1 = ffi.new("ImVec2_c", {1, 0}),
+            p_spec = ffi.new("ImPlotSpec_c")
         }
     end
     local p_state = panels.states[node_id]
@@ -129,6 +136,9 @@ panels.register("plotter", "Topic Plotter", function(gui, node_id, params)
     gui.igSameLine(0, 5)
     p_state.p_gpu[0] = p_state.gpu_mode
     if gui.igCheckbox("GPU", p_state.p_gpu) then p_state.gpu_mode = p_state.p_gpu[0] end
+    
+    gui.igSameLine(0, 5)
+    local trigger_fit = gui.igButton("Fit View", ui.V2_BTN_SMALL)
 
     if p_state.selected_ch and p_state.field_name and p_state.flattened then
         local target = nil
@@ -137,8 +147,13 @@ panels.register("plotter", "Topic Plotter", function(gui, node_id, params)
             if gui.ImPlot_BeginPlot(string.format("%s: %s", p_state.selected_ch.topic, p_state.field_name), ui.V2_FULL, 0) then
                 gui.ImPlot_SetupAxis(0, "History (Time)", 0); gui.ImPlot_SetupAxis(1, "Value", 0)
                 
-                local limits = gui.ImPlot_GetPlotLimits(0, 3)
-                local cur_min, cur_max = limits.Y.Min, limits.Y.Max
+                if trigger_fit then
+                    gui.ImPlot_SetupAxisLimits(0, 0, playback.HISTORY_MAX, 2)
+                    gui.ImPlot_SetupAxisLimits(3, 0, 20, 2)
+                end
+
+                p_state.p_limits[0] = gui.ImPlot_GetPlotLimits(0, 3)
+                local cur_min, cur_max = p_state.p_limits[0].Y.Min, p_state.p_limits[0].Y.Max
                 
                 if p_state.gpu_mode then
                     local p_min, p_max = gui.ImPlot_GetPlotPos(), gui.ImPlot_GetPlotSize()
@@ -147,8 +162,9 @@ panels.register("plotter", "Topic Plotter", function(gui, node_id, params)
                     d.range_min, d.range_max, d.x, d.y, d.w, d.h = cur_min, cur_max, p_min.x, p_min.y, p_max.x, p_max.y
                     require("examples.42_robot_visualizer.view_3d").enqueue_plot(d)
                     
-                    -- Use the CURRENT interactive limits for the texture placement
-                    gui.ImPlot_PlotImage("##gpu_plot", ffi.new("ImTextureRef_c", { _TexID = 105ULL }), ffi.new("ImPlotPoint_c", {x=0, y=cur_min}), ffi.new("ImPlotPoint_c", {x=playback.HISTORY_MAX, y=cur_max}), ffi.new("ImVec2_c", {0, 1}), ffi.new("ImVec2_c", {1, 0}), ui.V4_LIVE, ffi.new("ImPlotSpec_c"))
+                    p_state.p_p1.x, p_state.p_p1.y = 0, cur_min
+                    p_state.p_p2.x, p_state.p_p2.y = playback.HISTORY_MAX, cur_max
+                    gui.ImPlot_PlotImage("##gpu_plot", p_state.p_tex, p_state.p_p1, p_state.p_p2, p_state.p_uv0, p_state.p_uv1, ui.V4_WHITE, p_state.p_spec)
                 else
                     local h = playback.request_field_history(p_state.selected_ch.id, target.offset, target.is_double)
                     if h and h.count > 0 then gui.ImPlot_PlotLine_FloatPtrInt(p_state.field_name, h.data, h.count, 1.0, 0.0, ffi.new("ImPlotSpec_c", {Stride=4})) end

@@ -23,13 +23,8 @@ void main() {
     if (i >= pc.history_count) return;
 
     // Unwrap circular buffer
-    // i=0 is oldest, i=history_count-1 is newest
     uint data_idx = (pc.head_idx + i) % pc.history_count;
-    
-    // Calculate the u32 base index for this specific message in the GTB
     uint base_u32 = (pc.slot_offset / 4) + (data_idx * (pc.msg_size / 4));
-    
-    // Calculate the field index (fields start after the 4-byte CDR header)
     uint field_u32 = base_u32 + (pc.field_offset / 4);
     
     float val = 0.0;
@@ -51,5 +46,6 @@ void main() {
     float y_ndc = norm_y * 2.0 - 1.0;
 
     gl_Position = vec4(x_ndc, y_ndc, 0.0, 1.0);
-    vColor = vec4(0.0, 0.9, 1.0, 1.0); // Back to Cyan
+    gl_PointSize = 4.0;
+    vColor = vec4(0.0, 0.9, 1.0, 1.0); // Cyan
 }
