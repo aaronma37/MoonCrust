@@ -177,6 +177,31 @@ if jit then
     jit.off(M.decode)
 end
 
+local TYPE_MAP = {
+    ["float32"] = 0, ["float"] = 0,
+    ["int32"] = 1, ["int"] = 1,
+    ["uint32"] = 2,
+    ["float64"] = 3, ["double"] = 3,
+    ["int64"] = 4, ["uint64"] = 5,
+}
+
+function M.get_gpu_instructions(schema)
+    local flattened = M.get_flattened_fields(schema)
+    local count = #flattened
+    local buf = ffi.new("uint32_t[?]", count * 4) -- 16 bytes per instruction
+    
+    for i=1, count do
+        local f = flattened[i]
+        local base = (i-1) * 4
+        buf[base + 0] = f.offset
+        buf[base + 1] = i - 1 -- Destination slot in results buffer
+        buf[base + 2] = TYPE_MAP[f.type] or 0
+        buf[base + 3] = 0 -- Padding
+    end
+    
+    return buf, count
+end
+
 function M.get_flattened_fields(schema)
     if not schema then return {} end
     local flattened = {}

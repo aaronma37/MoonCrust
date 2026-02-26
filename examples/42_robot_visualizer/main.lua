@@ -184,6 +184,12 @@ function M.init()
     descriptors.update_buffer_set(device, bindless_set, 0, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, raw_buffers[1].handle, 0, raw_buffers[1].size, 10)
     descriptors.update_buffer_set(device, bindless_set, 0, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, raw_buffers[2].handle, 0, raw_buffers[2].size, 12)
     
+    local results_buffer = mc.buffer(1024 * 1024, "storage", nil, true) -- 1MB for parsed results
+    local schema_buffer = mc.buffer(256 * 1024, "storage", nil, true)  -- 256KB for instructions
+    descriptors.update_buffer_set(device, bindless_set, 0, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, results_buffer.handle, 0, results_buffer.size, 14)
+    descriptors.update_buffer_set(device, bindless_set, 0, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, schema_buffer.handle, 0, schema_buffer.size, 15)
+    M.results_buffer, M.schema_buffer = results_buffer, schema_buffer
+    
     ui_buffers = { mc.buffer(MAX_UI_ELEMENTS * 64, "storage", nil, true), mc.buffer(MAX_UI_ELEMENTS * 64, "storage", nil, true) }
     text_buffers = { mc.buffer(MAX_TEXT_INSTANCES * 64, "storage", nil, true), mc.buffer(MAX_TEXT_INSTANCES * 64, "storage", nil, true) }
     descriptors.update_buffer_set(device, bindless_set, 0, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, ui_buffers[1].handle, 0, ui_buffers[1].size, 60)
@@ -326,7 +332,12 @@ function M.update()
     if v3d_pms and v3d_pms.objects then for _, o in ipairs(v3d_pms.objects) do if o.type == "lidar" and o.topic == "/livox/lidar" then in_off, str_u, pos_off = 8, 5, 1; break end end end
     
     playback.update(dt, nil); view_3d.update_robot_buffer(f_idx, v3d_pms)
-    static.pc_p.in_buf_idx, static.pc_p.in_offset_u32, static.pc_p.out_buf_idx, static.pc_p.count, static.pc_p.in_stride_u32, static.pc_p.in_pos_offset_u32 = 50, lidar_gtb_off / 4, out_idx, pt_cnt, str_u, pos_off
+    static.pc_p.in_buf_idx, static.pc_p.in_offset_u32, static.pc_p.out_buf_idx, static.pc_p.count = 50, lidar_gtb_off / 4, out_idx, pt_cnt
+    static.pc_p.mode = 0
+    static.pc_p.instr_buf_idx = 0
+    static.pc_p.in_stride_u32 = str_u
+    static.pc_p.in_pos_offset_u32 = pos_off
+    
     vk.vkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_parse); static.sets[0] = bindless_set
     vk.vkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, layout_parse, 0, 1, static.sets, 0, nil) 
     vk.vkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_COMPUTE, layout_parse, 0, 1, static.sets, 0, nil)

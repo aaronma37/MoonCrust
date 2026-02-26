@@ -4,11 +4,20 @@ layout(local_size_x = 256) in;
 
 layout(set = 0, binding = 0) buffer Data { uint u32[]; } all_buffers[];
 
+struct Instruction {
+    uint src_byte_offset;
+    uint dst_slot;
+    uint type_id;
+    uint padding;
+};
+
 layout(push_constant) uniform PC {
     uint in_buf_idx;
     uint in_offset_u32;
     uint out_buf_idx;
     uint count;
+    uint mode; // 0 = Lidar, 1 = Universal Telemetry
+    uint instr_buf_idx; // Binding for the instruction buffer
     uint in_stride_u32;
     uint in_pos_offset_u32;
 } pc;
@@ -17,19 +26,31 @@ void main() {
     uint idx = gl_GlobalInvocationID.x;
     if (idx >= pc.count) return;
 
-    // Use dynamic stride and offset to find the point data
-    // Stride is in uint32 units (4 bytes)
-    uint base = pc.in_offset_u32 + (idx * pc.in_stride_u32) + pc.in_pos_offset_u32;
-    
-    float x = uintBitsToFloat(all_buffers[nonuniformEXT(pc.in_buf_idx)].u32[base + 0]);
-    float y = uintBitsToFloat(all_buffers[nonuniformEXT(pc.in_buf_idx)].u32[base + 1]);
-    float z = uintBitsToFloat(all_buffers[nonuniformEXT(pc.in_buf_idx)].u32[base + 2]);
+    if (pc.mode == 0) {
+        // LIDAR MODE (Points)
+        uint base = pc.in_offset_u32 + (idx * pc.in_stride_u32) + pc.in_pos_offset_u32;
+        float x = uintBitsToFloat(all_buffers[nonuniformEXT(pc.in_buf_idx)].u32[base + 0]);
+        float y = uintBitsToFloat(all_buffers[nonuniformEXT(pc.in_buf_idx)].u32[base + 1]);
+        float z = uintBitsToFloat(all_buffers[nonuniformEXT(pc.in_buf_idx)].u32[base + 2]);
 
-    // Write to output buffer as vec4 (x, y, z, 1.0)
-    uint out_base = idx * 4; 
-    
-    all_buffers[nonuniformEXT(pc.out_buf_idx)].u32[out_base + 0] = floatBitsToUint(x);
-    all_buffers[nonuniformEXT(pc.out_buf_idx)].u32[out_base + 1] = floatBitsToUint(y);
-    all_buffers[nonuniformEXT(pc.out_buf_idx)].u32[out_base + 2] = floatBitsToUint(z);
-    all_buffers[nonuniformEXT(pc.out_buf_idx)].u32[out_base + 3] = floatBitsToUint(1.0);
+        uint out_base = idx * 4; 
+        all_buffers[nonuniformEXT(pc.out_buf_idx)].u32[out_base + 0] = floatBitsToUint(x);
+        all_buffers[nonuniformEXT(pc.out_buf_idx)].u32[out_base + 1] = floatBitsToUint(y);
+        all_buffers[nonuniformEXT(pc.out_buf_idx)].u32[out_base + 2] = floatBitsToUint(z);
+        all_buffers[nonuniformEXT(pc.out_buf_idx)].u32[out_base + 3] = floatBitsToUint(1.0);
+    } else {
+        // UNIVERSAL TELEMETRY MODE (Fields)
+        // Use instr_buf_idx to read instructions
+        uint instr_base = idx * 4;
+        uint src_off = all_buffers[nonuniformEXT(pc.instr_buf_idx)].u32[instr_base + 0];
+        uint dst_slot = all_buffers[nonuniformEXT(pc.instr_buf_idx)].u32[instr_base + 1];
+        uint type_id = all_buffers[nonuniformEXT(pc.instr_buf_idx)].u32[instr_base + 2];
+
+        uint src_u32_idx = pc.in_offset_u32 + (src_off / 4);
+        uint val = all_buffers[nonuniformEXT(pc.in_buf_idx)].u32[src_u32_idx];
+
+        // For now, just copy the raw bits. 
+        // More complex type handling (doubles, etc.) can be added here.
+        all_buffers[nonuniformEXT(pc.out_buf_idx)].u32[dst_slot] = val;
+    }
 }
