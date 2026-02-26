@@ -212,6 +212,10 @@ end
 function M.render_deferred(cb_handle, point_buf_idx, frame_idx, point_count)
     local static = M.static
     if #M.plot_queue > 0 then
+        if not M._plot_debug_timer or ffi.C.SDL_GetTicks() > M._plot_debug_timer + 1000 then
+            print(string.format("GPU Plotter: Processing %d plots...", #M.plot_queue))
+            M._plot_debug_timer = ffi.C.SDL_GetTicks()
+        end
         static.img_barrier_plot[0].oldLayout, static.img_barrier_plot[0].newLayout, static.img_barrier_plot[0].srcAccessMask, static.img_barrier_plot[0].dstAccessMask = vk.VK_IMAGE_LAYOUT_UNDEFINED, vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 0, vk.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT
         vk.vkCmdPipelineBarrier(cb_handle, vk.VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, vk.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, nil, 0, nil, 1, static.img_barrier_plot)
         vk.vkCmdBeginRendering(cb_handle, static.render_info_plot)
@@ -241,13 +245,6 @@ function M.render_deferred(cb_handle, point_buf_idx, frame_idx, point_count)
                 static.pc_plot.is_double = plot_item.is_double
                 static.pc_plot.range_min = plot_item.range_min
                 static.pc_plot.range_max = plot_item.range_max
-                
-                static.pc_plot.view_min[0] = -1.0
-                static.pc_plot.view_min[1] = -1.0
-                static.pc_plot.view_max[0] = 1.0
-                static.pc_plot.view_max[1] = 1.0
-                static.pc_plot.uScale[0], static.pc_plot.uScale[1] = 1.0, 1.0
-                static.pc_plot.uTranslate[0], static.pc_plot.uTranslate[1] = 0.0, 0.0
                 
                 vk.vkCmdPushConstants(cb_handle, M.pipe_layout_plot, vk.VK_SHADER_STAGE_VERTEX_BIT, 0, ffi.sizeof("PlotPC"), static.pc_plot)
                 vk.vkCmdDraw(cb_handle, playback.HISTORY_MAX, 1, 0, 0)

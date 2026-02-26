@@ -84,7 +84,7 @@ panels.register("plotter", "Topic Plotter", function(gui, node_id, params)
     if not panels.states[node_id] then
         panels.states[node_id] = { 
             selected_ch = nil, filter = ffi.new("char[128]"), field_name = nil, schema = nil, flattened = nil, 
-            facet_synced = false, gpu_mode = true, range_min = -1.0, range_max = 1.0, 
+            facet_synced = false, gpu_mode = true, range_min = 0.0, range_max = 20.0, 
             -- Pre-allocated callback data block (PERSISTENT ANCHOR)
             cb_data = ffi.new("PlotCallbackData"),
             p_gpu = ffi.new("bool[1]", true)
@@ -129,6 +129,16 @@ panels.register("plotter", "Topic Plotter", function(gui, node_id, params)
     gui.igSameLine(0, 5)
     p_state.p_gpu[0] = p_state.gpu_mode
     if gui.igCheckbox("GPU", p_state.p_gpu) then p_state.gpu_mode = p_state.p_gpu[0] end
+
+    if p_state.selected_ch and p_state.field_name then
+        gui.igSetNextItemWidth(100)
+        local p_min = ffi.new("float[1]", p_state.range_min)
+        if gui.igDragFloat("Min", p_min, 0.1, -1000, 1000, "%.2f", 0) then p_state.range_min = p_min[0] end
+        gui.igSameLine(0, 5)
+        gui.igSetNextItemWidth(100)
+        local p_max = ffi.new("float[1]", p_state.range_max)
+        if gui.igDragFloat("Max", p_max, 0.1, -1000, 1000, "%.2f", 0) then p_state.range_max = p_max[0] end
+    end
 
     if p_state.selected_ch and p_state.field_name and p_state.flattened then
         local target = nil

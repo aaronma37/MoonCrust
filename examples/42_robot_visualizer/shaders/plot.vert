@@ -14,10 +14,6 @@ layout(push_constant) uniform PC {
     uint is_double;
     float range_min;
     float range_max;
-    vec2 view_min;
-    vec2 view_max;
-    vec2 uScale;
-    vec2 uTranslate;
 } pc;
 
 layout(location = 0) out vec4 vColor;
@@ -26,12 +22,15 @@ void main() {
     uint i = gl_VertexIndex;
     if (i >= pc.history_count) return;
 
-    // Unwrap circular buffer
+    // DEBUG: Force a sine wave to test the pipeline
+    float val = sin(float(i) * 0.1) * 5.0 + 10.0; 
+    
+    /* 
+    // REAL LOGIC (Commented out for debug)
     uint data_idx = (pc.head_idx + i) % pc.history_count;
     uint base_u32 = (pc.slot_offset / 4) + (data_idx * (pc.msg_size / 4));
     uint field_u32 = base_u32 + (pc.field_offset / 4);
     
-    float val = 0.0;
     if (pc.is_double != 0) {
         uint low = all_buffers[nonuniformEXT(pc.gtb_idx)].u32[field_u32];
         uint high = all_buffers[nonuniformEXT(pc.gtb_idx)].u32[field_u32 + 1];
@@ -39,19 +38,15 @@ void main() {
     } else {
         val = uintBitsToFloat(all_buffers[nonuniformEXT(pc.gtb_idx)].u32[field_u32]);
     }
+    */
 
-    // Normalize value based on provided range
     float range = pc.range_max - pc.range_min;
     if (abs(range) < 0.0001) range = 1.0;
     float norm_y = (val - pc.range_min) / range;
-    norm_y = clamp(norm_y, 0.0, 1.0);
-
-    // Map to screen pixels (using the provided ImPlot viewport bounds)
-    float x_px = mix(pc.view_min.x, pc.view_max.x, float(i) / float(pc.history_count - 1));
-    float y_px = mix(pc.view_max.y, pc.view_min.y, norm_y); // Screen Y is down
-
-    // Final NDC Transform (Must match ImGui renderer exactly)
-    gl_Position = vec4(vec2(x_px, y_px) * pc.uScale + pc.uTranslate, 0.0, 1.0);
     
-    vColor = vec4(0.0, 0.8, 1.0, 1.0); // Cyan glow
+    float x_ndc = (float(i) / float(pc.history_count - 1)) * 2.0 - 1.0;
+    float y_ndc = norm_y * 2.0 - 1.0;
+
+    gl_Position = vec4(x_ndc, y_ndc, 0.0, 1.0);
+    vColor = vec4(1.0, 0.0, 0.0, 1.0); // BRIGHT RED FOR DEBUG
 }

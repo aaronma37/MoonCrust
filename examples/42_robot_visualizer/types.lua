@@ -15,7 +15,10 @@ ffi.cdef[[
         uint32_t in_pos_offset_u32;
     } ParserPC;
     typedef struct RenderPC { float view_proj[16]; uint32_t buf_idx; float point_size; float viewport_size[2]; float pose_offset[4]; } RenderPC;
-    typedef struct PlotPC { uint32_t gtb_idx, slot_offset, msg_size, head_idx, field_offset, history_count, is_double; float range_min, range_max; uint32_t padding; float view_min[2], view_max[2], uScale[2], uTranslate[2]; } PlotPC;
+    typedef struct PlotPC { 
+        uint32_t gtb_idx, slot_offset, msg_size, head_idx, field_offset, history_count, is_double; 
+        float range_min, range_max; 
+    } PlotPC;
     typedef struct LidarCallbackData { float x, y, w, h; } LidarCallbackData;
     typedef struct PlotCallbackData { uint32_t ch_id, field_offset, is_double; float range_min, range_max; float x, y, w, h; } PlotCallbackData;
     
@@ -47,6 +50,7 @@ ffi.cdef[[
     ImDrawList* igGetWindowDrawList(void);
     
     bool igSliderFloat(const char* label, float* v, float v_min, float v_max, const char* format, int flags);
+    bool igDragFloat(const char* label, float* v, float v_speed, float v_min, float v_max, const char* format, int flags);
     void igSetNextWindowPos(const ImVec2_c pos, int cond, const ImVec2_c pivot);
     void igSetNextWindowSize(const ImVec2_c size, int cond);
     bool igIsWindowHovered(int flags);
