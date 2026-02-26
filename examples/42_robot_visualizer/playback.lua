@@ -2,6 +2,7 @@ local ffi = require("ffi")
 require("examples.42_robot_visualizer.types")
 local robot = require("mc.robot")
 local mc = require("mc")
+local indexer = require("examples.42_robot_visualizer.indexer")
 
 local M = {
     mcap_path = "test_robot.mcap",
@@ -104,6 +105,7 @@ function M.load_mcap(path)
     M.end_time = robot.lib.mcap_get_end_time(M.bridge)
     M.current_time_ns, M.playback_time_ns, M.paused = M.start_time, M.start_time, true 
     
+    indexer.build(M.bridge)
     M.discover_topics()
     
     M._msg_anchor = ffi.new("McapMessage")
@@ -154,11 +156,15 @@ function M.update(dt, raw_buffer)
     if M.seek_to then
         -- Throttle seeks to 60Hz (once every 16ms)
         if tonumber(now_ms - M.last_seek_time) > 16 then
-            robot.lib.mcap_seek(M.bridge, M.seek_to)
-            M.playback_time_ns, M.seek_to = M.seek_to, nil
-            robot.lib.mcap_get_current(M.bridge, M.current_msg)
-            M.last_seek_time = now_ms
-            M.just_sought = true
+            local idx = indexer.find_index_for_time(M.seek_to)
+            local entry = indexer.get_entry(idx)
+            if entry then
+                robot.lib.mcap_seek_offset(M.bridge, entry.offset)
+                M.playback_time_ns, M.seek_to = M.seek_to, nil
+                robot.lib.mcap_get_current(M.bridge, M.current_msg)
+                M.last_seek_time = now_ms
+                M.just_sought = true
+            end
         end
     elseif not M.paused then
         M.playback_time_ns = M.playback_time_ns + ffi.cast("uint64_t", dt * 1e9 * M.speed)

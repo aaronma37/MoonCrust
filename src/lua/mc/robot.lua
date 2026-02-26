@@ -9,6 +9,7 @@ ffi.cdef[[
         const uint8_t* data;
         uint64_t data_size;
         uint32_t point_count;
+        uint64_t offset;
     } McapMessage;
 
     typedef struct McapChannelInfo {
@@ -27,6 +28,7 @@ ffi.cdef[[
     void mcap_advance(McapBridge* bridge);
     void mcap_rewind(McapBridge* bridge);
     void mcap_seek(McapBridge* bridge, uint64_t timestamp);
+    void mcap_seek_offset(McapBridge* bridge, uint64_t offset);
     uint64_t mcap_get_start_time(McapBridge* bridge);
     uint64_t mcap_get_end_time(McapBridge* bridge);
     uint32_t mcap_get_channel_count(McapBridge* bridge);

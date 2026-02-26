@@ -9,6 +9,7 @@
 #include <cmath>
 #include <algorithm>
 #include <cstring>
+#include <limits>
 
 #define EXPORT extern "C" __attribute__((visibility("default")))
 
@@ -20,6 +21,7 @@ struct McapMessage {
     const uint8_t* data;
     uint64_t data_size;
     uint32_t point_count;
+    uint64_t offset;
 };
 
 struct McapChannelInfoInternal {
@@ -181,6 +183,7 @@ EXPORT bool mcap_get_current(McapBridge* b, McapMessage* out) {
     out->sequence = m.message.sequence;
     out->data = reinterpret_cast<const uint8_t*>(m.message.data);
     out->data_size = m.message.dataSize;
+    out->offset = m.messageOffset.offset;
     
     // Automatic point count extraction (Silicon-Native)
     out->point_count = 0;
@@ -221,6 +224,13 @@ EXPORT void mcap_rewind(McapBridge* b) {
 EXPORT void mcap_seek(McapBridge* b, uint64_t timestamp) {
     if (!b) return;
     b->message_view = std::make_unique<mcap::LinearMessageView>(b->reader.readMessages(timestamp));
+    b->it = std::make_unique<mcap::LinearMessageView::Iterator>(b->message_view->begin());
+}
+
+EXPORT void mcap_seek_offset(McapBridge* b, uint64_t offset) {
+    if (!b) return;
+    auto onProblem = [](const mcap::Status&) {};
+    b->message_view = std::make_unique<mcap::LinearMessageView>(b->reader, mcap::ReadMessageOptions(), offset, std::numeric_limits<uint64_t>::max(), onProblem);
     b->it = std::make_unique<mcap::LinearMessageView::Iterator>(b->message_view->begin());
 }
 
