@@ -36,7 +36,7 @@ panels.register("telemetry", "Playback Controls", function(gui, node_id)
     gui.igSameLine(0, 5)
     gui.igText(string.format("%.1fx", playback.speed))
     gui.igSameLine(0, 10)
-    for _, s in ipairs({0.5, 1, 2, 5, 10, 100}) do
+    for _, s in ipairs({0.5, 1, 2, 5, 10, 100, 1000, 10000}) do
         if gui.igButton(tostring(s).."x", ui.V2_BTN_TINY) then playback.speed = s end
         gui.igSameLine(0, 2)
     end

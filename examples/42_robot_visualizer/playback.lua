@@ -24,6 +24,8 @@ local M = {
     last_lidar_points = 0,
     last_seek_time = 0ULL, -- Throttle seeks
     just_sought = false,
+    bytes_processed = 0,
+    throughput_mbs = 0,
     
     -- GTB (Global Telemetry Buffer)
     gtb = nil,
@@ -156,6 +158,7 @@ function M.update(dt, raw_buffer)
     if not M.bridge then return end
     
     local now_ms = ffi.C.SDL_GetTicks()
+    M.bytes_processed = 0
     if M.seek_to then
         -- Throttle seeks to 60Hz (once every 16ms)
         if tonumber(now_ms - M.last_seek_time) > 16 then
@@ -192,26 +195,28 @@ function M.update(dt, raw_buffer)
     end
 
     local msgs_processed = 0
+    local last_msg_for_ch = {} -- Track the last message seen this frame for each channel
+
     -- Condition: Process if live, or if we JUST sought (to update the frame)
     while (not M.paused or M.just_sought) and M.current_msg.log_time <= M.playback_time_ns do
-        if msgs_processed > 1000 then break end 
+        if msgs_processed > 20000 then break end 
         local ch_id = M.current_msg.channel_id
-        
-        if M.current_msg.data ~= nil then 
-            local buf = M.get_msg_buffer(ch_id)
-            if buf then
-                local sz = math.min(tonumber(M.current_msg.data_size), M.MSG_BUF_SIZE)
-                ffi.copy(buf.data, M.current_msg.data, sz)
-                buf.size = sz
-            end
-        end
         
         -- LiDAR point count (ZERO-COPY Silicon Extraction)
         if ch_id == M.lidar_ch_id then 
             M.last_lidar_points = M.current_msg.point_count
         end
+
+        -- Record that we saw a message for this channel
+        last_msg_for_ch[ch_id] = true
+        M.bytes_processed = M.bytes_processed + tonumber(M.current_msg.data_size)
         
         robot.lib.mcap_advance(M.bridge)
+        
+        -- If the NEXT message is for a different time or we hit the end, 
+        -- we should capture the data for the UI if needed. 
+        -- But actually, it's simpler: just capture the "current" data into the buffer 
+        -- only for the VERY LAST message processed in this loop.
         
         if not robot.lib.mcap_get_current(M.bridge, M.current_msg) then
             robot.lib.mcap_rewind(M.bridge)
@@ -220,8 +225,29 @@ function M.update(dt, raw_buffer)
             break
         end
         msgs_processed = msgs_processed + 1
-        M.just_sought = false -- Only need one loop to update the frame
+        M.just_sought = false 
     end
+
+    -- POST-LOOP: Synchronize the CPU buffers only for the channels that actually changed.
+    -- This ensures we only do ONE ffi.copy per active channel per frame,
+    -- instead of 5,000+ copies.
+    for ch_id, _ in pairs(last_msg_for_ch) do
+        local buf = M.get_msg_buffer(ch_id)
+        if buf then
+            -- We need to get the "latest" for this channel specifically
+            -- because the global iterator has already moved past it.
+            local latest = indexer.find_latest_for_channel(ch_id, M.playback_time_ns)
+            if latest then
+                local sz = math.min(tonumber(latest.size), M.MSG_BUF_SIZE)
+                robot.lib.mcap_load_into_buffer(M.bridge, latest.offset, sz, buf.data)
+                buf.size = sz
+            end
+        end
+    end
+    
+    local current_mbs = (M.bytes_processed / 1024 / 1024) / (dt > 0 and dt or 0.016)
+    M.throughput_mbs = M.throughput_mbs * 0.9 + current_mbs * 0.1
+    
     M.current_time_ns = M.playback_time_ns
 end
 

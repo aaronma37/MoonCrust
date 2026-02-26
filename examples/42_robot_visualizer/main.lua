@@ -12,6 +12,7 @@ local mc = require("mc")
 local bit = require("bit")
 
 local imgui = require("imgui")
+_G.imgui = imgui
 
 require("examples.42_robot_visualizer.types")
 local playback = require("examples.42_robot_visualizer.playback")
@@ -362,7 +363,7 @@ function M.update()
     ui_context.init(ui_buffers[f_idx + 1].allocation.ptr, MAX_UI_ELEMENTS)
     ui_context.reset()
     
-    imgui.new_frame(); theme.apply(imgui.gui); M.header.draw(imgui.gui); render_node(state.layout, 0, 50, win_w, win_h - 50, imgui.gui)
+    imgui.new_frame(); theme.apply(imgui.gui); M.header.draw(imgui.gui); render_node(state.layout, 0, 40, win_w, win_h - 40, imgui.gui)
     local cb = command_buffers[f_idx]; vk.vkResetCommandBuffer(cb, 0); vk.vkBeginCommandBuffer(cb, static.cb_begin)
     local out_idx, pt_cnt = (f_idx == 0) and 11 or 13, playback.last_lidar_points
     local in_off, str_u, pos_off = 0, 3, 0

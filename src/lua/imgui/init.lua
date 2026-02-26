@@ -49,6 +49,16 @@ function M.get_glyph_ranges_default()
     return ffi_lib.ImFontAtlas_GetGlyphRangesDefault(ffi_lib.igGetIO_Nil().Fonts)
 end
 
+function M.get_font(index)
+    local io = ffi_lib.igGetIO_Nil()
+    local fonts = io.Fonts.Fonts
+    if index >= 0 and index < fonts.Size then
+        local data = ffi.cast("void**", fonts.Data)
+        return data[index]
+    end
+    return nil
+end
+
 function M.build_and_upload_fonts()
     local io = ffi_lib.igGetIO_Nil()
     

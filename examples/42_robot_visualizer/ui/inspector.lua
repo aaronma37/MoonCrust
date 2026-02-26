@@ -1,6 +1,7 @@
 local ffi = require("ffi")
 require("examples.42_robot_visualizer.types")
 local bit = require("bit")
+local imgui = require("imgui")
 local panels = require("examples.42_robot_visualizer.ui.panels")
 local playback = require("examples.42_robot_visualizer.playback")
 local robot = require("mc.robot")
@@ -55,7 +56,7 @@ panels.register("pretty_viewer", "Pretty Message Viewer", function(gui, node_id,
                 if gui.igTreeNode_Str(icons.CHART .. " Live Values (GPU Parsed)") then
                     gui.igTextColored(ui.V4_LIVE, "SILICON-DIRECT PIPELINE ACTIVE")
                     
-                    local small_font = imgui.get_font(1)
+                    local small_font = _G.imgui.get_font(1)
                     if small_font then gui.igPushFont(small_font) end
                     
                     if gui.igBeginTable("ValueTable", 2, bit.bor(panels.Flags.TableBorders, panels.Flags.TableResizable), ui.V2_ZERO, 0) then
