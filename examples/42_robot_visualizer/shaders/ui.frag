@@ -21,53 +21,31 @@ float sdRoundedRect(vec2 p, vec2 b, float r) {
 }
 
 void main() {
-    // 1. ClipRect Discard
-    vec2 fragCoord = gl_FragCoord.xy;
-    if (fragCoord.x < vClip.x || fragCoord.y < vClip.y || fragCoord.x > vClip.z || fragCoord.y > vClip.w) {
-        discard;
-    }
-
-    // 2. SDF Rendering
     vec2 center = vPos + vSize * 0.5;
-    vec2 p = fragCoord - center;
+    vec2 p = gl_FragCoord.xy - center;
     float d = sdRoundedRect(p, vSize * 0.5, vRounding);
     float alpha = 1.0 - smoothstep(-0.5, 0.5, d);
     
-    if (vType == 0) { // Frame / Window
-        oColor = vColor;
-        oColor.a *= alpha;
-    } else if (vType == 1) { // Button
-        oColor = vColor;
-        if ((vFlags & 1) != 0) oColor.rgb += 0.1;
-        if ((vFlags & 2) != 0) oColor.rgb -= 0.1;
-        oColor.a *= alpha;
-    } else if (vType == 2) { // Plot Area / 3D Viewport (Aperture)
-        // Sample telemetry texture using bindless index in vExtra
-        uint texIdx = nonuniformEXT(vExtra);
-        vec4 texColor = texture(all_textures[texIdx], vUV);
-        
-        // If it's a plot (Index 105), apply a simple thickness boost via multi-tap sampling
-        if (vExtra == 105) {
-            float off = 0.0015; // Offset for thickening
-            texColor += texture(all_textures[texIdx], vUV + vec2(off, 0));
-            texColor += texture(all_textures[texIdx], vUV + vec2(-off, 0));
-            texColor += texture(all_textures[texIdx], vUV + vec2(0, off));
-            texColor += texture(all_textures[texIdx], vUV + vec2(0, -off));
-            texColor *= 0.25; // Normalize and boost brightness
-            texColor.rgb *= 1.5; 
-        }
-        
-        oColor = vec4(texColor.rgb, texColor.a * alpha);
-    } else if (vType == 3) { // Slider
-        float progress = float(vExtra) / 1000.0;
-        if (vUV.x < progress) {
-            oColor = vec4(vColor.rgb * 1.5, vColor.a * alpha); // Filled part
+    if (vType == 2) { 
+        if (vExtra == 0) {
+            oColor = vec4(1.0, 0.0, 1.0, 1.0); 
         } else {
-            oColor = vec4(vColor.rgb * 0.5, vColor.a * alpha); // Background part
+            uint texIdx = nonuniformEXT(vExtra);
+            vec4 texColor = texture(all_textures[texIdx], vUV);
+            
+            // THICKENING KERNEL for Plots
+            if (vExtra == 105) {
+                float off = 0.0015; // Sample offset
+                texColor += texture(all_textures[texIdx], vUV + vec2(off, 0));
+                texColor += texture(all_textures[texIdx], vUV + vec2(-off, 0));
+                texColor += texture(all_textures[texIdx], vUV + vec2(0, off));
+                texColor += texture(all_textures[texIdx], vUV + vec2(0, -off));
+                texColor *= 0.5; // Merge and boost
+                texColor.rgb *= 2.0; 
+            }
+            
+            oColor = vec4(texColor.rgb, texColor.a * alpha);
         }
-    } else if (vType == 4) { // Separator
-        oColor = vColor;
-        oColor.a *= alpha;
     } else {
         oColor = vColor;
         oColor.a *= alpha;

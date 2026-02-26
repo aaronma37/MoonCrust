@@ -87,17 +87,18 @@ panels.register("pretty_viewer", "Pretty Message Viewer", function(gui, node_id,
 end)
 
 panels.register("plotter", "Topic Plotter", function(gui, node_id, params)
-    if not panels.states[node_id] then
-        panels.states[node_id] = { 
-            selected_ch = nil, filter = ffi.new("char[128]"), field_name = nil, schema = nil, flattened = nil, 
-            facet_synced = false, gpu_mode = true, range_min = 0.0, range_max = 20.0, 
-            -- Pre-allocated callback data block (PERSISTENT ANCHOR)
-            cb_data = ffi.new("PlotCallbackData"),
-            p_gpu = ffi.new("bool[1]", true),
-            p_limits = ffi.new("ImPlotRect_c[1]"),
-            p_tex = ffi.new("ImTextureRef_c", { nil, 105ULL }),
-            p_p1 = ffi.new("ImPlotPoint_c"),
-            p_p2 = ffi.new("ImPlotPoint_c"),
+            if not panels.states[node_id] then
+                local tex = ffi.new("ImTextureRef_c")
+                tex._TexID = 105ULL
+                panels.states[node_id] = { 
+                    selected_ch = nil, filter = ffi.new("char[128]"), field_name = nil, schema = nil, flattened = nil, 
+                    facet_synced = false, gpu_mode = true, range_min = 0.0, range_max = 20.0, 
+                    -- Pre-allocated callback data block (PERSISTENT ANCHOR)
+                    cb_data = ffi.new("PlotCallbackData"),
+                    p_gpu = ffi.new("bool[1]", true),
+                    p_limits = ffi.new("ImPlotRect_c[1]"),
+                    p_tex = tex,
+                    p_p1 = ffi.new("ImPlotPoint_c"),            p_p2 = ffi.new("ImPlotPoint_c"),
             p_uv0 = ffi.new("ImVec2_c", {0, 1}),
             p_uv1 = ffi.new("ImVec2_c", {1, 0}),
             p_spec = ffi.new("ImPlotSpec_c")
@@ -171,7 +172,7 @@ panels.register("plotter", "Topic Plotter", function(gui, node_id, params)
                     
                     p_state.p_p1.x, p_state.p_p1.y = 0, cur_min
                     p_state.p_p2.x, p_state.p_p2.y = playback.HISTORY_MAX, cur_max
-                    gui.ImPlot_PlotImage("##gpu_plot", p_state.p_tex, p_state.p_p1, p_state.p_p2, p_state.p_uv0, p_state.p_uv1, ui.V4_WHITE, p_state.p_spec)
+                    gui.ImPlot_PlotImage("##gpu_plot", p_state.p_tex, p_state.p_p1, p_state.p_p2, ui.V2_ZERO, ui.V2_ONE, ui.V4_WHITE, p_state.p_spec)
                 else
                     local h = playback.request_field_history(p_state.selected_ch.id, target.offset, target.is_double)
                     if h and h.count > 0 then gui.ImPlot_PlotLine_FloatPtrInt(p_state.field_name, h.data, h.count, 1.0, 0.0, ffi.new("ImPlotSpec_c", {Stride=4})) end
