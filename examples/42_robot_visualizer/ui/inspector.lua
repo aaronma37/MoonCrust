@@ -130,29 +130,25 @@ panels.register("plotter", "Topic Plotter", function(gui, node_id, params)
     p_state.p_gpu[0] = p_state.gpu_mode
     if gui.igCheckbox("GPU", p_state.p_gpu) then p_state.gpu_mode = p_state.p_gpu[0] end
 
-    if p_state.selected_ch and p_state.field_name then
-        gui.igSetNextItemWidth(100)
-        local p_min = ffi.new("float[1]", p_state.range_min)
-        if gui.igDragFloat("Min", p_min, 0.1, -1000, 1000, "%.2f", 0) then p_state.range_min = p_min[0] end
-        gui.igSameLine(0, 5)
-        gui.igSetNextItemWidth(100)
-        local p_max = ffi.new("float[1]", p_state.range_max)
-        if gui.igDragFloat("Max", p_max, 0.1, -1000, 1000, "%.2f", 0) then p_state.range_max = p_max[0] end
-    end
-
     if p_state.selected_ch and p_state.field_name and p_state.flattened then
         local target = nil
         for _, f in ipairs(p_state.flattened) do if f.name == p_state.field_name then target = f; break end end
         if target then
             if gui.ImPlot_BeginPlot(string.format("%s: %s", p_state.selected_ch.topic, p_state.field_name), ui.V2_FULL, 0) then
                 gui.ImPlot_SetupAxis(0, "History (Time)", 0); gui.ImPlot_SetupAxis(1, "Value", 0)
+                
+                local limits = gui.ImPlot_GetPlotLimits(0, 3)
+                local cur_min, cur_max = limits.Y.Min, limits.Y.Max
+                
                 if p_state.gpu_mode then
                     local p_min, p_max = gui.ImPlot_GetPlotPos(), gui.ImPlot_GetPlotSize()
                     local d = p_state.cb_data
                     d.ch_id, d.field_offset, d.is_double = p_state.selected_ch.id, target.offset, target.is_double and 1 or 0
-                    d.range_min, d.range_max, d.x, d.y, d.w, d.h = p_state.range_min, p_state.range_max, p_min.x, p_min.y, p_max.x, p_max.y
+                    d.range_min, d.range_max, d.x, d.y, d.w, d.h = cur_min, cur_max, p_min.x, p_min.y, p_max.x, p_max.y
                     require("examples.42_robot_visualizer.view_3d").enqueue_plot(d)
-                    gui.ImPlot_PlotImage("##gpu_plot", ffi.new("ImTextureRef_c", { _TexID = 105ULL }), ffi.new("ImPlotPoint_c", {x=0, y=p_state.range_min}), ffi.new("ImPlotPoint_c", {x=playback.HISTORY_MAX, y=p_state.range_max}), ffi.new("ImVec2_c", {0, 1}), ffi.new("ImVec2_c", {1, 0}), ui.V4_LIVE, ffi.new("ImPlotSpec_c"))
+                    
+                    -- Use the CURRENT interactive limits for the texture placement
+                    gui.ImPlot_PlotImage("##gpu_plot", ffi.new("ImTextureRef_c", { _TexID = 105ULL }), ffi.new("ImPlotPoint_c", {x=0, y=cur_min}), ffi.new("ImPlotPoint_c", {x=playback.HISTORY_MAX, y=cur_max}), ffi.new("ImVec2_c", {0, 1}), ffi.new("ImVec2_c", {1, 0}), ui.V4_LIVE, ffi.new("ImPlotSpec_c"))
                 else
                     local h = playback.request_field_history(p_state.selected_ch.id, target.offset, target.is_double)
                     if h and h.count > 0 then gui.ImPlot_PlotLine_FloatPtrInt(p_state.field_name, h.data, h.count, 1.0, 0.0, ffi.new("ImPlotSpec_c", {Stride=4})) end

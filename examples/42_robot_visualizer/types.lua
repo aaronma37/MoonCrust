@@ -91,9 +91,13 @@ ffi.cdef[[
     void igImage(ImTextureRef_c tex_ref, const ImVec2_c image_size, const ImVec2_c uv0, const ImVec2_c uv1);
     uint64_t SDL_GetTicks(void);
     typedef struct ImPlotPoint_c { double x, y; } ImPlotPoint_c;
+    typedef struct ImPlotRange_c { double Min, Max; } ImPlotRange_c;
+    typedef struct ImPlotRect_c { ImPlotRange_c X, Y; } ImPlotRect_c;
+    
     void ImPlot_SetupAxis(int axis, const char* label, int flags);
     void ImPlot_SetupAxisLimits(int axis, double v_min, double v_max, int cond);
     void ImPlot_SetupAxes(const char* x_label, const char* y_label, ImPlotFlags x_flags, ImPlotFlags y_flags);
+    ImPlotRect_c ImPlot_GetPlotLimits(int x_axis, int y_axis);
     void ImPlot_PlotImage(const char* label_id, ImTextureRef_c tex_ref, const ImPlotPoint_c bounds_min, const ImPlotPoint_c bounds_max, const ImVec2_c uv0, const ImVec2_c uv1, const ImVec4_c tint_col, const ImPlotSpec_c spec);
 ]]
 
