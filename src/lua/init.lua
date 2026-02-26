@@ -48,6 +48,7 @@ local examples = {
     ["40"] = "examples.40_particle_term.main",
     ["41"] = "examples.41_imgui_visualizer.main",
     ["42"] = "examples.42_robot_visualizer.main",
+    ["43"] = "examples.43_forward_plus.main",
 }
 
 -- Default to the flagship if no arg provided

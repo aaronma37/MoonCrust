@@ -1,0 +1,75 @@
+#version 450
+
+layout(local_size_x = 16, local_size_y = 1, local_size_z = 1) in;
+
+struct ClusterAABB {
+    vec4 min;
+    vec4 max;
+};
+
+struct Light {
+    vec4 pos_radius; // xyz: view space pos, w: radius
+    vec4 color;      // rgb: color, w: intensity
+};
+
+struct ClusterItem {
+    uint offset;
+    uint count;
+};
+
+layout(std430, set = 0, binding = 0) buffer ClusterAABBBuffer { ClusterAABB clusters[]; };
+layout(std430, set = 0, binding = 1) buffer LightBuffer { Light lights[]; };
+layout(std430, set = 0, binding = 2) buffer ClusterItemBuffer { ClusterItem cluster_items[]; };
+layout(std430, set = 0, binding = 3) buffer LightIndexBuffer { uint light_indices[]; };
+layout(std430, set = 0, binding = 4) buffer GlobalCounter { uint global_index_count; };
+
+layout(push_constant) uniform PushConstants {
+    mat4 view;
+    uint total_lights;
+} pc;
+
+shared uint shared_light_count;
+shared uint shared_light_indices[256];
+shared uint shared_global_offset;
+
+bool intersect(ClusterAABB aabb, Light light) {
+    float d2 = 0.0;
+    for (int i = 0; i < 3; i++) {
+        float v = light.pos_radius[i];
+        if (v < aabb.min[i]) d2 += (aabb.min[i] - v) * (aabb.min[i] - v);
+        if (v > aabb.max[i]) d2 += (v - aabb.max[i]) * (v - aabb.max[i]);
+    }
+    return d2 <= (light.pos_radius.w * light.pos_radius.w);
+}
+
+void main() {
+    uint cluster_index = gl_WorkGroupID.x + gl_WorkGroupID.y * gl_NumWorkGroups.x + gl_WorkGroupID.z * gl_NumWorkGroups.x * gl_NumWorkGroups.y;
+    ClusterAABB aabb = clusters[cluster_index];
+
+    if (gl_LocalInvocationIndex == 0) {
+        shared_light_count = 0;
+    }
+    barrier();
+
+    for (uint i = gl_LocalInvocationIndex; i < pc.total_lights; i += gl_WorkGroupSize.x) {
+        Light l = lights[i];
+        if (intersect(aabb, l)) {
+            uint idx = atomicAdd(shared_light_count, 1);
+            if (idx < 256) {
+                shared_light_indices[idx] = i;
+            }
+        }
+    }
+    barrier();
+
+    if (gl_LocalInvocationIndex == 0) {
+        shared_global_offset = atomicAdd(global_index_count, shared_light_count);
+        cluster_items[cluster_index].offset = shared_global_offset;
+        cluster_items[cluster_index].count = shared_light_count;
+    }
+    barrier();
+
+    for (uint i = gl_LocalInvocationIndex; i < shared_light_count; i += gl_WorkGroupSize.x) {
+        light_indices[shared_global_offset + i] = shared_light_indices[i];
+    }
+}

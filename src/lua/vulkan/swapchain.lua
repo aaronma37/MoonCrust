@@ -82,6 +82,7 @@ function M.new(instance, physical_device, device, window, old_swapchain, use_srg
 
     -- Views
     self.views = ffi.new("VkImageView[?]", self.image_count)
+    self.semaphores = ffi.new("VkSemaphore[?]", self.image_count)
     for i = 0, self.image_count - 1 do
         local viewInfo = ffi.new("VkImageViewCreateInfo", {
             sType = vk.VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
@@ -93,6 +94,11 @@ function M.new(instance, physical_device, device, window, old_swapchain, use_srg
         local pView = ffi.new("VkImageView[1]")
         vk.vkCreateImageView(device, viewInfo, nil, pView)
         self.views[i] = pView[0]
+
+        local semInfo = ffi.new("VkSemaphoreCreateInfo", { sType = vk.VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO })
+        local pSem = ffi.new("VkSemaphore[1]")
+        vk.vkCreateSemaphore(device, semInfo, nil, pSem)
+        self.semaphores[i] = pSem[0]
     end
 
     return self
@@ -129,6 +135,9 @@ function M:cleanup()
     for i = 0, self.image_count - 1 do
         if self.views[i] ~= nil then
             vk.vkDestroyImageView(self.device, self.views[i], nil)
+        end
+        if self.semaphores[i] ~= nil then
+            vk.vkDestroySemaphore(self.device, self.semaphores[i], nil)
         end
     end
     -- We do NOT use resource.free here for the swapchain handle itself 

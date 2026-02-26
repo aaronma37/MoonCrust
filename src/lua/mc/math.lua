@@ -123,6 +123,18 @@ function M.mat4_inverse(m, out)
     return inv
 end
 
+function M.mat4_vec4_multiply(m, v)
+    local out = {0, 0, 0, 0}
+    for i = 1, 4 do
+        local sum = 0
+        for j = 1, 4 do
+            sum = sum + m.m[(j-1)*4 + (i-1)] * v[j]
+        end
+        out[i] = sum
+    end
+    return out
+end
+
 function M.rad(deg) return deg * (math.pi / 180.0) end
 
 return M

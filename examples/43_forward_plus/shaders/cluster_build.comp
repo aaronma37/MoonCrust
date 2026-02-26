@@ -1,0 +1,71 @@
+#version 450
+
+layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+
+struct ClusterAABB {
+    vec4 min;
+    vec4 max;
+};
+
+layout(std430, set = 0, binding = 0) buffer ClusterAABBBuffer {
+    ClusterAABB clusters[];
+};
+
+layout(push_constant) uniform PushConstants {
+    mat4 inv_proj;
+    vec2 screen_size;
+    float z_near;
+    float z_far;
+    uint cluster_x;
+    uint cluster_y;
+    uint cluster_z;
+} pc;
+
+vec4 screenToView(vec4 screen) {
+    vec2 uv = screen.xy / pc.screen_size;
+    vec4 clip = vec4(uv * 2.0 - 1.0, screen.z, 1.0);
+    vec4 view = pc.inv_proj * clip;
+    return view / view.w;
+}
+
+void main() {
+    uint x = gl_WorkGroupID.x;
+    uint y = gl_WorkGroupID.y;
+    uint z = gl_WorkGroupID.z;
+    uint index = x + y * pc.cluster_x + z * pc.cluster_x * pc.cluster_y;
+
+    vec2 tileSize = pc.screen_size / vec2(pc.cluster_x, pc.cluster_y);
+    
+    // Calculate 4 corners at the near plane of this cluster's depth slice
+    // Slice depth calculation (logarithmic)
+    float z_near_slice = pc.z_near * pow(pc.z_far / pc.z_near, float(z) / float(pc.cluster_z));
+    float z_far_slice = pc.z_near * pow(pc.z_far / pc.z_near, float(z + 1) / float(pc.cluster_z));
+
+    // Screen corners for this tile
+    vec2 screen_min = vec2(x, y) * tileSize;
+    vec2 screen_max = vec2(x + 1, y + 1) * tileSize;
+
+    // View-space corners
+    // Note: p.z is near plane depth in NDC, we project these to the slice depths
+    vec3 p0 = screenToView(vec4(screen_min, 0.0, 1.0)).xyz; // near top-left
+    vec3 p1 = screenToView(vec4(screen_max, 0.0, 1.0)).xyz; // near bottom-right
+    vec3 p2 = screenToView(vec4(screen_max.x, screen_min.y, 0.0, 1.0)).xyz; 
+    vec3 p3 = screenToView(vec4(screen_min.x, screen_max.y, 0.0, 1.0)).xyz;
+
+    // Project corners to near and far slices
+    // Since view-space Z is negative, we scale by (slice_depth / -p.z)
+    vec3 v0_near = p0 * (z_near_slice / -p0.z);
+    vec3 v0_far  = p0 * (z_far_slice / -p0.z);
+    vec3 v1_near = p1 * (z_near_slice / -p1.z);
+    vec3 v1_far  = p1 * (z_far_slice / -p1.z);
+    vec3 v2_near = p2 * (z_near_slice / -p2.z);
+    vec3 v2_far  = p2 * (z_far_slice / -p2.z);
+    vec3 v3_near = p3 * (z_near_slice / -p3.z);
+    vec3 v3_far  = p3 * (z_far_slice / -p3.z);
+
+    vec3 min_view = min(v0_near, min(v0_far, min(v1_near, min(v1_far, min(v2_near, min(v2_far, min(v3_near, v3_far)))))));
+    vec3 max_view = max(v0_near, max(v0_far, max(v1_near, max(v1_far, max(v2_near, max(v2_far, max(v3_near, v3_far)))))));
+
+    clusters[index].min = vec4(min_view, 1.0);
+    clusters[index].max = vec4(max_view, 1.0);
+}

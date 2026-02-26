@@ -88,6 +88,14 @@ function M.buffer(size, usage_type, initial_data, host_visible)
         destroy = function(self)
             resource.free(self.handle, resource.TYPE_BUFFER)
             heap_obj:free(self.allocation)
+        end,
+        upload = function(self, data, offset)
+            if self.allocation.ptr then
+                ffi.copy(self.allocation.ptr + (offset or 0), data, self.size - (offset or 0))
+            else
+                local st = staging.new(pd, d, M.heaps.host, self.size + 1024)
+                st:upload_buffer(self.handle, data, offset or 0, q, family, self.size - (offset or 0))
+            end
         end
     }
     
