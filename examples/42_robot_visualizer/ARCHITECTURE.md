@@ -31,11 +31,18 @@ Instead of injecting brittle Vulkan callbacks *inside* the ImGui draw list (whic
 *   **Zero CPU Deserialization**: The CPU never reads or casts the bytes in the mainline.
 
 ### 2. Parameterized GPU Kernels
-*   `generic_plotter.comp`: Maps 100k points to window pixels, calculating min/max per-pixel column in parallel.
+*   `parser.comp` (Lidar Mode): Maps raw LiDAR bytes to vertex positions in parallel.
+*   `parser.comp` (Universal Telemetry Mode): A **Bytecode VM** that sequentially decodes dynamic MCAP/CDR payloads (handling shifting offsets from strings and sequences) without CPU intervention.
 *   `text_grid.comp`: A character-generation shader. It performs float-to-ascii conversion inside the shader and selects quads from the Roboto atlas.
 *   `tf_resolver.comp`: Solves the kinematic transform tree on the GPU.
 
-### 3. GPU-Side Filtering & Selection
+### 3. The Schema Bytecode VM (Interpreter Pattern)
+Traditional parallel parsing fails when schema offsets shift dynamically (due to variable-length strings or sequences). We solve this using a hybrid approach:
+*   **Compiler (Lua)**: When a channel is opened, the CPU walks the schema once and emits a compact 16-byte instruction stream (`OP_STATIC`, `OP_STRING`, `OP_DYN_ARRAY`).
+*   **Interpreter (GPU)**: A single-threaded GPU kernel executes this bytecode against the raw message buffer, maintaining a precise read-pointer that handles CDR alignment and dynamic jumps.
+*   **Output**: Flattened telemetry data is written to a dedicated storage buffer, ready for the UI or Plotter to consume.
+
+### 4. GPU-Side Filtering & Selection
 *   Filtering logic (e.g., "Only show Speed > 10") is passed as a push constant.
 *   The GPU performs the search and compaction, only rendering the matching data rows.
 
@@ -55,4 +62,5 @@ Instead of injecting brittle Vulkan callbacks *inside* the ImGui draw list (whic
 ## 🚀 Implementation Roadmap
 1.  **[DONE] Global Telemetry Buffer**: High-speed blitting from C++ to GPU.
 2.  **[DONE] Render-To-Texture Plotter**: Decoupling line rendering to an offscreen buffer (Aperture Pattern).
-3.  **[CURRENT] GPU Text Renderer**: Moving the telemetry `pretty_viewer` table to the GPU to entirely eliminate CPU string deserialization.
+3.  **[DONE] GPU Bytecode VM**: Decoupling schema parsing from the CPU (Interpreter Pattern).
+4.  **[CURRENT] GPU Text Renderer**: Moving the telemetry `pretty_viewer` table to the GPU to entirely eliminate CPU string deserialization.

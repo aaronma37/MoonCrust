@@ -3,34 +3,55 @@
 
 layout(location = 0) out vec4 vColor;
 layout(location = 1) out vec3 vPos;
-layout(location = 2) out vec3 vNormal;
+layout(location = 2) out vec2 vUV;
 
-layout(set = 0, binding = 0) buffer Data { vec4 pos[]; } all_buffers[];
+layout(set = 0, binding = 0) buffer Data
+{
+  vec4 pos[];
+}
+all_buffers[];
 
-layout(push_constant) uniform PC {
-    mat4 view_proj;
-    uint buf_idx;
-    float point_size;
-    vec4 pose_offset; // [x, y, z, yaw]
-} pc;
+layout(push_constant) uniform PC
+{
+  mat4 view_proj;
+  uint buf_idx;
+  float point_size;
+  float vw, vh;
+  float pose_x, pose_y, pose_z, pose_yaw;
+}
+pc;
 
-void main() {
-    vec4 p = all_buffers[nonuniformEXT(pc.buf_idx)].pos[gl_VertexIndex];
-    
-    // Rotate and Translate if pose_offset is provided
-    float s = sin(pc.pose_offset.w);
-    float c = cos(pc.pose_offset.w);
-    vec3 worldPos;
-    worldPos.x = p.x * c - p.y * s + pc.pose_offset.x;
-    worldPos.y = p.x * s + p.y * c + pc.pose_offset.y;
-    worldPos.z = p.z + pc.pose_offset.z;
+void main()
+{
+  uint pt_idx = gl_InstanceIndex;
+  uint v_idx = gl_VertexIndex;
 
-    gl_Position = pc.view_proj * vec4(worldPos, 1.0);
-    gl_PointSize = pc.point_size;
-    
-    // High-visibility height ramp
-    float h = p.z * 0.2 + 0.5;
-    vColor = vec4(vec3(0.2, 0.6, 1.0) * h + vec3(0.1, 0.1, 0.2), 1.0);
-    vPos = worldPos;
-    vNormal = vec3(0.0, 0.0, 1.0);
+  vec4 p = all_buffers[nonuniformEXT(pc.buf_idx)].pos[pt_idx];
+
+  // Rotate and Translate
+  float s = sin(pc.pose_yaw);
+  float c = cos(pc.pose_yaw);
+  vec3 worldPos;
+  worldPos.x = p.x * c - p.y * s + pc.pose_x;
+  worldPos.y = p.x * s + p.y * c + pc.pose_y;
+  worldPos.z = p.z + pc.pose_z;
+
+  vec4 viewPos = pc.view_proj * vec4(worldPos, 1.0);
+
+  // Quad corner offsets (-1 to 1)
+  vec2 corners[4] = vec2[](vec2(-1.0, -1.0), vec2(1.0, -1.0), vec2(-1.0, 1.0), vec2(1.0, 1.0));
+  vec2 offset = corners[v_idx];
+  vUV = offset;
+
+  float ps = 8.0;
+  vec2 vs = (pc.vw < 1.0) ? vec2(1920.0, 1080.0) : vec2(pc.vw, pc.vh);
+  vec2 size = vec2(ps) / vs;
+
+  gl_Position = viewPos;
+  gl_Position.xy += offset * size * viewPos.w;
+
+  // Bright HDR Blue for maximum visibility
+  float h = p.z * 0.2 + 0.5;
+  vColor = vec4(vec3(0.0, 0.5, 1.0) * h + vec3(0.0, 0.1, 0.4), 1.0);
+  vPos = worldPos;
 }

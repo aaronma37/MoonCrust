@@ -11,9 +11,9 @@ layout(set = 0, binding = 0) buffer Data { uint u32[]; } all_buffers[];
 layout(push_constant) uniform PC {
     mat4 view_proj;
     uint buf_idx;
-    float point_size; 
-    vec2 viewport_size;
-    float pose_offset[4];
+    float point_size;
+    float vw, vh;
+    float pose_x, pose_y, pose_z, pose_yaw;
 } pc;
 
 void main() {
@@ -43,9 +43,11 @@ void main() {
     vec4 clip0 = pc.view_proj * vec4(p0, 1.0);
     vec4 clip1 = pc.view_proj * vec4(p1, 1.0);
     
+    vec2 viewport_size = vec2(pc.vw, pc.vh);
+    
     // Project to screen space
-    vec2 screen0 = (clip0.xy / clip0.w) * pc.viewport_size * 0.5;
-    vec2 screen1 = (clip1.xy / clip1.w) * pc.viewport_size * 0.5;
+    vec2 screen0 = (clip0.xy / clip0.w) * viewport_size * 0.5;
+    vec2 screen1 = (clip1.xy / clip1.w) * viewport_size * 0.5;
     
     vec2 dir = screen1 - screen0;
     float len = length(dir);
@@ -68,12 +70,12 @@ void main() {
     vec4 pos = vec4(0);
     
     // Expansion logic
-    if (vertex_in_segment == 0) { pos = clip0; pos.xy += (normal * expanded_thickness * clip0.w) / pc.viewport_size; side = -1.0; }
-    else if (vertex_in_segment == 1) { pos = clip0; pos.xy -= (normal * expanded_thickness * clip0.w) / pc.viewport_size; side = 1.0; }
-    else if (vertex_in_segment == 2) { pos = clip1; pos.xy += (normal * expanded_thickness * clip1.w) / pc.viewport_size; side = -1.0; }
-    else if (vertex_in_segment == 3) { pos = clip1; pos.xy += (normal * expanded_thickness * clip1.w) / pc.viewport_size; side = -1.0; }
-    else if (vertex_in_segment == 4) { pos = clip0; pos.xy -= (normal * expanded_thickness * clip0.w) / pc.viewport_size; side = 1.0; }
-    else if (vertex_in_segment == 5) { pos = clip1; pos.xy -= (normal * expanded_thickness * clip1.w) / pc.viewport_size; side = 1.0; }
+    if (vertex_in_segment == 0) { pos = clip0; pos.xy += (normal * expanded_thickness * clip0.w) / viewport_size; side = -1.0; }
+    else if (vertex_in_segment == 1) { pos = clip0; pos.xy -= (normal * expanded_thickness * clip0.w) / viewport_size; side = 1.0; }
+    else if (vertex_in_segment == 2) { pos = clip1; pos.xy += (normal * expanded_thickness * clip1.w) / viewport_size; side = -1.0; }
+    else if (vertex_in_segment == 3) { pos = clip1; pos.xy += (normal * expanded_thickness * clip1.w) / viewport_size; side = -1.0; }
+    else if (vertex_in_segment == 4) { pos = clip0; pos.xy -= (normal * expanded_thickness * clip0.w) / viewport_size; side = 1.0; }
+    else if (vertex_in_segment == 5) { pos = clip1; pos.xy -= (normal * expanded_thickness * clip1.w) / viewport_size; side = 1.0; }
 
     vColor = color;
     vPos = (vertex_in_segment < 2 || vertex_in_segment == 4) ? p0 : p1;

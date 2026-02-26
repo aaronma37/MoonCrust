@@ -17,6 +17,7 @@ local M = {
     current_msg = ffi.new("McapMessage"),
     channels = {},
     lidar_ch_id = 0,
+    lidar_topic = "/livox/lidar",
     pose_ch_id = 0,
     robot_pose = { x = 0, y = 0, z = 0, yaw = 0 },
     plot_history = {}, 
@@ -126,6 +127,8 @@ function M.discover_topics()
     local configured_count = 0
     for i=0, count-1 do
         if robot.lib.mcap_get_channel_info(M.bridge, i, info) then
+                local t = ffi.string(info.topic)
+                if t == M.lidar_topic then M.lidar_ch_id = info.id end
             if info.topic ~= nil then
                 local t = ffi.string(info.topic)
                 local ch = { id = info.id, topic = t, encoding = ffi.string(info.message_encoding or "u"), schema = ffi.string(info.schema_name or "u"), active = true, gtb_offset = nil }

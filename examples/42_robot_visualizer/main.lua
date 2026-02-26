@@ -360,7 +360,19 @@ function M.update()
     local v3d_pms = find_pms(state.layout, config)
     if type(v3d_pms) == "boolean" then v3d_pms = nil end 
     
-    if v3d_pms and v3d_pms.objects then for _, o in ipairs(v3d_pms.objects) do if o.type == "lidar" and o.topic == "/livox/lidar" then in_off, str_u, pos_off = 8, 5, 1; break end end end
+        if v3d_pms and v3d_pms.objects then 
+        for _, o in ipairs(v3d_pms.objects) do 
+            if o.type == "lidar" and o.topic == playback.lidar_topic then 
+                in_off, str_u, pos_off = 8, 5, 1
+                if playback.channels then
+                    for _, ch in ipairs(playback.channels) do
+                        if ch.topic == o.topic then playback.lidar_ch_id = ch.id; break end
+                    end
+                end
+                break 
+            end 
+        end 
+    end
     
     playback.update(dt, nil); view_3d.update_robot_buffer(f_idx, v3d_pms)
     static.pc_p.in_buf_idx, static.pc_p.in_offset_u32, static.pc_p.out_buf_idx, static.pc_p.count = 50, lidar_gtb_off / 4, out_idx, pt_cnt

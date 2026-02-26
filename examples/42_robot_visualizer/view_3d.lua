@@ -67,8 +67,8 @@ function M.init(device, bindless_set, sw)
     local v_point = shader.create_module(device, shader.compile_glsl(io.open("examples/42_robot_visualizer/shaders/def_point.vert"):read("*all"), vk.VK_SHADER_STAGE_VERTEX_BIT))
     local f_point = shader.create_module(device, shader.compile_glsl(io.open("examples/42_robot_visualizer/shaders/def_point.frag"):read("*all"), vk.VK_SHADER_STAGE_FRAGMENT_BIT))
     M.pipe_render_g = pipeline.create_graphics_pipeline(device, M.pipe_layout, v_point, f_point, { 
-        topology = vk.VK_PRIMITIVE_TOPOLOGY_POINT_LIST, 
-        alpha_blend = false, color_formats = { vk.VK_FORMAT_R8G8B8A8_UNORM, vk.VK_FORMAT_R16G16B16A16_SFLOAT, vk.VK_FORMAT_R32G32B32A32_SFLOAT },
+        topology = vk.VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP, 
+        alpha_blend = true, color_formats = { vk.VK_FORMAT_R8G8B8A8_UNORM, vk.VK_FORMAT_R16G16B16A16_SFLOAT, vk.VK_FORMAT_R32G32B32A32_SFLOAT },
         depth_test = true, depth_write = true 
     })
 
@@ -93,7 +93,7 @@ function M.init(device, bindless_set, sw)
     local f_light = shader.create_module(device, shader.compile_glsl(io.open("examples/42_robot_visualizer/shaders/def_light.frag"):read("*all"), vk.VK_SHADER_STAGE_FRAGMENT_BIT))
     M.pipe_light = pipeline.create_graphics_pipeline(device, M.pipe_layout_light, v_light, f_light, { 
         topology = vk.VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, 
-        alpha_blend = false, color_formats = { vk.VK_FORMAT_R8G8B8A8_UNORM },
+        alpha_blend = true, color_formats = { vk.VK_FORMAT_R8G8B8A8_UNORM },
         depth_test = false, depth_write = false 
     })
 
@@ -160,6 +160,11 @@ function M.register_panels()
         local s = gui.igGetContentRegionAvail()
         local pos = gui.igGetCursorScreenPos()
         
+        if math.abs(s.x - M.w) > 1 or math.abs(s.y - M.h) > 1 then
+            M.w, M.h = math.max(s.x, 1), math.max(s.y, 1)
+            M.resize(vulkan.get_device(), mc.gpu.get_bindless_set(), nil)
+        end
+
         gui.igInvisibleButton("##scene_hit", s, 0)
         M.is_hovered = gui.igIsItemHovered(0)
         
@@ -281,15 +286,17 @@ function M.render_deferred(cb_handle, point_buf_idx, frame_idx, point_count)
     local mat_view = mc.mat4_look_at({static.cam_pos.x, static.cam_pos.y, static.cam_pos.z}, {static.cam_target.x, static.cam_target.y, static.cam_target.z}, {0,0,1}, static.m_view)
     local mvp = mc.mat4_multiply(mat_proj, mat_view, static.m_mvp)
     for i=0,15 do static.pc_r.view_proj[i] = mvp.m[i] end
-    static.pc_r.buf_idx, static.pc_r.point_size, static.pc_r.viewport_size[0], static.pc_r.viewport_size[1] = point_buf_idx or 11, 2.0, M.w, M.h
+    local vw, vh = math.max(M.w or 1280, 1), math.max(M.h or 720, 1)
+    static.pc_r.buf_idx, static.pc_r.point_size, static.pc_r.vw, static.pc_r.vh = point_buf_idx or 11, 100.0, vw, vh
     local lidar_obj = nil
     if params.objects then for _, obj in ipairs(params.objects) do if obj.type == "lidar" then lidar_obj = obj; break end end end
-    if lidar_obj then static.pc_r.point_size = lidar_obj.point_size or 2.0 end
+    if lidar_obj then static.pc_r.point_size = lidar_obj.point_size or 100.0 end
     local p_off = {0,0,0,0}
     if lidar_obj and lidar_obj.attach_to and M.poses[lidar_obj.attach_to] then
         local p = M.poses[lidar_obj.attach_to]; p_off = {p.x, p.y, p.z, p.yaw}
     end
-    for i=0,3 do static.pc_r.pose_offset[i] = p_off[i+1] end
+    static.pc_r.pose_x, static.pc_r.pose_y, static.pc_r.pose_z, static.pc_r.pose_yaw = p_off[1], p_off[2], p_off[3], p_off[4]
+
     static.img_barrier_g[0].oldLayout, static.img_barrier_g[0].newLayout, static.img_barrier_g[0].srcAccessMask, static.img_barrier_g[0].dstAccessMask = vk.VK_IMAGE_LAYOUT_UNDEFINED, vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 0, vk.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT
     static.img_barrier_g[1].oldLayout, static.img_barrier_g[1].newLayout, static.img_barrier_g[1].srcAccessMask, static.img_barrier_g[1].dstAccessMask = vk.VK_IMAGE_LAYOUT_UNDEFINED, vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 0, vk.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT
     static.img_barrier_g[2].oldLayout, static.img_barrier_g[2].newLayout, static.img_barrier_g[2].srcAccessMask, static.img_barrier_g[2].dstAccessMask = vk.VK_IMAGE_LAYOUT_UNDEFINED, vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 0, vk.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT
@@ -297,12 +304,12 @@ function M.render_deferred(cb_handle, point_buf_idx, frame_idx, point_count)
     vk.vkCmdPipelineBarrier(cb_handle, vk.VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, bit.bor(vk.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, vk.VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT), 0, 0, nil, 0, nil, 4, static.img_barrier_g)
     vk.vkCmdBeginRendering(cb_handle, static.render_info_g); vk.vkCmdSetViewport(cb_handle, 0, 1, static.viewport); vk.vkCmdSetScissor(cb_handle, 0, 1, static.scissor)
     static.sets[0] = mc.gpu.get_bindless_set(); vk.vkCmdBindDescriptorSets(cb_handle, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, M.pipe_layout, 0, 1, static.sets, 0, nil)
-    vk.vkCmdBindPipeline(cb_handle, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, M.pipe_grid_g); static.pc_r.pose_offset[0], static.pc_r.pose_offset[1] = M.cam.target[0], M.cam.target[1]
+    vk.vkCmdBindPipeline(cb_handle, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, M.pipe_grid_g); static.pc_r.pose_x, static.pc_r.pose_y = M.cam.target[0], M.cam.target[1]
     vk.vkCmdPushConstants(cb_handle, M.pipe_layout, vk.VK_SHADER_STAGE_ALL_GRAPHICS, 0, ffi.sizeof("RenderPC"), static.pc_r); vk.vkCmdDraw(cb_handle, 4, 1, 0, 0)
     vk.vkCmdBindPipeline(cb_handle, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, M.pipe_line_g); static.pc_r.buf_idx = (frame_idx == 0) and 14 or 15
     vk.vkCmdPushConstants(cb_handle, M.pipe_layout, vk.VK_SHADER_STAGE_ALL_GRAPHICS, 0, ffi.sizeof("RenderPC"), static.pc_r); vk.vkCmdDraw(cb_handle, (M.active_robot_line_count or 0) / 2 * 6, 1, 0, 0)
     vk.vkCmdBindPipeline(cb_handle, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, M.pipe_render_g); vk.vkCmdPushConstants(cb_handle, M.pipe_layout, vk.VK_SHADER_STAGE_ALL_GRAPHICS, 0, ffi.sizeof("RenderPC"), static.pc_r)
-    if (point_count or 0) > 0 then vk.vkCmdDraw(cb_handle, point_count, 1, 0, 0) end
+    if (point_count or 0) > 0 then vk.vkCmdDraw(cb_handle, 4, point_count, 0, 0) end
     vk.vkCmdEndRendering(cb_handle)
     for i=0,2 do static.img_barrier_g[i].oldLayout, static.img_barrier_g[i].newLayout, static.img_barrier_g[i].srcAccessMask, static.img_barrier_g[i].dstAccessMask = vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, vk.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, vk.VK_ACCESS_SHADER_READ_BIT end
     static.img_barrier_l[0].oldLayout, static.img_barrier_l[0].newLayout, static.img_barrier_l[0].srcAccessMask, static.img_barrier_l[0].dstAccessMask = vk.VK_IMAGE_LAYOUT_UNDEFINED, vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 0, vk.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT

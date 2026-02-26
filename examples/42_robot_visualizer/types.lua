@@ -14,7 +14,13 @@ ffi.cdef[[
         uint32_t in_stride_u32;
         uint32_t in_pos_offset_u32;
     } ParserPC;
-    typedef struct RenderPC { float view_proj[16]; uint32_t buf_idx; float point_size; float viewport_size[2]; float pose_offset[4]; } RenderPC;
+    typedef struct RenderPC { 
+        float view_proj[16]; 
+        uint32_t buf_idx; 
+        float point_size; 
+        float vw, vh; 
+        float pose_x, pose_y, pose_z, pose_yaw; 
+    } RenderPC;
     typedef struct PlotPC { 
         uint32_t gtb_idx, slot_offset, msg_size, head_idx, field_offset, history_count, is_double; 
         float range_min, range_max; 
