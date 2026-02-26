@@ -14,11 +14,18 @@ ffi.cdef[[
         uint32_t in_stride_u32;
         uint32_t in_pos_offset_u32;
     } ParserPC;
+    typedef struct ClusterAABB { float min[4], max[4]; } ClusterAABB;
+    typedef struct Light { float pos_radius[4], color[4]; } Light;
+    typedef struct ClusterItem { uint32_t offset, count; } ClusterItem;
+
     typedef struct RenderPC { 
         float view_proj[16]; 
+        float view[16];
+        float vw, vh; 
+        float z_near, z_far;
+        uint32_t cluster_x, cluster_y, cluster_z;
         uint32_t buf_idx; 
         float point_size; 
-        float vw, vh; 
         float pose_x, pose_y, pose_z, pose_yaw; 
     } RenderPC;
     typedef struct PlotPC { 

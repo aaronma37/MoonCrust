@@ -25,22 +25,29 @@ end
 local Pass = {}
 Pass.__index = Pass
 
-function Pass.new(name, callback)
+function Pass.new(name, callback, graph)
     return setmetatable({
         name = name,
         callback = callback,
-        requirements = {}
+        requirements = {},
+        _graph = graph
     }, Pass)
 end
 
 -- unified requirement registration
 function Pass:using(resource, access, stage, layout)
-    table.insert(self.requirements, {
-        res = resource,
-        access = access,
-        stage = stage,
-        layout = layout or vk.VK_IMAGE_LAYOUT_GENERAL
-    })
+    local g = self._graph
+    g._req_idx = g._req_idx + 1
+    local req = g._req_pool[g._req_idx]
+    if not req then
+        req = {}
+        g._req_pool[g._req_idx] = req
+    end
+    req.res = resource
+    req.access = access
+    req.stage = stage
+    req.layout = layout or vk.VK_IMAGE_LAYOUT_GENERAL
+    table.insert(self.requirements, req)
     return self
 end
 
@@ -52,7 +59,11 @@ function M.new(device)
         device = device,
         resources = {},
         passes = {},
-        registry = {} -- persistence across frames
+        registry = {}, -- persistence across frames
+        _pass_pool = {},
+        _pass_idx = 0,
+        _req_pool = {},
+        _req_idx = 0
     }, Graph)
 end
 
@@ -63,13 +74,24 @@ function Graph:register_resource(id, type, handle, initial_state)
 end
 
 function Graph:add_pass(name, callback)
-    local pass = Pass.new(name, callback)
+    self._pass_idx = self._pass_idx + 1
+    local pass = self._pass_pool[self._pass_idx]
+    if not pass then
+        pass = Pass.new(name, callback, self)
+        self._pass_pool[self._pass_idx] = pass
+    else
+        pass.name = name
+        pass.callback = callback
+        for i=1, #pass.requirements do pass.requirements[i] = nil end
+    end
     table.insert(self.passes, pass)
     return pass
 end
 
 function Graph:reset()
-    self.passes = {}
+    for i=1, #self.passes do self.passes[i] = nil end
+    self._pass_idx = 0
+    self._req_idx = 0
 end
 
 function Graph:get_introspection_data()

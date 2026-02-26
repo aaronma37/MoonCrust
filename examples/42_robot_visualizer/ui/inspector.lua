@@ -10,7 +10,11 @@ local ui = require("examples.42_robot_visualizer.ui.consts")
 
 panels.register("pretty_viewer", "Pretty Message Viewer", function(gui, node_id, params)
     if not panels.states[node_id] then
-        panels.states[node_id] = { selected_ch = nil, filter = ffi.new("char[128]"), schema = nil, last_ts = 0ULL, cached_vals = {}, facet_synced = false }
+        panels.states[node_id] = { 
+            selected_ch = nil, filter = ffi.new("char[128]"), schema = nil, last_ts = 0ULL, cached_vals = {}, facet_synced = false,
+            p_val64 = ffi.new("uint32_t[2]"),
+            p_val32 = ffi.new("uint32_t[1]")
+        }
     end
     local p_state = panels.states[node_id]
     local channels = playback.channels or {}
@@ -64,10 +68,12 @@ panels.register("pretty_viewer", "Pretty Message Viewer", function(gui, node_id,
                             
                             local base = (i-1) * 2
                             if f.type:find("64") or f.type == "double" then
-                                local d_val = ffi.cast("double*", ffi.new("uint32_t[2]", {results[base], results[base+1]}))[0]
+                                p_state.p_val64[0], p_state.p_val64[1] = results[base], results[base+1]
+                                local d_val = ffi.cast("double*", p_state.p_val64)[0]
                                 gui.igText("%.6f", d_val)
                             elseif f.type:find("float") then
-                                local f_val = ffi.cast("float*", ffi.new("uint32_t[1]", results[base]))[0]
+                                p_state.p_val32[0] = results[base]
+                                local f_val = ffi.cast("float*", p_state.p_val32)[0]
                                 gui.igText("%.4f", f_val)
                             elseif f.type:find("uint") then
                                 gui.igText("%u", results[base])
