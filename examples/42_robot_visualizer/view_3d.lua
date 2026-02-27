@@ -27,6 +27,8 @@ local M = {
     is_dragging = false,
     poses = {},
     p_point_size = ffi.new("float[1]", 3.0),
+    p_lidar_transform = ffi.new("bool[1]", true),
+    axis_map = {1, 2, 3, 0}, -- Default mapping (X, Y, Z, Padding)
     
     graph = nil,
     res = {},
@@ -202,12 +204,18 @@ function M.update_robot_buffer(frame_idx, params)
     if params and params.objects then
         for _, obj in ipairs(params.objects) do
             if obj.type == "robot" then
-                local last = M.poses[obj.name or "default"] or { x = 0, y = 0, z = 0, yaw = 0 }
+                -- Sync with live playback pose
+                local live = playback.robot_pose
+                local last = M.poses[obj.name or "default"] or { x = 0, y = 0, z = 0, yaw = 0, qx = 0, qy = 0, qz = 0, qw = 1 }
+                last.x, last.y, last.z, last.yaw = live.x, live.y, live.z, live.yaw
+                last.qx, last.qy, last.qz, last.qw = live.qx, live.qy, live.qz, live.qw
                 M.poses[obj.name or "default"] = last
+                
                 if obj.follow then M.current_pose = last end
+                local q = {last.qx, last.qy, last.qz, last.qw}
                 local offset = 0
-                offset = offset + primitives.write_box(rv, offset, last.x, last.y, last.z, last.yaw, 5.0, 5.0, 2.5, 1, 1, 0, 1)
-                offset = offset + primitives.write_axes(rv, offset, last.x, last.y, last.z, last.yaw, 10.0)
+                offset = offset + primitives.write_box(rv, offset, last.x, last.y, last.z, q, 5.0, 5.0, 2.5, 1, 1, 0, 1)
+                offset = offset + primitives.write_axes(rv, offset, last.x, last.y, last.z, q, 10.0)
                 M.active_robot_line_count = offset
             end
         end
@@ -289,12 +297,31 @@ function M.render_deferred(cb_handle, point_buf_idx, frame_idx, point_count)
         M.point_size_initialized = true
     end
     static.pc_r.point_size = M.p_point_size[0]
+    for i=0, 2 do static.pc_r.axis_map[i] = M.axis_map[i+1] end
     
     local p_off = {0,0,0,0}
+    local q = {0,0,0,1}
     if lidar_obj and lidar_obj.attach_to and M.poses[lidar_obj.attach_to] then
         local p = M.poses[lidar_obj.attach_to]; p_off = {p.x, p.y, p.z, p.yaw}
+        q = {p.qx or 0, p.qy or 0, p.qz or 0, p.qw or 1}
     end
-    static.pc_r.pose_x, static.pc_r.pose_y, static.pc_r.pose_z, static.pc_r.pose_yaw = p_off[1], p_off[2], p_off[3], p_off[4]
+    
+    if M.p_lidar_transform[0] then
+        -- Calculate 4x4 Matrix from Translation + Quaternion
+        local x, y, z, w = q[1], q[2], q[3], q[4]
+        local x2, y2, z2 = x + x, y + y, z + z
+        local xx, xy, xz = x * x2, x * y2, x * z2
+        local yy, yz, zz = y * y2, y * z2, z * z2
+        local wx, wy, wz = w * x2, w * y2, w * z2
+
+        static.pc_r.pose_matrix[0],  static.pc_r.pose_matrix[1],  static.pc_r.pose_matrix[2],  static.pc_r.pose_matrix[3]  = 1.0 - (yy + zz), xy + wz, xz - wy, 0
+        static.pc_r.pose_matrix[4],  static.pc_r.pose_matrix[5],  static.pc_r.pose_matrix[6],  static.pc_r.pose_matrix[7]  = xy - wz, 1.0 - (xx + zz), yz + wx, 0
+        static.pc_r.pose_matrix[8],  static.pc_r.pose_matrix[9],  static.pc_r.pose_matrix[10], static.pc_r.pose_matrix[11] = xz + wy, yz - wx, 1.0 - (xx + yy), 0
+        static.pc_r.pose_matrix[12], static.pc_r.pose_matrix[13], static.pc_r.pose_matrix[14], static.pc_r.pose_matrix[15] = p_off[1], p_off[2], p_off[3], 1.0
+    else
+        for i=0, 15 do static.pc_r.pose_matrix[i] = 0 end
+        static.pc_r.pose_matrix[0], static.pc_r.pose_matrix[5], static.pc_r.pose_matrix[10], static.pc_r.pose_matrix[15] = 1, 1, 1, 1
+    end
 
     -- 2. Update Lights to View Space
     local view_lights = ffi.new("Light[?]", MAX_LIGHTS)
@@ -354,7 +381,7 @@ function M.render_deferred(cb_handle, point_buf_idx, frame_idx, point_count)
         -- Grid
         vk.vkCmdBindPipeline(cmd, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, M.pipes.fp_grid)
         local grid_pc = ffi.new("RenderPC", static.pc_r)
-        grid_pc.pose_x, grid_pc.pose_y = M.cam.target[0], M.cam.target[1]
+        grid_pc.pose_matrix[12], grid_pc.pose_matrix[13] = M.cam.target[0], M.cam.target[1]
         grid_pc.point_size = 1.0
         vk.vkCmdPushConstants(cmd, M.pipes.layout_fp, bit.bor(vk.VK_SHADER_STAGE_VERTEX_BIT, vk.VK_SHADER_STAGE_FRAGMENT_BIT), 0, ffi.sizeof("RenderPC"), grid_pc)
         vk.vkCmdDraw(cmd, 4, 1, 0, 0)

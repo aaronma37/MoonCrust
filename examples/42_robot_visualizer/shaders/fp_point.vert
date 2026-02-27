@@ -31,7 +31,8 @@ layout(push_constant) uniform PC
   uint cluster_x, cluster_y, cluster_z;
   uint buf_idx;
   float point_size;
-  float pose_x, pose_y, pose_z, pose_yaw;
+  int axis_map[4];
+  float pose_matrix[16];
 } pc;
 
 void main()
@@ -41,14 +42,22 @@ void main()
 
   vec4 p = all_buffers[nonuniformEXT(pc.buf_idx)].pos[pt_idx];
 
-  // 1. World & View Transform
-  float s = sin(pc.pose_yaw);
-  float c = cos(pc.pose_yaw);
-  vec3 worldPos;
-  worldPos.x = p.x * c - p.y * s + pc.pose_x;
-  worldPos.y = p.x * s + p.y * c + pc.pose_y;
-  worldPos.z = p.z + pc.pose_z;
+  // Axis Remapping
+  vec3 raw;
+  float vals[4] = float[](0.0, p.x, p.y, p.z);
+  raw.x = (pc.axis_map[0] < 0) ? -vals[-pc.axis_map[0]] : vals[pc.axis_map[0]];
+  raw.y = (pc.axis_map[1] < 0) ? -vals[-pc.axis_map[1]] : vals[pc.axis_map[1]];
+  raw.z = (pc.axis_map[2] < 0) ? -vals[-pc.axis_map[2]] : vals[pc.axis_map[2]];
 
+  // 1. World & View Transform
+  mat4 model = mat4(
+      pc.pose_matrix[0], pc.pose_matrix[1], pc.pose_matrix[2], pc.pose_matrix[3],
+      pc.pose_matrix[4], pc.pose_matrix[5], pc.pose_matrix[6], pc.pose_matrix[7],
+      pc.pose_matrix[8], pc.pose_matrix[9], pc.pose_matrix[10], pc.pose_matrix[11],
+      pc.pose_matrix[12], pc.pose_matrix[13], pc.pose_matrix[14], pc.pose_matrix[15]
+  );
+
+  vec3 worldPos = (model * vec4(raw, 1.0)).xyz;
   vec4 viewPos = pc.view * vec4(worldPos, 1.0);
   vec4 clipPos = pc.view_proj * vec4(worldPos, 1.0);
 

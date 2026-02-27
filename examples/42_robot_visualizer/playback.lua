@@ -19,10 +19,13 @@ local M = {
     lidar_ch_id = 0,
     lidar_topic = "/livox/lidar",
     pose_ch_id = 0,
-    robot_pose = { x = 0, y = 0, z = 0, yaw = 0 },
+    robot_pose = { x = 0, y = 0, z = 0, yaw = 0, qx = 0, qy = 0, qz = 0, qw = 1 },
+    _last_pose_vals = {0, 0, 0}, -- For movement detection
     plot_history = {}, 
     last_lidar_points = 0,
     last_seek_time = 0ULL, -- Throttle seeks
+    pose_offset = 41, -- Default offset (User found 41 bytes for airport log)
+    pose_is_double = false, -- Default to float as discovered by user
     just_sought = false,
     bytes_processed = 0,
     throughput_mbs = 0,
@@ -137,6 +140,7 @@ function M.discover_topics()
             if info.topic ~= nil then
                 local t = ffi.string(info.topic)
                 if t == M.lidar_topic then M.lidar_ch_id = info.id end
+                if t:find("position") or t:find("pose") or t:find("odom") then M.pose_ch_id = info.id end
                 
                 local is_lidar = (t:find("lidar") or t:find("points"))
                 local msg_size = is_lidar and M.MSG_SIZE_LIDAR or M.MSG_SIZE_DEFAULT
@@ -161,6 +165,65 @@ end
 function M.get_gtb_slot_index(ch_id)
     if not M.bridge then return 0 end
     return robot.lib.mcap_get_gtb_slot_index(M.bridge, ch_id)
+end
+
+function M.auto_scan_pose()
+    local ch = M.channels_by_id[M.pose_ch_id]
+    if not ch then return end
+    
+    print(string.format("Auto-Scan: Searching Topic %s...", ch.topic))
+    
+    local function check_offset(off, is_double)
+        local buf = M.get_msg_buffer(ch.id)
+        if not buf or buf.size == 0 then return false end
+        
+        local x, y, z = 0, 0, 0
+        if is_double then
+            if off + 24 > buf.size then return false end
+            local p = ffi.cast("double*", buf.data + off)
+            x, y, z = p[0], p[1], p[2]
+        else
+            if off + 12 > buf.size then return false end
+            local p = ffi.cast("float*", buf.data + off)
+            x, y, z = p[0], p[1], p[2]
+        end
+        
+        -- Sane range check (-5000 to 5000 meters)
+        -- Also ignore perfect zeros (usually headers)
+        return math.abs(x) < 5000 and math.abs(y) < 5000 and math.abs(z) < 5000 and (math.abs(x) > 0.0001 or math.abs(y) > 0.0001)
+    end
+
+    -- Scan strategy: Prefer 8-byte alignment, then try everything
+    local found = false
+    for _, is_double in ipairs({true, false}) do
+        local step = is_double and 8 or 4
+        for off = 0, 256, step do
+            if check_offset(off, is_double) then
+                M.pose_offset = off
+                M.pose_is_double = is_double
+                found = true
+                break
+            end
+        end
+        if found then break end
+        -- Fallback: Check every single byte
+        for off = 0, 256 do
+            if check_offset(off, is_double) then
+                M.pose_offset = off
+                M.pose_is_double = is_double
+                found = true
+                break
+            end
+        end
+        if found then break end
+    end
+    
+    if found then
+        print(string.format("Auto-Scan: SUCCESS! Found %s at offset %d", M.pose_is_double and "Double" or "Float", M.pose_offset))
+    else
+        print("Auto-Scan: FAILED. No sane coordinates found.")
+    end
+    return found
 end
 
 function M.update(dt, raw_buffer)
@@ -218,6 +281,34 @@ function M.update(dt, raw_buffer)
         -- LiDAR point count (ZERO-COPY Silicon Extraction)
         if ch_id == M.lidar_ch_id then 
             M.last_lidar_points = M.current_msg.point_count
+        end
+
+        -- Pose Update (FFI Cast with offset and precision support)
+        if ch_id == M.pose_ch_id then
+            local ptr = ffi.cast("uint8_t*", M.current_msg.data) + M.pose_offset
+            if M.pose_is_double and M.current_msg.data_size >= (M.pose_offset + 56) then
+                local p = ffi.cast("double*", ptr)
+                M._last_pose_vals[1] = math.abs(M.robot_pose.x - p[0])
+                M._last_pose_vals[2] = math.abs(M.robot_pose.y - p[1])
+                M._last_pose_vals[3] = math.abs(M.robot_pose.z - p[2])
+                M.robot_pose.x, M.robot_pose.y, M.robot_pose.z = tonumber(p[0]), tonumber(p[1]), tonumber(p[2])
+                M.robot_pose.qx, M.robot_pose.qy, M.robot_pose.qz, M.robot_pose.qw = tonumber(p[3]), tonumber(p[4]), tonumber(p[5]), tonumber(p[6])
+                -- Keep yaw for legacy logic (Z-axis rotation)
+                local qx, qy, qz, qw = M.robot_pose.qx, M.robot_pose.qy, M.robot_pose.qz, M.robot_pose.qw
+                M.robot_pose.yaw = math.atan2(2*(qw*qz + qx*qy), 1 - 2*(qy*qy + qz*qz))
+            elseif M.pose_is_double and M.current_msg.data_size >= (M.pose_offset + 24) then
+                local p = ffi.cast("double*", ptr)
+                M._last_pose_vals[1] = math.abs(M.robot_pose.x - p[0])
+                M._last_pose_vals[2] = math.abs(M.robot_pose.y - p[1])
+                M._last_pose_vals[3] = math.abs(M.robot_pose.z - p[2])
+                M.robot_pose.x, M.robot_pose.y, M.robot_pose.z = tonumber(p[0]), tonumber(p[1]), tonumber(p[2])
+            elseif not M.pose_is_double and M.current_msg.data_size >= (M.pose_offset + 12) then
+                local p = ffi.cast("float*", ptr)
+                M._last_pose_vals[1] = math.abs(M.robot_pose.x - p[0])
+                M._last_pose_vals[2] = math.abs(M.robot_pose.y - p[1])
+                M._last_pose_vals[3] = math.abs(M.robot_pose.z - p[2])
+                M.robot_pose.x, M.robot_pose.y, M.robot_pose.z = tonumber(p[0]), tonumber(p[1]), tonumber(p[2])
+            end
         end
 
         -- Record that we saw a message and capture its location

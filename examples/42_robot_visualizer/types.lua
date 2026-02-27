@@ -6,13 +6,13 @@ ffi.cdef[[
     typedef struct Pose { float x, y, z, yaw; } Pose;
     typedef struct ParserPC { 
         uint32_t in_buf_idx; 
-        uint32_t in_offset_u32; 
+        uint32_t in_offset_bytes; 
         uint32_t out_buf_idx; 
         uint32_t count; 
         uint32_t mode; 
         uint32_t instr_buf_idx; 
-        uint32_t in_stride_u32;
-        uint32_t in_pos_offset_u32;
+        uint32_t in_stride_bytes;
+        uint32_t in_pos_offset_bytes;
     } ParserPC;
     typedef struct ClusterAABB { float min[4], max[4]; } ClusterAABB;
     typedef struct Light { float pos_radius[4], color[4]; } Light;
@@ -26,7 +26,8 @@ ffi.cdef[[
         uint32_t cluster_x, cluster_y, cluster_z;
         uint32_t buf_idx; 
         float point_size; 
-        float pose_x, pose_y, pose_z, pose_yaw; 
+        int32_t axis_map[4]; 
+        float pose_matrix[16]; 
     } RenderPC;
     typedef struct PlotPC { 
         uint32_t gtb_idx, slot_offset, msg_size, head_idx, field_offset, history_count, is_double; 
@@ -63,6 +64,9 @@ ffi.cdef[[
     ImDrawList* igGetWindowDrawList(void);
     
     bool igSliderFloat(const char* label, float* v, float v_min, float v_max, const char* format, int flags);
+    bool igSliderInt(const char* label, int* v, int v_min, int v_max, const char* format, int flags);
+    bool igDragInt(const char* label, int* v, float v_speed, int v_min, int v_max, const char* format, int flags);
+    bool igCheckbox(const char* label, bool* v);
     bool igDragFloat(const char* label, float* v, float v_speed, float v_min, float v_max, const char* format, int flags);
     void igSetNextWindowPos(const ImVec2_c pos, int cond, const ImVec2_c pivot);
     void igSetNextWindowSize(const ImVec2_c size, int cond);

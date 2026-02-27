@@ -18,7 +18,7 @@ M.facets = {
 					name = "Livox",
 					topic = "/livox/lidar",
 					point_size = 2.0,
-					-- No attach_to for now
+					attach_to = "Drone",
 				},
 			},
 		},
@@ -40,6 +40,9 @@ M.facets = {
 			topic_name = "/dji_osdk_ros/battery_state",
 			field_name = "voltage"
 		},
+	},
+	MarsPerformance = {
+		panel = "perf",
 	},
 }
 
@@ -66,11 +69,19 @@ M.layout = {
 						{ type = "view", facet = "MarsTelemetryInspector", id = 2, title = "Battery Info###2" },
 						{
 							type = "split",
-							direction = "h",
+							direction = "v",
 							ratio = 0.5,
 							children = {
-								{ type = "view", facet = "MarsBatteryPlot", id = 3, title = "Battery Voltage###3" },
-								{ type = "view", facet = "MarsIMUPlot", id = 5, title = "IMU Realtime###5" },
+								{ type = "view", facet = "MarsPerformance", id = 6, title = "System Status###6" },
+								{
+									type = "split",
+									direction = "h",
+									ratio = 0.5,
+									children = {
+										{ type = "view", facet = "MarsBatteryPlot", id = 3, title = "Battery Voltage###3" },
+										{ type = "view", facet = "MarsIMUPlot", id = 5, title = "IMU Realtime###5" },
+									},
+								},
 							},
 						},
 					},

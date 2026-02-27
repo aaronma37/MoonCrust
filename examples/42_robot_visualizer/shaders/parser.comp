@@ -13,24 +13,34 @@ struct Instruction {
 
 layout(push_constant) uniform PC {
     uint in_buf_idx;
-    uint in_offset_u32;
+    uint in_offset_bytes; // Now in BYTES
     uint out_buf_idx;
     uint count;
-    uint mode; // 0 = Lidar, 1 = Universal Telemetry
-    uint instr_buf_idx; // Binding for the instruction buffer
-    uint in_stride_u32;
-    uint in_pos_offset_u32;
+    uint mode; 
+    uint instr_buf_idx; 
+    uint in_stride_bytes; // Now in BYTES
+    uint in_pos_offset_bytes; // Now in BYTES
 } pc;
+
+float readFloatUnaligned(uint byte_off, uint buf_idx) {
+    uint u32_idx = byte_off / 4;
+    uint shift = (byte_off % 4) * 8;
+    uint v0 = all_buffers[nonuniformEXT(buf_idx)].u32[u32_idx];
+    if (shift == 0) return uintBitsToFloat(v0);
+    uint v1 = all_buffers[nonuniformEXT(buf_idx)].u32[u32_idx + 1];
+    uint val = (v0 >> shift) | (v1 << (32 - shift));
+    return uintBitsToFloat(val);
+}
 
 void main() {
     if (pc.mode == 0) {
         uint idx = gl_GlobalInvocationID.x;
         if (idx >= pc.count) return;
-        // LIDAR MODE (Points)
-        uint base = pc.in_offset_u32 + (idx * pc.in_stride_u32) + pc.in_pos_offset_u32;
-        float x = uintBitsToFloat(all_buffers[nonuniformEXT(pc.in_buf_idx)].u32[base + 0]);
-        float y = uintBitsToFloat(all_buffers[nonuniformEXT(pc.in_buf_idx)].u32[base + 1]);
-        float z = uintBitsToFloat(all_buffers[nonuniformEXT(pc.in_buf_idx)].u32[base + 2]);
+        
+        uint base = pc.in_offset_bytes + (idx * pc.in_stride_bytes) + pc.in_pos_offset_bytes;
+        float x = readFloatUnaligned(base + 0, pc.in_buf_idx);
+        float y = readFloatUnaligned(base + 4, pc.in_buf_idx);
+        float z = readFloatUnaligned(base + 8, pc.in_buf_idx);
 
         uint out_base = idx * 4; 
         all_buffers[nonuniformEXT(pc.out_buf_idx)].u32[out_base + 0] = floatBitsToUint(x);
@@ -42,7 +52,7 @@ void main() {
         // Uses a sequential VM, so we only use thread 0
         if (gl_GlobalInvocationID.x != 0) return;
 
-        uint read_offset = pc.in_offset_u32 * 4 + 4; // Absolute Byte offset + 4 bytes CDR header
+        uint read_offset = pc.in_offset_bytes + 4; // Absolute Byte offset + 4 bytes CDR header
 
         for (uint i = 0; i < pc.count; ++i) {
             uint instr_base = i * 4;

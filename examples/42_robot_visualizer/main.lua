@@ -183,7 +183,8 @@ local function render_node(node, x, y, w, h, gui, id_path)
     else
         static.v2_pos.x, static.v2_pos.y, static.v2_size.x, static.v2_size.y = x, y, w, h
         gui.igSetNextWindowPos(static.v2_pos, 0, ui_consts.V2_ZERO); gui.igSetNextWindowSize(static.v2_size, 0)
-        if gui.igBegin(node.title, nil, bit.bor(panels.Flags.NoDecoration, panels.Flags.NoSavedSettings)) then
+        local window_flags = bit.bor(1, 2, 32, 65536) -- NoTitleBar | NoResize | NoCollapse | NoSavedSettings
+        if gui.igBegin(node.title, nil, window_flags) then
             if gui.igIsWindowHovered(0) then panels.focused_id = node.id end
             if state.picker.trigger and panels.focused_id == node.id then gui.igOpenPopup_Str("FuzzyPicker", 0); state.picker.trigger = false end
             render_fuzzy_picker(gui); render_file_dialog(gui)
@@ -324,7 +325,31 @@ function M.update()
     
     -- INPUT & HOTKEYS
     local ctrl = input.key_down(224) or input.key_down(228)
+    local shift = input.key_down(225) or input.key_down(229)
+    local alt = input.key_down(226) or input.key_down(230)
     if input.key_pressed(30) then state.layout = config.layout end
+    
+    -- Global Data Tweaking (No click required)
+    if not ctrl then
+        -- POSE (No Modifiers)
+        if not shift and not alt then
+            if input.key_pressed(79) then playback.pose_offset = math.min(512, playback.pose_offset + 1) end -- Right
+            if input.key_pressed(80) then playback.pose_offset = math.max(0, playback.pose_offset - 1) end   -- Left
+            if input.key_pressed(82) then playback.pose_offset = math.min(512, playback.pose_offset + 8) end -- Up
+            if input.key_pressed(81) then playback.pose_offset = math.max(0, playback.pose_offset - 8) end   -- Down
+        end
+        -- LIDAR OFFSET (Shift + Right/Left)
+        if shift and not alt then
+            if input.key_pressed(79) then playback.lidar_offset = (playback.lidar_offset or 0) + 1 end
+            if input.key_pressed(80) then playback.lidar_offset = math.max(0, (playback.lidar_offset or 0) - 1) end
+        end
+        -- LIDAR STRIDE (Alt + Right/Left)
+        if alt and not shift then
+            if input.key_pressed(79) then playback.lidar_stride = (playback.lidar_stride or 12) + 1 end
+            if input.key_pressed(80) then playback.lidar_stride = math.max(1, (playback.lidar_stride or 12) - 1) end
+        end
+    end
+    
     if ctrl then
         if input.key_pressed(18) then state.file_dialog.trigger = true end -- O
         if input.key_pressed(25) then split_focused("v") end -- V
@@ -390,36 +415,42 @@ function M.update()
             if o.type == "lidar" and o.topic == playback.lidar_topic then 
                 if playback.channels then
                     for _, ch in ipairs(playback.channels) do
-                        if ch.topic == o.topic then playback.lidar_ch_id = ch.id; break end
+                        if ch.topic == o.topic then playback.lidar_ch_id = ch.id end
                     end
                 end
-                break 
             end 
+            if o.type == "robot" and o.pose_topic then
+                if playback.channels then
+                    for _, ch in ipairs(playback.channels) do
+                        if ch.topic == o.pose_topic then playback.pose_ch_id = ch.id end
+                    end
+                end
+            end
         end 
     end
     
     playback.update(dt, nil); view_3d.update_robot_buffer(f_idx, v3d_pms)
     
-    local final_in_off = in_off
-    local final_stride = str_u
-    local final_pos_off = pos_off
+    local final_in_off = playback.lidar_offset or 0
+    local final_stride = playback.lidar_stride or 12
+    local final_pos_off = 0
 
-    -- Allow config to override Lidar layout
+    -- Apply config overrides if present
     if v3d_pms and v3d_pms.objects then
         for _, o in ipairs(v3d_pms.objects) do
             if o.type == "lidar" and o.topic == playback.lidar_topic then
-                if o.stride then final_stride = o.stride end
-                if o.pos_offset then final_pos_off = o.pos_offset end
-                if o.header_skip then final_in_off = o.header_skip end
+                if o.stride then final_stride = o.stride * 4 end
+                if o.pos_offset then final_pos_off = o.pos_offset * 4 end
+                if o.header_skip then final_in_off = o.header_skip * 4 end
             end
         end
     end
 
-    static.pc_p.in_buf_idx, static.pc_p.in_offset_u32, static.pc_p.out_buf_idx, static.pc_p.count = 50, (lidar_gtb_off / 4) + final_in_off, out_idx, pt_cnt
+    static.pc_p.in_buf_idx, static.pc_p.in_offset_bytes, static.pc_p.out_buf_idx, static.pc_p.count = 50, lidar_gtb_off + final_in_off, out_idx, pt_cnt
     static.pc_p.mode = 0
     static.pc_p.instr_buf_idx = 0
-    static.pc_p.in_stride_u32 = final_stride
-    static.pc_p.in_pos_offset_u32 = final_pos_off
+    static.pc_p.in_stride_bytes = final_stride
+    static.pc_p.in_pos_offset_bytes = final_pos_off
     
     vk.vkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_parse); static.sets[0] = bindless_set
     vk.vkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, layout_parse, 0, 1, static.sets, 0, nil) 
@@ -440,7 +471,7 @@ function M.update()
         end
         
         static.pc_p.in_buf_idx = 50
-        static.pc_p.in_offset_u32 = gtb_off / 4
+        static.pc_p.in_offset_bytes = gtb_off
         static.pc_p.out_buf_idx = 14 -- results_buffer
         static.pc_p.count = _G._GPU_INSPECTOR.instr_count
         static.pc_p.mode = 1 -- Universal Telemetry Mode

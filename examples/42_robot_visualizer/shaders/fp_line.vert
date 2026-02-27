@@ -18,7 +18,8 @@ layout(push_constant) uniform PC
   uint cluster_x, cluster_y, cluster_z;
   uint buf_idx;
   float point_size;
-  float pose_x, pose_y, pose_z, pose_yaw;
+  int axis_map[4];
+  float pose_matrix[16];
 } pc;
 
 void main() {
