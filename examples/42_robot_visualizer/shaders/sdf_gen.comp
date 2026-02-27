@@ -1,0 +1,48 @@
+#version 450
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(set = 0, binding = 0) buffer Data { uint u32[]; } all_buffers[];
+layout(set = 0, binding = 1) uniform sampler2D all_textures[];
+layout(set = 0, binding = 2, r32f) uniform image2D storage_images[];
+
+layout(push_constant) uniform PC {
+    uint src_tex_idx;
+    uint dst_img_idx;
+    uint atlas_w;
+    uint atlas_h;
+} pc;
+
+void main() {
+    ivec2 uv = ivec2(gl_GlobalInvocationID.xy);
+    if (uv.x >= pc.atlas_w || uv.y >= pc.atlas_h) return;
+
+    // 1. Sample the original bitmap (is it on or off?)
+    float val = texelFetch(all_textures[nonuniformEXT(pc.src_tex_idx)], uv, 0).r;
+    bool is_inside = val > 0.5;
+
+    // 2. Brute force search for nearest edge (local neighborhood for speed)
+    // For small fonts, a 7x7 search is enough to build a crisp field
+    float min_dist_sq = 10000.0;
+    for (int dy = -4; dy <= 4; dy++) {
+        for (int dx = -4; dx <= 4; dx++) {
+            ivec2 neighbor_uv = uv + ivec2(dx, dy);
+            if (neighbor_uv.x < 0 || neighbor_uv.y < 0 || neighbor_uv.x >= int(pc.atlas_w) || neighbor_uv.y >= int(pc.atlas_h)) continue;
+            
+            float n_val = texelFetch(all_textures[nonuniformEXT(pc.src_tex_idx)], neighbor_uv, 0).r;
+            bool n_inside = n_val > 0.5;
+            
+            if (is_inside != n_inside) {
+                float d_sq = float(dx*dx + dy*dy);
+                min_dist_sq = min(min_dist_sq, d_sq);
+            }
+        }
+    }
+
+    float dist = sqrt(min_dist_sq);
+    // Normalize to 0..1 range (0.5 is the edge)
+    // Range is +/- 4 pixels
+    float sdf = is_inside ? (0.5 + (dist / 8.0)) : (0.5 - (dist / 8.0));
+    sdf = clamp(sdf, 0.0, 1.0);
+
+    imageStore(storage_images[nonuniformEXT(pc.dst_img_idx)], uv, vec4(sdf, 0, 0, 0));
+}

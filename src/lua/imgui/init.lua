@@ -61,6 +61,8 @@ end
 
 function M.build_and_upload_fonts()
     local io = ffi_lib.igGetIO_Nil()
+    io.Fonts.TexMaxWidth = 4096
+    io.Fonts.TexMaxHeight = 4096
     
     ffi_lib.igImFontAtlasBuildMain(io.Fonts)
     local tex_data = io.Fonts.TexData
@@ -68,15 +70,17 @@ function M.build_and_upload_fonts()
     
     print(string.format("[ImGui] Building Font Atlas: %dx%d", w, h))
     
-    local img = gpu.image(w, h, vk.VK_FORMAT_R8G8B8A8_UNORM, "sampled")
+    -- UI Fonts must NEVER use mipmaps (that causes the blur)
+    local img = gpu.image(w, h, vk.VK_FORMAT_R8G8B8A8_UNORM, "sampled_attachment")
     local pd, d, q, family = vulkan.get_physical_device(), vulkan.get_device(), vulkan.get_queue()
     local staging = require("vulkan.staging")
     local size = w * h * 4
-    local st = staging.new(pd, d, gpu.heaps.host, size + 1024)
+    local st = staging.new(pd, d, gpu.heaps.host, size + 1024 * 1024)
     st:upload_image(img.handle, w, h, pixels, q, family, size)
     
     local descriptors = require("vulkan.descriptors")
-    descriptors.update_image_set(d, gpu.get_bindless_set(), 1, vk.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, img.view, gpu.sampler(), vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0)
+    local sharp_sampler = gpu.sampler(vk.VK_FILTER_NEAREST)
+    descriptors.update_image_set(d, gpu.get_bindless_set(), 1, vk.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, img.view, sharp_sampler, vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0)
     
     ffi_lib.ImTextureData_SetTexID(io.Fonts.TexData, ffi.cast("ImTextureID", 0))
     M.font_image = img

@@ -203,6 +203,7 @@ ffi.cdef[[
         void* UserData;
         ImFontAtlas* Fonts;
         void* FontDefault;
+        float FontGlobalScale;
         bool FontAllowUserScaling;
         bool ConfigNavSwapGamepadButtons;
         bool ConfigNavMoveSetMousePos;

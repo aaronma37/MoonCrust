@@ -53,6 +53,7 @@ local M = {
 	message_buffers = {},
 	buffers_by_id = {}, -- O(1) lookup
 	channels_by_id = {}, -- O(1) lookup
+	visual_channels = {}, -- Which channels are currently being viewed (updated by UI)
 }
 
 function M.init()
@@ -195,6 +196,10 @@ function M.get_gtb_slot_index(ch_id)
 	return robot.lib.mcap_get_gtb_slot_index(M.bridge, ch_id)
 end
 
+function M.mark_visual(ch_id)
+	M.visual_channels[ch_id] = true
+end
+
 function M.auto_scan_pose()
 	local ch = M.channels_by_id[M.pose_ch_id]
 	if not ch then
@@ -331,6 +336,11 @@ function M.update(dt, raw_buffer)
 	-- Added 5ms time budget per frame to prevent UI stalls during high-speed bursts
 	while (not M.paused or M.just_sought) and M.current_msg.log_time <= M.playback_time_ns do
 		if msgs_processed > 100000 or (ffi.C.SDL_GetTicks() - start_update_ticks) > 5 then
+			-- WE HIT THE BUDGET. Are we lagging too far?
+			local lag = tonumber(M.playback_time_ns - M.current_msg.log_time)
+			if lag > 250e6 then -- 250ms lag
+				M.seek_to = M.playback_time_ns
+			end
 			break
 		end
 		local ch_id = M.current_msg.channel_id
@@ -376,6 +386,19 @@ function M.update(dt, raw_buffer)
 		M._msg_pool[pool_idx].size = M.current_msg.data_size
 		M._last_msg_offsets[ch_id] = M._msg_pool[pool_idx]
 
+		-- Plot History Update (CPU-side tracking for topic plotter)
+		if M.plot_history[ch_id] then
+			for offset, h in pairs(M.plot_history[ch_id]) do
+				if M.current_msg.data_size >= (offset + (h.is_double and 8 or 4)) then
+					local ptr = ffi.cast("uint8_t*", M.current_msg.data) + offset
+					local val = h.is_double and tonumber(ffi.cast("double*", ptr)[0]) or tonumber(ffi.cast("float*", ptr)[0])
+					h.data[h.head] = val
+					h.head = (h.head + 1) % 1000
+					if h.count < 1000 then h.count = h.count + 1 end
+				end
+			end
+		end
+
 		M.bytes_processed = M.bytes_processed + tonumber(M.current_msg.data_size)
 
 		robot.lib.mcap_advance(M.bridge)
@@ -391,13 +414,21 @@ function M.update(dt, raw_buffer)
 	end
 
 	-- POST-LOOP: Synchronize CPU buffers using captured offsets
+	-- OPTIMIZATION: Only sync if the channel is currently visible in a UI panel
 	for ch_id, info in pairs(M._last_msg_offsets) do
-		local buf = M.get_msg_buffer(ch_id)
-		if buf then
-			local sz = math.min(tonumber(info.size), M.MSG_BUF_SIZE)
-			robot.lib.mcap_load_into_buffer(M.bridge, info.offset, sz, buf.data)
-			buf.size = sz
+		if M.visual_channels[ch_id] then
+			local buf = M.get_msg_buffer(ch_id)
+			if buf then
+				local sz = math.min(tonumber(info.size), M.MSG_BUF_SIZE)
+				robot.lib.mcap_load_into_buffer(M.bridge, info.offset, sz, buf.data)
+				buf.size = sz
+			end
 		end
+	end
+
+	-- Clear visual markers for next frame
+	for k in pairs(M.visual_channels) do
+		M.visual_channels[k] = nil
 	end
 
 	local current_mbs = (M.bytes_processed / 1024 / 1024) / (dt > 0 and dt or 0.016)

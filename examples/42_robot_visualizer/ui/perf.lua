@@ -3,6 +3,7 @@ local panels = require("examples.42_robot_visualizer.ui.panels")
 local playback = require("examples.42_robot_visualizer.playback")
 
 panels.register("perf", "Performance Stats", function(gui, node_id)
+    if _G._FONT_TINY then gui.igPushFont(_G._FONT_TINY) end
     gui.igText("System Status")
     gui.igSeparator()
     local stats = _G._PERF_STATS
@@ -135,4 +136,5 @@ panels.register("perf", "Performance Stats", function(gui, node_id)
     else
         gui.igText("Robot Pose: (No Data)")
     end
+    if _G._FONT_TINY then gui.igPopFont() end
 end)

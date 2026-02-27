@@ -47,7 +47,7 @@ void main() {
         float((inst.color >> 24) & 0xFF) / 255.0
     );
     
-    vec2 pixel_pos = inst.pos + p * inst.size;
+    vec2 pixel_pos = floor(inst.pos + p * inst.size + vec2(0.01)); // Force pixel alignment
     vec2 ndc = (pixel_pos / pc.screen_size) * 2.0 - 1.0;
     
     gl_Position = vec4(ndc, 0.0, 1.0);

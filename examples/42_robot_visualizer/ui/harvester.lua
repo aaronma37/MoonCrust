@@ -52,20 +52,19 @@ function M.harvest_text(draw_data, text_buffer)
                 local v2 = ffi.cast("float*", vtx_buffer + i2 * 20)
                 local c0 = ffi.cast("uint32_t*", vtx_buffer + i0 * 20 + 16)[0]
                 
+                -- Capture exact quad dimensions from ImGui
+                -- Use raw ImGui coordinates (ImGui handles its own internal scaling)
+                local qx, qy = v0[0], v0[1]
+                local qw, qh = (v2[0] - v0[0]), (v2[1] - v0[1])
+                
                 -- Heuristic: If it's the white pixel UV (solid widget), skip it.
                 local u, v = v0[2], v0[3]
                 if math.abs(u - M.white_uv[1]) < 0.001 and math.abs(v - M.white_uv[2]) < 0.001 then
                     goto skip_quad
                 end
                 
-                local qw = v2[0] - v0[0]
-                local qh = v2[1] - v0[1]
-                if qw > 100 or qh > 100 then
-                    goto skip_quad
-                end
-                
                 local inst = instances[count]
-                inst.x, inst.y = v0[0], v0[1]
+                inst.x, inst.y = qx, qy
                 inst.w, inst.h = qw, qh
                 inst.u, inst.v = v0[2], v0[3]
                 inst.uw, inst.vh = v2[2] - v0[2], v2[3] - v0[3]

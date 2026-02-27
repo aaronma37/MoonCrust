@@ -16,20 +16,15 @@ void main() {
         discard;
     }
 
-    // 2. Sample the font atlas (Binding 1, Index 0)
-    // In MoonCrust, the first uploaded font atlas usually lands at index 0 of binding 1.
+    // 2. Sample the font atlas (Standard Linear)
     vec4 texColor = texture(all_textures[0], vUV);
+    float alpha = texColor.a;
+    if (texColor.r > 0.0 && texColor.a == 1.0) alpha = texColor.r;
     
-    // ImGui standard fonts store the glyph in the alpha channel or as a white image with alpha.
-    // MoonCrust uploads the font atlas as R8G8B8A8, so we use the alpha or red channel.
-    float alpha = texColor.a; 
-    
-    // Fallback: if the texture is purely greyscale, use the red channel
-    if (texColor.r > 0.0 && texColor.a == 1.0) {
-        alpha = texColor.r;
+        // 3. Hard Pixel Threshold (Wonderful Terminal Look)
+        // Forcing alpha to binary (on/off) makes pixel fonts look perfect
+        alpha = (alpha > 0.5) ? 1.0 : 0.0;
+        
+        oColor = vec4(vColor.rgb, vColor.a * alpha);
+        if (oColor.a < 0.01) discard;
     }
-    
-    oColor = vec4(vColor.rgb, vColor.a * alpha);
-    
-    if (oColor.a < 0.01) discard;
-}

@@ -10,6 +10,7 @@ local icons = require("examples.42_robot_visualizer.ui.icons")
 local ui = require("examples.42_robot_visualizer.ui.consts")
 
 panels.register("pretty_viewer", "Pretty Message Viewer", function(gui, node_id, params)
+    if _G._FONT_TINY then gui.igPushFont(_G._FONT_TINY) end
     if not panels.states[node_id] then
         panels.states[node_id] = { 
             selected_ch = nil, filter = ffi.new("char[128]"), schema = nil, last_ts = 0ULL, cached_vals = {}, facet_synced = false,
@@ -43,6 +44,7 @@ panels.register("pretty_viewer", "Pretty Message Viewer", function(gui, node_id,
     
     if p_state.selected_ch then
         local ch = p_state.selected_ch
+        playback.mark_visual(ch.id)
         if _G._GPU_INSPECTOR then _G._GPU_INSPECTOR.set_channel(ch) end
         
         local buf = playback.get_msg_buffer(ch.id)
@@ -55,9 +57,6 @@ panels.register("pretty_viewer", "Pretty Message Viewer", function(gui, node_id,
             if _G._GPU_INSPECTOR and _G._GPU_INSPECTOR.ch and _G._GPU_INSPECTOR.ch.id == ch.id then
                 if gui.igTreeNode_Str(icons.CHART .. " Live Values (GPU Parsed)") then
                     gui.igTextColored(ui.V4_LIVE, "SILICON-DIRECT PIPELINE ACTIVE")
-                    
-                    local small_font = _G.imgui.get_font(1)
-                    if small_font then gui.igPushFont(small_font) end
                     
                     if gui.igBeginTable("ValueTable", 2, bit.bor(panels.Flags.TableBorders, panels.Flags.TableResizable), ui.V2_ZERO, 0) then
                         gui.igTableSetupColumn("Field", 0, 0, 0); gui.igTableSetupColumn("Value", 0, 0, 0); gui.igTableHeadersRow()
@@ -84,13 +83,12 @@ panels.register("pretty_viewer", "Pretty Message Viewer", function(gui, node_id,
                         end
                         gui.igEndTable()
                     end
-                    
-                    if small_font then gui.igPopFont() end
                     gui.igTreePop()
                 end
             end
         else gui.igTextDisabled("(No data received yet)") end
     end
+    if _G._FONT_TINY then gui.igPopFont() end
 end)
 
 panels.register("plotter", "Topic Plotter", function(gui, node_id, params)
@@ -187,6 +185,7 @@ panels.register("plotter", "Topic Plotter", function(gui, node_id, params)
                     p_state.p_p2.x, p_state.p_p2.y = playback.HISTORY_MAX, cur_max
                     gui.ImPlot_PlotImage("##gpu_plot", p_state.p_tex, p_state.p_p1, p_state.p_p2, ui.V2_ZERO, ui.V2_ONE, ui.V4_WHITE, p_state.p_spec)
                 else
+                    playback.mark_visual(p_state.selected_ch.id)
                     local h = playback.request_field_history(p_state.selected_ch.id, target.offset, target.is_double)
                     if h and h.count > 0 then gui.ImPlot_PlotLine_FloatPtrInt(p_state.field_name, h.data, h.count, 1.0, 0.0, ffi.new("ImPlotSpec_c", {Stride=4})) end
                 end

@@ -280,13 +280,27 @@ function M.init()
         vk.vkCreateSemaphore(device, ffi.new("VkSemaphoreCreateInfo", { sType = vk.VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO }), nil, pS); render_finished_sems[i] = pS[0]
     end
     imgui.init(); imgui_renderer = require("imgui.renderer"); imgui_renderer.blur_tex_idx = 104
-    imgui.add_font("examples/41_imgui_visualizer/cimgui/imgui/misc/fonts/Roboto-Medium.ttf", 18.0, false, imgui.get_glyph_ranges_default())
+    
+    local style = imgui.gui.igGetStyle()
+    style.WindowPadding.x, style.WindowPadding.y = 4, 4
+    style.FramePadding.x, style.FramePadding.y = 2, 2
+    style.ItemSpacing.x, style.ItemSpacing.y = 4, 2
+    
+    M.font_main = imgui.add_font("examples/41_imgui_visualizer/cimgui/imgui/misc/fonts/Roboto-Medium.ttf", 13.0, false, imgui.get_glyph_ranges_default())
     local icons = require("examples.42_robot_visualizer.ui.icons")
     local icon_ranges = ffi.new("ImWchar[3]", {icons.GLYPH_MIN, icons.GLYPH_MAX, 0})
-    imgui.add_font("examples/42_robot_visualizer/fa-solid-900.otf", 16.0, true, icon_ranges)
+    imgui.add_font("examples/42_robot_visualizer/fa-solid-900.otf", 12.0, true, icon_ranges)
     
-    imgui.add_font("examples/41_imgui_visualizer/cimgui/imgui/misc/fonts/Roboto-Medium.ttf", 14.0, false, imgui.get_glyph_ranges_default())
-    imgui.add_font("examples/42_robot_visualizer/fa-solid-900.otf", 14.0, true, icon_ranges)
+    -- ProggyTiny must be exactly 10px to be sharp
+    M.font_tiny = imgui.add_font("examples/41_imgui_visualizer/cimgui/imgui/misc/fonts/ProggyTiny.ttf", 10.0, false, imgui.get_glyph_ranges_default())
+    imgui.add_font("examples/42_robot_visualizer/fa-solid-900.otf", 10.0, true, icon_ranges)
+    
+    _G._FONT_MAIN = M.font_main
+    _G._FONT_TINY = M.font_tiny
+    
+    local io = imgui.gui.igGetIO_Nil()
+    io.FontGlobalScale = 1.0 
+    
     imgui.build_and_upload_fonts(); theme.apply(imgui.gui); state.last_perf = ffi.C.SDL_GetPerformanceCounter(); M.header = require("examples.42_robot_visualizer.ui.header")
     
     -- GC TUNING: Low-latency incremental mode
@@ -443,6 +457,11 @@ function M.update()
     end
     
     playback.update(dt, nil); view_3d.update_robot_buffer(f_idx, v3d_pms)
+    
+    -- Sync GPU inspector channel if active
+    if _G._GPU_INSPECTOR and _G._GPU_INSPECTOR.ch then
+        playback.mark_visual(_G._GPU_INSPECTOR.ch.id)
+    end
     
     -- Initialize Lidar tweaking state from config if not yet set
     if not playback._lidar_configured and v3d_pms and v3d_pms.objects then

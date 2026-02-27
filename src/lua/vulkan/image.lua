@@ -85,11 +85,12 @@ end
 
 function M.create_sampler(device, filter, address_mode)
     local mode = address_mode or vk.VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE
+    local f = filter or vk.VK_FILTER_LINEAR
     local info = ffi.new("VkSamplerCreateInfo", {
         sType = vk.VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
-        magFilter = filter or vk.VK_FILTER_LINEAR,
-        minFilter = filter or vk.VK_FILTER_LINEAR,
-        mipmapMode = vk.VK_SAMPLER_MIPMAP_MODE_LINEAR,
+        magFilter = f,
+        minFilter = f,
+        mipmapMode = (f == vk.VK_FILTER_NEAREST) and vk.VK_SAMPLER_MIPMAP_MODE_NEAREST or vk.VK_SAMPLER_MIPMAP_MODE_LINEAR,
         addressModeU = mode,
         addressModeV = mode,
         addressModeW = mode,
