@@ -61,6 +61,7 @@ ffi.cdef[[
 
     // Functions not present in the core MoonCrust imgui/implot bindings
     void ImDrawList_AddCallback(ImDrawList* self, ImDrawCallback callback, void* userdata, size_t userdata_size);
+    void ImDrawList_AddLine(ImDrawList* self, const ImVec2_c p1, const ImVec2_c p2, uint32_t col, float thickness);
     ImDrawList* igGetWindowDrawList(void);
     
     bool igSliderFloat(const char* label, float* v, float v_min, float v_max, const char* format, int flags);

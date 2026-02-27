@@ -169,10 +169,32 @@ local function render_node(node, x, y, w, h, gui, id_path)
         end
         
         gui.igSetNextWindowPos(static.v2_pos, 0, ui_consts.V2_ZERO); gui.igSetNextWindowSize(static.v2_size, 0)
+        
+        -- BORDER GLOW & IMPROVED DRAGGING
         if gui.igBegin("split" .. id_path, nil, bit.bor(panels.Flags.NoDecoration, panels.Flags.NoSavedSettings, panels.Flags.NoBackground)) then
             local io = gui.igGetIO_Nil()
-            if gui.igIsWindowFocused(0) and io.MouseDown[0] then
-                local min_px = 250
+            local hovered = gui.igIsWindowHovered(0)
+            local active = gui.igIsWindowFocused(0) and io.MouseDown[0]
+            
+            -- Draw the glow/visual line
+            if hovered or active then
+                local dl = gui.igGetWindowDrawList()
+                local color = active and 0xFFFFFFFF or 0x88FFFFFF -- Full white when dragging, half-white when hovering
+                local rmin = gui.igGetWindowPos()
+                local rmax = ffi.new("ImVec2_c", {rmin.x + static.v2_size.x, rmin.y + static.v2_size.y})
+                
+                -- Draw a thin line in the middle of our 8px hitbox
+                if node.direction == "v" then
+                    local mx = rmin.x + 4
+                    gui.ImDrawList_AddLine(dl, ffi.new("ImVec2_c", {mx, rmin.y}), ffi.new("ImVec2_c", {mx, rmax.y}), color, 1.0)
+                else
+                    local my = rmin.y + 4
+                    gui.ImDrawList_AddLine(dl, ffi.new("ImVec2_c", {rmin.x, my}), ffi.new("ImVec2_c", {rmax.x, my}), color, 1.0)
+                end
+            end
+
+            if active then
+                local min_px = 100 -- Allow smaller panels
                 if node.direction == "v" then 
                     local target_ratio = (io.MousePos.x - x) / w
                     node.ratio = math.max(min_px / w, math.min((w - min_px) / w, target_ratio))
