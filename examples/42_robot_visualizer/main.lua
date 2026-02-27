@@ -194,14 +194,25 @@ local function render_node(node, x, y, w, h, gui, id_path)
             end
 
             if active then
+                if not node.is_dragging then
+                    node.is_dragging = true
+                    if node.direction == "v" then 
+                        node.grab_offset = io.MousePos.x - (x + w * node.ratio)
+                    else 
+                        node.grab_offset = io.MousePos.y - (y + h * node.ratio)
+                    end
+                end
+
                 local min_px = 100 -- Allow smaller panels
                 if node.direction == "v" then 
-                    local target_ratio = (io.MousePos.x - x) / w
+                    local target_ratio = (io.MousePos.x - (node.grab_offset or 0) - x) / w
                     node.ratio = math.max(min_px / w, math.min((w - min_px) / w, target_ratio))
                 else 
-                    local target_ratio = (io.MousePos.y - y) / h
+                    local target_ratio = (io.MousePos.y - (node.grab_offset or 0) - y) / h
                     node.ratio = math.max(min_px / h, math.min((h - min_px) / h, target_ratio))
                 end
+            else
+                node.is_dragging = false
             end
         end
         gui.igEnd()
