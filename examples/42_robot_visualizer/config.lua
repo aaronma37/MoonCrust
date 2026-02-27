@@ -19,6 +19,8 @@ M.facets = {
 					topic = "/livox/lidar",
 					point_size = 2.0,
 					attach_to = "Drone",
+					stride = 30,
+					header_skip = 16,
 				},
 			},
 		},

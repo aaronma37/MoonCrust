@@ -431,20 +431,21 @@ function M.update()
     
     playback.update(dt, nil); view_3d.update_robot_buffer(f_idx, v3d_pms)
     
-    local final_in_off = playback.lidar_offset or 0
-    local final_stride = playback.lidar_stride or 12
-    local final_pos_off = 0
-
-    -- Apply config overrides if present
-    if v3d_pms and v3d_pms.objects then
+    -- Initialize Lidar tweaking state from config if not yet set
+    if not playback._lidar_configured and v3d_pms and v3d_pms.objects then
         for _, o in ipairs(v3d_pms.objects) do
             if o.type == "lidar" and o.topic == playback.lidar_topic then
-                if o.stride then final_stride = o.stride * 4 end
-                if o.pos_offset then final_pos_off = o.pos_offset * 4 end
-                if o.header_skip then final_in_off = o.header_skip * 4 end
+                playback.lidar_stride = o.stride or 12
+                playback.lidar_offset = o.header_skip or 0
+                playback._lidar_configured = true
+                break
             end
         end
     end
+
+    local final_in_off = playback.lidar_offset or 0
+    local final_stride = playback.lidar_stride or 12
+    local final_pos_off = 0
 
     static.pc_p.in_buf_idx, static.pc_p.in_offset_bytes, static.pc_p.out_buf_idx, static.pc_p.count = 50, lidar_gtb_off + final_in_off, out_idx, pt_cnt
     static.pc_p.mode = 0
