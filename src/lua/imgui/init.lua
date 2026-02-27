@@ -11,6 +11,27 @@ local M = {
     _persistence = {}
 }
 
+-- ImGui StyleVar Enum
+M.StyleVar = {
+    Alpha = 0, DisabledAlpha = 1, WindowPadding = 2, WindowRounding = 3, WindowBorderSize = 4,
+    WindowMinSize = 5, WindowTitleAlign = 6, ChildRounding = 7, ChildBorderSize = 8,
+    PopupRounding = 9, PopupBorderSize = 10, FramePadding = 11, FrameRounding = 12,
+    FrameBorderSize = 13, ItemSpacing = 14, ItemInnerSpacing = 15, IndentSpacing = 16,
+    CellPadding = 17, ScrollbarSize = 18, ScrollbarRounding = 19, GrabMinSize = 20,
+    GrabRounding = 21, TabRounding = 22, ButtonTextAlign = 23, SelectableTextAlign = 24
+}
+
+-- ImGui Window Flags
+M.WindowFlags = {
+    None = 0, NoTitleBar = 1, NoResize = 2, NoMove = 4, NoScrollbar = 8,
+    NoScrollWithMouse = 16, NoCollapse = 32, AlwaysAutoResize = 64, NoBackground = 128,
+    NoSavedSettings = 256, NoMouseInputs = 512, MenuBar = 1024, HorizontalScrollbar = 2048,
+    NoFocusOnAppearing = 4096, NoBringToFrontOnFocus = 8192, AlwaysVerticalScrollbar = 16384,
+    AlwaysHorizontalScrollbar = 32768, NoNavInputs = 65536, NoNavFocus = 131072,
+    UnsavedDocument = 262144, NoDocking = 524288, NoNav = 196608, NoDecoration = 43,
+    NoInputs = 197120, DockNodeHost = 8388608
+}
+
 -- ImGui Key Enum (Partial)
 local ImGuiKey = {
     Tab = 512, LeftArrow = 513, RightArrow = 514, UpArrow = 515, DownArrow = 516,
@@ -162,5 +183,11 @@ function M.render(cb)
     renderer.render(cb, draw_data)
 end
 
-M.gui = setmetatable({}, { __index = ffi_lib })
+M.gui = setmetatable({}, { 
+    __index = function(t, k)
+        if k:find("ImGuiStyleVar_") == 1 then return M.StyleVar[k:sub(15)] end
+        if k:find("ImGuiWindowFlags_") == 1 then return M.WindowFlags[k:sub(18)] end
+        return ffi_lib[k]
+    end
+})
 return M

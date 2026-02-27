@@ -73,6 +73,34 @@ ffi.cdef[[
         ImGuiCond_Appearing = 8,
     } ImGuiCond_;
 
+    typedef enum {
+        ImGuiStyleVar_Alpha = 0,
+        ImGuiStyleVar_DisabledAlpha = 1,
+        ImGuiStyleVar_WindowPadding = 2,
+        ImGuiStyleVar_WindowRounding = 3,
+        ImGuiStyleVar_WindowBorderSize = 4,
+        ImGuiStyleVar_WindowMinSize = 5,
+        ImGuiStyleVar_WindowTitleAlign = 6,
+        ImGuiStyleVar_ChildRounding = 7,
+        ImGuiStyleVar_ChildBorderSize = 8,
+        ImGuiStyleVar_PopupRounding = 9,
+        ImGuiStyleVar_PopupBorderSize = 10,
+        ImGuiStyleVar_FramePadding = 11,
+        ImGuiStyleVar_FrameRounding = 12,
+        ImGuiStyleVar_FrameBorderSize = 13,
+        ImGuiStyleVar_ItemSpacing = 14,
+        ImGuiStyleVar_ItemInnerSpacing = 15,
+        ImGuiStyleVar_IndentSpacing = 16,
+        ImGuiStyleVar_CellPadding = 17,
+        ImGuiStyleVar_ScrollbarSize = 18,
+        ImGuiStyleVar_ScrollbarRounding = 19,
+        ImGuiStyleVar_GrabMinSize = 20,
+        ImGuiStyleVar_GrabRounding = 21,
+        ImGuiStyleVar_TabRounding = 22,
+        ImGuiStyleVar_ButtonTextAlign = 23,
+        ImGuiStyleVar_SelectableTextAlign = 24,
+    } ImGuiStyleVar_;
+
     typedef int ImGuiWindowFlags;
     typedef int ImGuiChildFlags;
     typedef int ImGuiCond;
@@ -458,6 +486,9 @@ ffi.cdef[[
     void igCloseCurrentPopup(void);
     void igPushStyleColor_Vec4(int idx, const ImVec4_c col);
     void igPopStyleColor(int count);
+    void igPushStyleVar_Float(int idx, float val);
+    void igPushStyleVar_Vec2(int idx, const ImVec2_c val);
+    void igPopStyleVar(int count);
 
     // Font Atlas
     typedef struct ImFontConfig {

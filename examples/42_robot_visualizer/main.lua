@@ -8,6 +8,7 @@ local pipeline = require("vulkan.pipeline")
 local swapchain = require("vulkan.swapchain")
 local sdl = require("vulkan.sdl")
 local input = require("mc.input")
+local gpu = require("mc.gpu")
 local mc = require("mc")
 local bit = require("bit")
 
@@ -291,18 +292,37 @@ function M.init()
     local icon_ranges = ffi.new("ImWchar[3]", {icons.GLYPH_MIN, icons.GLYPH_MAX, 0})
     imgui.add_font("examples/42_robot_visualizer/fa-solid-900.otf", 12.0, true, icon_ranges)
     
+    -- Register additional Roboto sizes for the "Bitmap size-matching" strategy
+    M.fonts = {
+        [10] = imgui.add_font("examples/41_imgui_visualizer/cimgui/imgui/misc/fonts/Roboto-Medium.ttf", 10.0, false, imgui.get_glyph_ranges_default()),
+        [13] = M.font_main,
+        [16] = imgui.add_font("examples/41_imgui_visualizer/cimgui/imgui/misc/fonts/Roboto-Medium.ttf", 16.0, false, imgui.get_glyph_ranges_default()),
+        [20] = imgui.add_font("examples/41_imgui_visualizer/cimgui/imgui/misc/fonts/Roboto-Medium.ttf", 20.0, false, imgui.get_glyph_ranges_default()),
+        [24] = imgui.add_font("examples/41_imgui_visualizer/cimgui/imgui/misc/fonts/Roboto-Medium.ttf", 24.0, false, imgui.get_glyph_ranges_default()),
+        [32] = imgui.add_font("examples/41_imgui_visualizer/cimgui/imgui/misc/fonts/Roboto-Medium.ttf", 32.0, false, imgui.get_glyph_ranges_default()),
+    }
+    for _, sz in ipairs({10, 16, 20, 24, 32}) do 
+        imgui.add_font("examples/42_robot_visualizer/fa-solid-900.otf", sz, true, icon_ranges)
+    end
+
     -- ProggyTiny must be exactly 10px to be sharp
     M.font_tiny = imgui.add_font("examples/41_imgui_visualizer/cimgui/imgui/misc/fonts/ProggyTiny.ttf", 10.0, false, imgui.get_glyph_ranges_default())
     imgui.add_font("examples/42_robot_visualizer/fa-solid-900.otf", 10.0, true, icon_ranges)
     
     _G._FONT_MAIN = M.font_main
     _G._FONT_TINY = M.font_tiny
+    _G._FONTS = M.fonts
     
     local io = imgui.gui.igGetIO_Nil()
     io.FontGlobalScale = 1.0 
     
     imgui.build_and_upload_fonts(); theme.apply(imgui.gui); state.last_perf = ffi.C.SDL_GetPerformanceCounter(); M.header = require("examples.42_robot_visualizer.ui.header")
     
+    -- Override Font Sampler to LINEAR for high-quality anti-aliasing
+    local descriptors = require("vulkan.descriptors")
+    local linear_sampler = gpu.sampler(vk.VK_FILTER_LINEAR)
+    descriptors.update_image_set(device, bindless_set, 1, vk.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, imgui.font_image.view, linear_sampler, vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0)
+
     -- GC TUNING: Low-latency incremental mode
     collectgarbage("setpause", 110)
     collectgarbage("setstepmul", 400)
