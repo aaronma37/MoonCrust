@@ -47,7 +47,9 @@ function Pass:using(resource, access, stage, layout)
     req.access = access
     req.stage = stage
     req.layout = layout or vk.VK_IMAGE_LAYOUT_GENERAL
-    table.insert(self.requirements, req)
+    
+    self._req_count = self._req_count + 1
+    self.requirements[self._req_count] = req
     return self
 end
 
@@ -82,23 +84,24 @@ function Graph:add_pass(name, callback)
     else
         pass.name = name
         pass.callback = callback
-        for i=1, #pass.requirements do pass.requirements[i] = nil end
     end
-    table.insert(self.passes, pass)
+    pass._req_count = 0 -- Reset requirements count for this pass
+    self.passes[self._pass_idx] = pass
     return pass
 end
 
 function Graph:reset()
-    for i=1, #self.passes do self.passes[i] = nil end
     self._pass_idx = 0
     self._req_idx = 0
 end
 
 function Graph:get_introspection_data()
     local data = { passes = {}, resources = {} }
-    for _, pass in ipairs(self.passes) do
+    for i=1, self._pass_idx do
+        local pass = self.passes[i]
         local p = { name = pass.name, deps = {} }
-        for _, req in ipairs(pass.requirements) do
+        for j=1, pass._req_count do
+            local req = pass.requirements[j]
             table.insert(p.deps, {
                 res_id = req.res.id,
                 access = req.access,
@@ -115,14 +118,16 @@ function Graph:get_introspection_data()
 end
 
 function Graph:execute(cb)
-    for _, pass in ipairs(self.passes) do
+    for i=1, self._pass_idx do
+        local pass = self.passes[i]
         local buffer_barriers = {}
         local image_barriers = {}
         local src_stages = 0
         local dst_stages = 0
         
         -- 1. Analyze requirements and build barriers
-        for _, req in ipairs(pass.requirements) do
+        for j=1, pass._req_count do
+            local req = pass.requirements[j]
             local res = req.res
             local needs_barrier = false
             

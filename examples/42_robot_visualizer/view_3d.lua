@@ -29,6 +29,7 @@ local M = {
     p_point_size = ffi.new("float[1]", 3.0),
     p_lidar_transform = ffi.new("bool[1]", true),
     axis_map = {1, 2, 3, 0}, -- Default mapping (X, Y, Z, Padding)
+    view_lights = ffi.new("Light[1024]"),
     
     graph = nil,
     res = {},
@@ -324,13 +325,20 @@ function M.render_deferred(cb_handle, point_buf_idx, frame_idx, point_count)
     end
 
     -- 2. Update Lights to View Space
-    local view_lights = ffi.new("Light[?]", MAX_LIGHTS)
+    local view_lights = M.view_lights
+    local vm = mat_view.m
     for i = 0, MAX_LIGHTS - 1 do
-        local world_pos = { M.lights_data[i].pos_radius[0], M.lights_data[i].pos_radius[1], M.lights_data[i].pos_radius[2], 1.0 }
-        local v_pos = mc.math.mat4_vec4_multiply(mat_view, world_pos)
-        view_lights[i].pos_radius[0], view_lights[i].pos_radius[1], view_lights[i].pos_radius[2] = v_pos[1], v_pos[2], v_pos[3]
-        view_lights[i].pos_radius[3] = M.lights_data[i].pos_radius[3]
-        ffi.copy(view_lights[i].color, M.lights_data[i].color, 16)
+        local l = M.lights_data[i]
+        local lx, ly, lz = l.pos_radius[0], l.pos_radius[1], l.pos_radius[2]
+        
+        -- Manual View Transform (No table allocations)
+        local vx = vm[0] * lx + vm[4] * ly + vm[8]  * lz + vm[12]
+        local vy = vm[1] * lx + vm[5] * ly + vm[9]  * lz + vm[13]
+        local vz = vm[2] * lx + vm[6] * ly + vm[10] * lz + vm[14]
+        
+        view_lights[i].pos_radius[0], view_lights[i].pos_radius[1], view_lights[i].pos_radius[2] = vx, vy, vz
+        view_lights[i].pos_radius[3] = l.pos_radius[3]
+        ffi.copy(view_lights[i].color, l.color, 16)
     end
     M.gpu_objs.lights:upload(view_lights)
 

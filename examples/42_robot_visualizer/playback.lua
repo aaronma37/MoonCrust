@@ -35,6 +35,7 @@ local M = {
     _last_msg_ch = {}, -- Reusable table
     _last_msg_offsets = {}, -- Reusable offsets
     _ch_msg_sizes = {}, -- Reusable msg sizes
+    _msg_pool = ffi.new("struct { uint64_t offset; uint32_t size; }[1024]"),
     
     -- GTB (Global Telemetry Buffer)
     gtb = nil,
@@ -315,7 +316,10 @@ function M.update(dt, raw_buffer)
 
         -- Record that we saw a message and capture its location
         M._last_msg_ch[ch_id] = true
-        M._last_msg_offsets[ch_id] = { offset = M.current_msg.offset, size = M.current_msg.data_size }
+        local pool_idx = ch_id % 1024
+        M._msg_pool[pool_idx].offset = M.current_msg.offset
+        M._msg_pool[pool_idx].size = M.current_msg.data_size
+        M._last_msg_offsets[ch_id] = M._msg_pool[pool_idx]
         
         M.bytes_processed = M.bytes_processed + tonumber(M.current_msg.data_size)
         

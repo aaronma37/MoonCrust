@@ -81,6 +81,8 @@ local static = {
     sems_wait = ffi.new("VkSemaphore[1]"), sems_sig = ffi.new("VkSemaphore[1]"), cbs = ffi.new("VkCommandBuffer[1]"), sets = ffi.new("VkDescriptorSet[1]"), v2_pos = ffi.new("ImVec2_c"), v2_size = ffi.new("ImVec2_c"), fences = ffi.new("VkFence[1]"),
     viewport = ffi.new("VkViewport", {0, 0, 0, 0, 0, 1}),
     scissor = ffi.new("VkRect2D"),
+    ui_pc = ffi.new("struct { uint32_t idx; uint32_t pad; float screen[2]; }"),
+    text_pc = ffi.new("struct { uint32_t idx; uint32_t pad; float screen[2]; }"),
 }
 
 local function split_focused(direction)
@@ -386,6 +388,17 @@ function M.update()
         if wheel ~= 0 then view_3d.cam.dist = math.max(1, view_3d.cam.dist - wheel * view_3d.cam.dist * 0.1); _G._MOUSE_WHEEL = 0 end
     end
 
+    -- DIAGNOSTIC HEARTBEAT
+    state.diag_timer = (state.diag_timer or 0) + 1
+    if state.diag_timer >= 100 then
+        local graph_passes = view_3d.graph and #view_3d.graph.passes or 0
+        local playback_offsets = 0; for _ in pairs(playback._last_msg_offsets) do playback_offsets = playback_offsets + 1 end
+        local persistence_size = #playback._persistence
+        print(string.format("[DIAG] GraphPasses: %d | PlaybackOffsets: %d | Persistence: %d | Heap: %.2fMB", 
+            graph_passes, playback_offsets, persistence_size, collectgarbage("count") / 1024))
+        state.diag_timer = 0
+    end
+
     view_3d.reset_frame()
     local win_w, win_h = _G._WIN_LW or 1280, _G._WIN_LH or 720
     
@@ -501,7 +514,8 @@ function M.update()
     end
     state.last_text_count = text_count
     
-    local ui_pc = ffi.new("struct { uint32_t idx; uint32_t pad; float screen[2]; }", { 60 + f_idx, 0, {tonumber(win_w), tonumber(win_h)} })
+    static.ui_pc.idx = 60 + f_idx
+    static.ui_pc.screen[0], static.ui_pc.screen[1] = win_w, win_h
     
     static.viewport.width, static.viewport.height = win_w, win_h
     vk.vkCmdSetViewport(cb, 0, 1, static.viewport)
@@ -511,12 +525,13 @@ function M.update()
 
     vk.vkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, M.pipe_ui)
     static.sets[0] = bindless_set; vk.vkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, M.layout_ui, 0, 1, static.sets, 0, nil)
-    vk.vkCmdPushConstants(cb, M.layout_ui, vk.VK_SHADER_STAGE_VERTEX_BIT, 0, 16, ui_pc)
+    vk.vkCmdPushConstants(cb, M.layout_ui, vk.VK_SHADER_STAGE_VERTEX_BIT, 0, 16, static.ui_pc)
     if ui_context.count > 0 then vk.vkCmdDraw(cb, 4, ui_context.count, 0, 0) end
     
-    local text_pc = ffi.new("struct { uint32_t idx; uint32_t pad; float screen[2]; }", { 62 + f_idx, 0, {tonumber(win_w), tonumber(win_h)} })
+    static.text_pc.idx = 62 + f_idx
+    static.text_pc.screen[0], static.text_pc.screen[1] = win_w, win_h
     vk.vkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, M.pipe_text)
-    vk.vkCmdPushConstants(cb, M.layout_ui, vk.VK_SHADER_STAGE_VERTEX_BIT, 0, 16, text_pc)
+    vk.vkCmdPushConstants(cb, M.layout_ui, vk.VK_SHADER_STAGE_VERTEX_BIT, 0, 16, static.text_pc)
     if text_count > 0 then vk.vkCmdDraw(cb, 4, text_count, 0, 0) end
     
     vk.vkCmdEndRendering(cb)
