@@ -10,7 +10,7 @@ local icons = require("examples.42_robot_visualizer.ui.icons")
 local ui = require("examples.42_robot_visualizer.ui.consts")
 
 panels.register("pretty_viewer", "Pretty Message Viewer", function(gui, node_id, params)
-    if _G._FONT_TINY then gui.igPushFont(_G._FONT_TINY) end
+    if _G._FONT_MAIN then gui.igPushFont(_G._FONT_MAIN) end
     if not panels.states[node_id] then
         panels.states[node_id] = { 
             selected_ch = nil, filter = ffi.new("char[128]"), schema = nil, last_ts = 0ULL, cached_vals = {}, facet_synced = false,
@@ -88,10 +88,11 @@ panels.register("pretty_viewer", "Pretty Message Viewer", function(gui, node_id,
             end
         else gui.igTextDisabled("(No data received yet)") end
     end
-    if _G._FONT_TINY then gui.igPopFont() end
+    if _G._FONT_MAIN then gui.igPopFont() end
 end)
 
 panels.register("plotter", "Topic Plotter", function(gui, node_id, params)
+    if _G._FONT_MAIN then gui.igPushFont(_G._FONT_MAIN) end
                     if not panels.states[node_id] then
                         local pool_idx = (node_id % 8) + 1
                         local tex_bindless_idx = 104 + pool_idx
@@ -193,9 +194,11 @@ panels.register("plotter", "Topic Plotter", function(gui, node_id, params)
             end
         end
     end
+    if _G._FONT_MAIN then gui.igPopFont() end
 end)
 
 panels.register("topics", "Topic List", function(gui, node_id)
+    if _G._FONT_MAIN then gui.igPushFont(_G._FONT_MAIN) end
     if gui.igButton(icons.FOLDER .. " Dump All Schemas to Terminal", ui.V2_BTN_FILL) then
         if playback.channels then for _, ch in ipairs(playback.channels) do local raw = robot.lib.mcap_get_schema_content(playback.bridge, ch.id); if raw then print("\n[ " .. ch.topic .. " ]\n" .. ffi.string(raw)) end end end
     end
@@ -205,4 +208,5 @@ panels.register("topics", "Topic List", function(gui, node_id)
         for _, ch in ipairs(playback.channels) do gui.igTableNextRow(0, 0); gui.igTableNextColumn(); gui.igText("%s", ch.topic); gui.igTableNextColumn(); gui.igText("%s", ch.schema); gui.igTableNextColumn(); gui.igText("%d", ch.id) end
         gui.igEndTable()
     end
+    if _G._FONT_MAIN then gui.igPopFont() end
 end)

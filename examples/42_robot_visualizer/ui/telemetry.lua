@@ -14,7 +14,7 @@ local function format_ts(ns, start_ns)
 end
 
 panels.register("telemetry", "Playback Controls", function(gui, node_id)
-    if _G._FONT_TINY then gui.igPushFont(_G._FONT_TINY) end
+    if _G._FONT_MAIN then gui.igPushFont(_G._FONT_MAIN) end
     local total_ns = playback.end_time - playback.start_time
     
     gui.igTextColored(playback.paused and ui.V4_PAUSED or ui.V4_LIVE, playback.paused and (icons.PAUSE .. " PAUSED") or (icons.PLAY .. " LIVE"))
@@ -41,5 +41,5 @@ panels.register("telemetry", "Playback Controls", function(gui, node_id)
         if gui.igButton(tostring(s).."x", ui.V2_BTN_TINY) then playback.speed = s end
         gui.igSameLine(0, 2)
     end
-    if _G._FONT_TINY then gui.igPopFont() end
+    if _G._FONT_MAIN then gui.igPopFont() end
 end)
