@@ -47,7 +47,8 @@ local config_path = "examples/42_robot_visualizer/config.lua"
 local state = {
     layout = config.layout, next_id = 10, last_perf = 0ULL, perf_freq = tonumber(ffi.C.SDL_GetPerformanceFrequency()), config_mtime = get_file_mtime(config_path), config_timer = 0, real_fps = 0, frame_times = {}, frame_times_idx = 1,
     picker = { trigger = false, title = "", query = ffi.new("char[128]"), selected_idx = 0, items = {}, results = {}, on_select = nil },
-    file_dialog = { trigger = false, path = ffi.new("char[256]", "."), files = {}, current_dir = "." }
+    file_dialog = { trigger = false, path = ffi.new("char[256]", "."), files = {}, current_dir = "." },
+    show_test_overlay = false,
 }
 function state.refresh_files()
     local p = io.popen('ls -ap "' .. state.file_dialog.current_dir .. '"')
@@ -60,7 +61,7 @@ _G._PICKER_STATE, _G._PERF_STATS = state.picker, state
 
 local M = {}
 local device, queue, graphics_family, sw, surface, pipe_parse, layout_parse, bindless_set, raw_buffers
-local ui_buffers, text_buffers
+local ui_buffers, text_buffers, overlay_buffers
 local MAX_UI_ELEMENTS = 10000
 local MAX_TEXT_INSTANCES = 20000
 local MAX_FRAMES_IN_FLIGHT = 2
@@ -84,6 +85,7 @@ local static = {
     scissor = ffi.new("VkRect2D"),
     ui_pc = ffi.new("struct { uint32_t idx; uint32_t pad; float screen[2]; }"),
     text_pc = ffi.new("struct { uint32_t idx; uint32_t pad; float screen[2]; }"),
+    overlay_pc = ffi.new("struct { uint32_t idx; uint32_t pad; float screen[2]; }"),
 }
 
 local function split_focused(direction)
@@ -282,6 +284,10 @@ function M.init()
     descriptors.update_buffer_set(device, bindless_set, 0, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, text_buffers[1].handle, 0, text_buffers[1].size, 62)
     descriptors.update_buffer_set(device, bindless_set, 0, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, text_buffers[2].handle, 0, text_buffers[2].size, 63)
     
+    overlay_buffers = { mc.buffer(100 * 64, "storage", nil, true), mc.buffer(100 * 64, "storage", nil, true) }
+    descriptors.update_buffer_set(device, bindless_set, 0, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, overlay_buffers[1].handle, 0, overlay_buffers[1].size, 64)
+    descriptors.update_buffer_set(device, bindless_set, 0, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, overlay_buffers[2].handle, 0, overlay_buffers[2].size, 65)
+    
     ui_context.init(ui_buffers[1].allocation.ptr, MAX_UI_ELEMENTS)
     ui_context.wrap(imgui.gui)
 
@@ -289,7 +295,7 @@ function M.init()
     local bl_layout = mc.gpu.get_bindless_layout()
     layout_parse = pipeline.create_layout(device, {bl_layout}, ffi.new("VkPushConstantRange[1]", {{ stageFlags = vk.VK_SHADER_STAGE_COMPUTE_BIT, offset = 0, size = ffi.sizeof("ParserPC") }}))
     
-    local ui_pc_range = ffi.new("VkPushConstantRange[1]", {{ stageFlags = vk.VK_SHADER_STAGE_VERTEX_BIT, offset = 0, size = 12 }})
+    local ui_pc_range = ffi.new("VkPushConstantRange[1]", {{ stageFlags = vk.VK_SHADER_STAGE_VERTEX_BIT, offset = 0, size = 16 }})
     local layout_ui = pipeline.create_layout(device, {bl_layout}, ui_pc_range)
     local pipe_ui = pipeline.create_graphics_pipeline(device, layout_ui, 
         shader.create_module(device, shader.compile_glsl(io.open("examples/42_robot_visualizer/shaders/ui.vert"):read("*all"), vk.VK_SHADER_STAGE_VERTEX_BIT)),
@@ -397,6 +403,10 @@ function M.update()
     local shift = input.key_down(225) or input.key_down(229)
     local alt = input.key_down(226) or input.key_down(230)
     if input.key_pressed(30) then state.layout = config.layout end
+    if input.key_pressed(59) or input.key_pressed(31) then 
+        state.show_test_overlay = not state.show_test_overlay 
+        print("[OVERLAY] Toggled to: " .. tostring(state.show_test_overlay))
+    end -- F2 or '2'
     
     -- Global Data Tweaking (No click required)
     if not ctrl then
@@ -605,6 +615,34 @@ function M.update()
     vk.vkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, M.pipe_text)
     vk.vkCmdPushConstants(cb, M.layout_ui, vk.VK_SHADER_STAGE_VERTEX_BIT, 0, 16, static.text_pc)
     if text_count > 0 then vk.vkCmdDraw(cb, 4, text_count, 0, 0) end
+    
+    if state.show_test_overlay then
+        vk.vkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, M.pipe_ui)
+        local ptr = ffi.cast("UIElement*", overlay_buffers[f_idx + 1].allocation.ptr)
+        
+        -- Background Rect
+        ptr[0].x, ptr[0].y = 100, 100
+        ptr[0].w, ptr[0].h = 400, 300
+        ptr[0].r, ptr[0].g, ptr[0].b, ptr[0].a = 1.0, 0.2, 0.2, 0.8
+        ptr[0].clip_min_x, ptr[0].clip_min_y = 0, 0
+        ptr[0].clip_max_x, ptr[0].clip_max_y = win_w, win_h
+        ptr[0].type = 0
+        ptr[0].rounding = 20.0
+        
+        -- A second "Shadow/Border" element to test multiple instances
+        ptr[1].x, ptr[1].y = 95, 95
+        ptr[1].w, ptr[1].h = 410, 310
+        ptr[1].r, ptr[1].g, ptr[1].b, ptr[1].a = 1.0, 1.0, 0.0, 0.4
+        ptr[1].clip_min_x, ptr[1].clip_min_y = 0, 0
+        ptr[1].clip_max_x, ptr[1].clip_max_y = win_w, win_h
+        ptr[1].type = 0
+        ptr[1].rounding = 25.0
+        
+        static.overlay_pc.idx = 64 + f_idx
+        static.overlay_pc.screen[0], static.overlay_pc.screen[1] = win_w, win_h
+        vk.vkCmdPushConstants(cb, M.layout_ui, vk.VK_SHADER_STAGE_VERTEX_BIT, 0, 16, static.overlay_pc)
+        vk.vkCmdDraw(cb, 4, 2, 0, 0)
+    end
     
     vk.vkCmdEndRendering(cb)
     
