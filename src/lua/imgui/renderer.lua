@@ -78,14 +78,7 @@ layout(location = 0) out vec4 oColor;
 
 void main() {
     vec4 texColor = texture(all_textures[nonuniformEXT(pc.uTextureIdx)], vUV);
-    bool isWhitePixel = distance(vUV, pc.uWhiteUV) < 0.0001;
-    
-    if (pc.uBlurTextureIdx > 0 && vColor.a < 0.99 && vColor.a > 0.01 && pc.uTextureIdx == 0 && isWhitePixel) {
-        vec4 blurColor = texture(all_textures[nonuniformEXT(pc.uBlurTextureIdx)], vScreenUV);
-        oColor = vec4(mix(blurColor.rgb, vColor.rgb, vColor.a), 1.0);
-    } else {
-        oColor = vColor * texColor;
-    }
+    oColor = vColor * texColor;
 }
 ]]
 
@@ -114,6 +107,14 @@ function M.init()
         depth_test = false, depth_write = false, cull_mode = vk.VK_CULL_MODE_NONE,
         color_formats = { vk.VK_FORMAT_B8G8R8A8_UNORM }
     })
+
+    M.additive_pipeline = pipeline_mod.create_graphics_pipeline(d, layout, v_mod, f_mod, {
+        vertex_binding = binding, vertex_attributes = attributes, vertex_attribute_count = 3,
+        topology = vk.VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, additive = true,
+        depth_test = false, depth_write = false, cull_mode = vk.VK_CULL_MODE_NONE,
+        color_formats = { vk.VK_FORMAT_B8G8R8A8_UNORM }
+    })
+
     M.layout = layout
     
     -- DOUBLE BUFFERING FOR STABILITY (2 frames in flight)
@@ -182,7 +183,6 @@ function M.render(cb, draw_data, frame_idx)
                 vk.vkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, M.layout, 0, 1, s.sets, 0, nil)
                 vk.vkCmdBindVertexBuffers(cb, 0, 1, s.v_buffers, s.v_offsets)
                 vk.vkCmdBindIndexBuffer(cb, i_buffer.handle, 0, vk.VK_INDEX_TYPE_UINT16)
-                -- Also restore the push constants, because they were likely clobbered!
                 vk.vkCmdPushConstants(cb, M.layout, bit.bor(vk.VK_SHADER_STAGE_VERTEX_BIT, vk.VK_SHADER_STAGE_FRAGMENT_BIT), 0, 40, pc)
             else
                 pc.tex_idx = tonumber(ffi.cast("uintptr_t", cmd.TexRef._TexID))

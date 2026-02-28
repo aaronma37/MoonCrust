@@ -16,6 +16,7 @@ ffi.cdef[[
     bool SDL_GetWindowSize(void* window, int* w, int* h);
     bool SDL_GetWindowSizeInPixels(void* window, int* w, int* h);
     bool SDL_MaximizeWindow(void* window);
+    bool SDL_SetWindowFullscreen(void* window, bool fullscreen);
     
     uint32_t SDL_GetMouseState(float* x, float* y);
     uint32_t SDL_GetRelativeMouseState(float* x, float* y);

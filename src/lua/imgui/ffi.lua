@@ -101,6 +101,109 @@ ffi.cdef[[
         ImGuiStyleVar_SelectableTextAlign = 24,
     } ImGuiStyleVar_;
 
+    typedef enum {
+        ImGuiCol_Text = 0,
+        ImGuiCol_TextDisabled,
+        ImGuiCol_WindowBg,
+        ImGuiCol_ChildBg,
+        ImGuiCol_PopupBg,
+        ImGuiCol_Border,
+        ImGuiCol_BorderShadow,
+        ImGuiCol_FrameBg,
+        ImGuiCol_FrameBgHovered,
+        ImGuiCol_FrameBgActive,
+        ImGuiCol_TitleBg,
+        ImGuiCol_TitleBgActive,
+        ImGuiCol_TitleBgCollapsed,
+        ImGuiCol_MenuBarBg,
+        ImGuiCol_ScrollbarBg,
+        ImGuiCol_ScrollbarGrab,
+        ImGuiCol_ScrollbarGrabHovered,
+        ImGuiCol_ScrollbarGrabActive,
+        ImGuiCol_CheckMark,
+        ImGuiCol_SliderGrab,
+        ImGuiCol_SliderGrabActive,
+        ImGuiCol_Button,
+        ImGuiCol_ButtonHovered,
+        ImGuiCol_ButtonActive,
+        ImGuiCol_Header,
+        ImGuiCol_HeaderHovered,
+        ImGuiCol_HeaderActive,
+        ImGuiCol_Separator,
+        ImGuiCol_SeparatorHovered,
+        ImGuiCol_SeparatorActive,
+        ImGuiCol_ResizeGrip,
+        ImGuiCol_ResizeGripHovered,
+        ImGuiCol_ResizeGripActive,
+        ImGuiCol_Tab,
+        ImGuiCol_TabHovered,
+        ImGuiCol_TabActive,
+        ImGuiCol_TabUnfocused,
+        ImGuiCol_TabUnfocusedActive,
+        ImGuiCol_PlotLines,
+        ImGuiCol_PlotLinesHovered,
+        ImGuiCol_PlotHistogram,
+        ImGuiCol_PlotHistogramHovered,
+        ImGuiCol_TableHeaderBg,
+        ImGuiCol_TableBorderStrong,
+        ImGuiCol_TableBorderLight,
+        ImGuiCol_TableRowBg,
+        ImGuiCol_TableRowBgAlt,
+        ImGuiCol_TextSelectedBg,
+        ImGuiCol_DragDropTarget,
+        ImGuiCol_NavHighlight,
+        ImGuiCol_NavWindowingHighlight,
+        ImGuiCol_NavWindowingDimBg,
+        ImGuiCol_ModalWindowDimBg,
+        ImGuiCol_COUNT
+    } ImGuiCol_;
+
+    typedef enum {
+        ImPlotAxisFlags_None = 0,
+        ImPlotAxisFlags_NoLabel = 1 << 0,
+        ImPlotAxisFlags_NoGridLines = 1 << 1,
+        ImPlotAxisFlags_NoTickMarks = 1 << 2,
+        ImPlotAxisFlags_NoTickLabels = 1 << 3,
+        ImPlotAxisFlags_LogScale = 1 << 4,
+        ImPlotAxisFlags_Time = 1 << 5,
+        ImPlotAxisFlags_Invert = 1 << 6,
+        ImPlotAxisFlags_AutoFit = 1 << 7,
+        ImPlotAxisFlags_RangeFit = 1 << 8,
+        ImPlotAxisFlags_Opposite = 1 << 9,
+        ImPlotAxisFlags_Foreground = 1 << 10,
+    } ImPlotAxisFlags_;
+
+    typedef enum {
+        ImPlotCond_None = 0,
+        ImPlotCond_Always = 1,
+        ImPlotCond_Once = 2,
+    } ImPlotCond_;
+
+    typedef enum {
+        ImGuiDir_None = -1,
+        ImGuiDir_Left = 0,
+        ImGuiDir_Right = 1,
+        ImGuiDir_Up = 2,
+        ImGuiDir_Down = 3,
+        ImGuiDir_COUNT
+    } ImGuiDir;
+
+    typedef enum {
+        ImGuiPopupFlags_None = 0,
+        ImGuiPopupFlags_MouseButtonLeft = 0,
+        ImGuiPopupFlags_MouseButtonRight = 1,
+        ImGuiPopupFlags_MouseButtonMiddle = 2,
+        ImGuiPopupFlags_MouseButtonMask_ = 0x1F,
+        ImGuiPopupFlags_MouseButtonDefault_ = 1,
+        ImGuiPopupFlags_NoOpenOverExistingPopup = 1 << 5,
+        ImGuiPopupFlags_NoOpenOverItems = 1 << 6,
+        ImGuiPopupFlags_AnyPopupId = 1 << 7,
+        ImGuiPopupFlags_AnyPopupLevel = 1 << 8,
+        ImGuiPopupFlags_AnyPopup = 384,
+    } ImGuiPopupFlags_;
+
+    typedef int ImGuiPopupFlags;
+    typedef int ImGuiCol;
     typedef int ImGuiWindowFlags;
     typedef int ImGuiChildFlags;
     typedef int ImGuiCond;
@@ -440,18 +543,31 @@ ffi.cdef[[
     ImDrawData* igGetDrawData(void);
     void igEndFrame(void);
     ImDrawList* igGetWindowDrawList(void);
+    void ImDrawList_AddCallback(ImDrawList* self, ImDrawCallback callback, void* callback_data);
+    void ImDrawList_PathLineTo(ImDrawList* self, const ImVec2_c pos);
+    void ImDrawList_PathBezierCubicCurveTo(ImDrawList* self, const ImVec2_c p2, const ImVec2_c p3, const ImVec2_c p4, int num_segments);
+    void ImDrawList_PathStroke(ImDrawList* self, unsigned int col, int flags, float thickness);
+    void ImDrawList_PathClear(ImDrawList* self);
     
     void igShowDemoWindow(bool* p_open);
     bool igBegin(const char* name, bool* p_open, ImGuiWindowFlags flags);
     void igEnd(void);
     void igText(const char* fmt, ...);
     void igTextColored(const ImVec4_c col, const char* fmt, ...);
+    void igTextUnformatted(const char* text, const char* text_end);
     bool igCheckbox(const char* label, bool* v);
     bool igButton(const char* label, const ImVec2_c size);
+    bool igArrowButton(const char* str_id, ImGuiDir dir);
+    void igProgressBar(float fraction, const ImVec2_c size_arg, const char* overlay);
     void igSeparator(void);
     bool igIsItemHovered(int flags);
     void igBeginTooltip(void);
     void igEndTooltip(void);
+
+    // Window Positioning
+    void igSetNextWindowPos(const ImVec2_c pos, ImGuiCond cond, const ImVec2_c pivot);
+    void igSetNextWindowSize(const ImVec2_c size, ImGuiCond cond);
+    void igSetNextWindowBgAlpha(float alpha);
 
     // Window Info & Cursor
     ImVec2_c igGetWindowPos(void);
@@ -463,6 +579,8 @@ ffi.cdef[[
     // Child Windows
     bool igBeginChild_Str(const char* str_id, const ImVec2_c size, bool border, ImGuiWindowFlags flags);
     void igEndChild(void);
+    void igBeginGroup(void);
+    void igEndGroup(void);
 
     // Widgets
     bool igBeginCombo(const char* label, const char* preview_value, int flags);
@@ -471,6 +589,9 @@ ffi.cdef[[
     bool igInputText(const char* label, char* buf, size_t buf_size, int flags, void* callback, void* user_data);
     bool igTreeNode_Str(const char* label);
     void igTreePop(void);
+    void igPushID_Str(const char* str_id);
+    void igPushID_Int(int int_id);
+    void igPopID(void);
     void igSameLine(float offset_from_start_x, float spacing_w);
     void igSetNextItemWidth(float item_width);
     void igSetKeyboardFocusHere(int offset);
@@ -479,16 +600,46 @@ ffi.cdef[[
     float igGetCursorPosX(void);
     float igGetCursorPosY(void);
     bool igIsWindowHovered(int flags);
+    bool igIsMouseClicked_Bool(int button, bool repeat);
     bool igInvisibleButton(const char* str_id, const ImVec2_c size, int flags);
     void igOpenPopup_Str(const char* str_id, int flags);
     bool igBeginPopupModal(const char* name, bool* p_open, int flags);
+    bool igBeginPopup(const char* str_id, int flags);
     void igEndPopup(void);
+    bool igBeginPopupContextWindow(const char* str_id, int flags);
+    bool igBeginPopupContextItem(const char* str_id, int flags);
+    bool igBeginPopupContextVoid(const char* str_id, int flags);
     void igCloseCurrentPopup(void);
     void igPushStyleColor_Vec4(int idx, const ImVec4_c col);
     void igPopStyleColor(int count);
     void igPushStyleVar_Float(int idx, float val);
     void igPushStyleVar_Vec2(int idx, const ImVec2_c val);
     void igPopStyleVar(int count);
+
+    // Menus
+    bool igBeginMenuBar(void);
+    void igEndMenuBar(void);
+    bool igBeginMainMenuBar(void);
+    void igEndMainMenuBar(void);
+    bool igBeginMenu(const char* label, bool enabled);
+    void igEndMenu(void);
+    bool igMenuItem_Bool(const char* label, const char* shortcut, bool selected, bool enabled);
+
+    // Columns / Tables
+    void igColumns(int count, const char* id, bool border);
+    void igNextColumn(void);
+    int igGetColumnIndex(void);
+    float igGetColumnWidth(int column_index);
+    void igSetColumnWidth(int column_index, float width);
+    float igGetColumnOffset(int column_index);
+    void igSetColumnOffset(int column_index, float offset_x);
+    int igGetColumnsCount(void);
+
+    // Logs / Scrolling
+    void igSetScrollHereY(float center_y_ratio);
+    void igSetScrollY_Float(float scroll_y);
+    float igGetScrollY(void);
+    float igGetScrollMaxY(void);
 
     // Font Atlas
     typedef struct ImFontConfig {
@@ -547,6 +698,7 @@ ffi.cdef[[
     void ImPlot3D_PlotLine_FloatPtr(const char* label_id, const float* xs, const float* ys, const float* zs, int count, const ImPlot3DSpec_c spec);
 ]]
 
-local lib_path = _G.IMGUI_LIB_PATH or "examples/42_robot_visualizer/build/mooncrust_robot.so"
-local M = ffi.load(lib_path)
-return M
+return function()
+    local lib_path = _G.IMGUI_LIB_PATH or "examples/42_robot_visualizer/build/mooncrust_robot.so"
+    return ffi.load(lib_path)
+end

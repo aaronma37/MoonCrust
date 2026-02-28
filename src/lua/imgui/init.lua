@@ -1,14 +1,23 @@
 local ffi = require("ffi")
-local ffi_lib = require("imgui.ffi")
+local ffi_loader = require("imgui.ffi")
 local renderer = require("imgui.renderer")
 local vulkan = require("vulkan")
 local gpu = require("mc.gpu")
 local vk = require("vulkan.ffi")
 local input = require("mc.input")
 
+-- USE GLOBAL STATE TO PREVENT DOUBLE-INIT ACROSS REQUIRES
+_G._IMGUI_STATE = _G._IMGUI_STATE or {
+    ctx = nil,
+    plot_ctx = nil,
+    plot3d_ctx = nil,
+    ffi_lib = nil,
+    persistence = {}
+}
+local S = _G._IMGUI_STATE
+
 local M = {
-    -- Persistent storage to prevent GC of pointers passed to C
-    _persistence = {}
+    _persistence = S.persistence
 }
 
 -- ImGui StyleVar Enum
@@ -67,11 +76,13 @@ local char_map = {
 }
 
 function M.get_glyph_ranges_default()
-    return ffi_lib.ImFontAtlas_GetGlyphRangesDefault(ffi_lib.igGetIO_Nil().Fonts)
+    if not S.ffi_lib then S.ffi_lib = ffi_loader() end
+    return S.ffi_lib.ImFontAtlas_GetGlyphRangesDefault(S.ffi_lib.igGetIO_Nil().Fonts)
 end
 
 function M.get_font(index)
-    local io = ffi_lib.igGetIO_Nil()
+    if not S.ffi_lib then S.ffi_lib = ffi_loader() end
+    local io = S.ffi_lib.igGetIO_Nil()
     local fonts = io.Fonts.Fonts
     if index >= 0 and index < fonts.Size then
         local data = ffi.cast("void**", fonts.Data)
@@ -81,17 +92,17 @@ function M.get_font(index)
 end
 
 function M.build_and_upload_fonts()
-    local io = ffi_lib.igGetIO_Nil()
+    if not S.ffi_lib then S.ffi_lib = ffi_loader() end
+    local io = S.ffi_lib.igGetIO_Nil()
     io.Fonts.TexMaxWidth = 4096
     io.Fonts.TexMaxHeight = 4096
     
-    ffi_lib.igImFontAtlasBuildMain(io.Fonts)
+    S.ffi_lib.igImFontAtlasBuildMain(io.Fonts)
     local tex_data = io.Fonts.TexData
     local w, h, pixels = tex_data.Width, tex_data.Height, tex_data.Pixels
     
     print(string.format("[ImGui] Building Font Atlas: %dx%d", w, h))
     
-    -- UI Fonts must NEVER use mipmaps (that causes the blur)
     local img = gpu.image(w, h, vk.VK_FORMAT_R8G8B8A8_UNORM, "sampled_attachment")
     local pd, d, q, family = vulkan.get_physical_device(), vulkan.get_device(), vulkan.get_queue()
     local staging = require("vulkan.staging")
@@ -103,29 +114,26 @@ function M.build_and_upload_fonts()
     local sharp_sampler = gpu.sampler(vk.VK_FILTER_NEAREST)
     descriptors.update_image_set(d, gpu.get_bindless_set(), 1, vk.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, img.view, sharp_sampler, vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0)
     
-    ffi_lib.ImTextureData_SetTexID(io.Fonts.TexData, ffi.cast("ImTextureID", 0))
+    S.ffi_lib.ImTextureData_SetTexID(io.Fonts.TexData, ffi.cast("ImTextureID", 0))
     M.font_image = img
     renderer.white_uv = {io.Fonts.TexUvWhitePixel.x, io.Fonts.TexUvWhitePixel.y}
 end
 
 function M.add_font(path, size, merge, glyph_ranges)
-    local io = ffi_lib.igGetIO_Nil()
+    if not S.ffi_lib then S.ffi_lib = ffi_loader() end
+    local io = S.ffi_lib.igGetIO_Nil()
     
-    local config = ffi_lib.ImFontConfig_ImFontConfig()
+    local config = S.ffi_lib.ImFontConfig_ImFontConfig()
     config.MergeMode = merge == true
     config.PixelSnapH = true
     config.RasterizerMultiply = 1.0
     config.RasterizerDensity = 1.0
     
-    if glyph_ranges then
-        config.GlyphRanges = glyph_ranges
-    end
-    
-    -- Store reference to prevent GC
-    table.insert(M._persistence, { config = config, ranges = glyph_ranges })
+    if glyph_ranges then config.GlyphRanges = glyph_ranges end
+    table.insert(S.persistence, { config = config, ranges = glyph_ranges })
     
     print(string.format("[ImGui] Loading Font: %s (%.1fpx) merge=%s", path, size, tostring(merge)))
-    local font = ffi_lib.ImFontAtlas_AddFontFromFileTTF(io.Fonts, path, size, config, glyph_ranges)
+    local font = S.ffi_lib.ImFontAtlas_AddFontFromFileTTF(io.Fonts, path, size, config, glyph_ranges)
     if font == nil then
         print("[ImGui] ERROR: Failed to load font: " .. path)
         return nil
@@ -134,60 +142,72 @@ function M.add_font(path, size, merge, glyph_ranges)
 end
 
 function M.init()
-    M.ctx = ffi_lib.igCreateContext(nil)
-    M.plot_ctx = ffi_lib.ImPlot_CreateContext()
-    M.plot3d_ctx = ffi_lib.ImPlot3D_CreateContext()
-    local io = ffi_lib.igGetIO_Nil()
+    if S.ctx then return end
+    if not S.ffi_lib then S.ffi_lib = ffi_loader() end
+    S.ctx = S.ffi_lib.igCreateContext(nil)
+    S.plot_ctx = S.ffi_lib.ImPlot_CreateContext()
+    S.plot3d_ctx = S.ffi_lib.ImPlot3D_CreateContext()
+    local io = S.ffi_lib.igGetIO_Nil()
     io.DisplaySize.x, io.DisplaySize.y = 1280, 720
+    
+    -- ENABLE ANTI-ALIASING
+    local style = S.ffi_lib.igGetStyle()
+    style.AntiAliasedLines = true
+    style.AntiAliasedFill = true
+    style.AntiAliasedLinesUseTex = true
+    
+    M.build_and_upload_fonts()
     renderer.init()
 end
 
 function M.new_frame()
-    local io = ffi_lib.igGetIO_Nil()
+    if not S.ffi_lib then S.ffi_lib = ffi_loader() end
+    local io = S.ffi_lib.igGetIO_Nil()
     io.DeltaTime = 1.0 / 60.0
     local lw, lh = _G._WIN_LW or 1280, _G._WIN_LH or 720
     local pw, ph = _G._WIN_PW or lw, _G._WIN_PH or lh
     io.DisplaySize.x, io.DisplaySize.y = lw, lh
     io.DisplayFramebufferScale.x, io.DisplayFramebufferScale.y = pw / lw, ph / lh
     
-    -- STABLE INPUT FEEDING (Modern Event API)
     local mx, my = input.mouse_pos()
-    ffi_lib.ImGuiIO_AddMousePosEvent(io, mx, my)
-    ffi_lib.ImGuiIO_AddMouseButtonEvent(io, 0, _G._MOUSE_L == true)
-    ffi_lib.ImGuiIO_AddMouseButtonEvent(io, 1, _G._MOUSE_R == true)
-    ffi_lib.ImGuiIO_AddMouseButtonEvent(io, 2, _G._MOUSE_M == true)
-    ffi_lib.ImGuiIO_AddMouseWheelEvent(io, 0, _G._MOUSE_WHEEL or 0)
+    S.ffi_lib.ImGuiIO_AddMousePosEvent(io, mx, my)
+    S.ffi_lib.ImGuiIO_AddMouseButtonEvent(io, 0, _G._MOUSE_L == true)
+    S.ffi_lib.ImGuiIO_AddMouseButtonEvent(io, 1, _G._MOUSE_R == true)
+    S.ffi_lib.ImGuiIO_AddMouseButtonEvent(io, 2, _G._MOUSE_M == true)
+    S.ffi_lib.ImGuiIO_AddMouseWheelEvent(io, 0, _G._MOUSE_WHEEL or 0)
     _G._MOUSE_WHEEL = 0
 
     local shift = input.key_down(225) or input.key_down(229)
     for scancode, im_key in pairs(key_map) do
         if input.key_pressed(scancode) then
-            ffi_lib.ImGuiIO_AddKeyEvent(io, im_key, true)
+            S.ffi_lib.ImGuiIO_AddKeyEvent(io, im_key, true)
             if char_map[scancode] then
                 local c = char_map[scancode]
                 if shift and c >= 97 and c <= 122 then c = c - 32 end
-                ffi_lib.ImGuiIO_AddInputCharacter(io, c)
+                S.ffi_lib.ImGuiIO_AddInputCharacter(io, c)
             end
         elseif input.key_released(scancode) then
-            ffi_lib.ImGuiIO_AddKeyEvent(io, im_key, false)
+            S.ffi_lib.ImGuiIO_AddKeyEvent(io, im_key, false)
         end
     end
     
-    ffi_lib.igNewFrame()
+    S.ffi_lib.igNewFrame()
 end
 
 function M.render(cb)
-    ffi_lib.igRender()
-    local draw_data = ffi_lib.igGetDrawData()
+    if not S.ffi_lib then S.ffi_lib = ffi_loader() end
+    S.ffi_lib.igRender()
+    local draw_data = S.ffi_lib.igGetDrawData()
     renderer.on_callback = M.on_callback
     renderer.render(cb, draw_data)
 end
 
 M.gui = setmetatable({}, { 
     __index = function(t, k)
+        if not S.ffi_lib then S.ffi_lib = ffi_loader() end
         if k:find("ImGuiStyleVar_") == 1 then return M.StyleVar[k:sub(15)] end
         if k:find("ImGuiWindowFlags_") == 1 then return M.WindowFlags[k:sub(18)] end
-        return ffi_lib[k]
+        return S.ffi_lib[k]
     end
 })
 return M

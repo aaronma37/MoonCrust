@@ -49,6 +49,7 @@ local examples = {
     ["41"] = "examples.41_imgui_visualizer.main",
     ["42"] = "examples.42_robot_visualizer.main",
     ["43"] = "examples.43_forward_plus.main",
+    ["44"] = "examples.44_bespoke_orchestrator.main",
 }
 
 -- Default to the flagship if no arg provided
