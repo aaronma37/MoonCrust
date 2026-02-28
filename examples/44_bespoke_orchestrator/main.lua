@@ -28,11 +28,11 @@ local M = {
     telemetry = { concurrency = ffi.new("float[100]"), latency = ffi.new("float[100]"), ptr = 0 },
     logs = {}, auto_scroll = true, last_packet_time = 0,
     nodes = {
-        { id = 1, name = "Trigger: Webhook", color = {0.2, 0.5, 0.9, 1}, expanded = true, pin_in = {x=0,y=0}, pin_out = {x=0,y=0} },
-        { id = 2, name = "Transform: JSON", color = {0.9, 0.6, 0.1, 1}, expanded = true, pin_in = {x=0,y=0}, pin_out = {x=0,y=0} },
-        { id = 3, name = "LLM: Classify", color = {0.6, 0.2, 0.9, 1}, expanded = true, pin_in = {x=0,y=0}, pin_out = {x=0,y=0} },
-        { id = 4, name = "LLM: Summarize", color = {0.6, 0.2, 0.9, 1}, expanded = false, pin_in = {x=0,y=0}, pin_out = {x=0,y=0} },
-        { id = 5, name = "Action: Slack", color = {0.1, 0.8, 0.4, 1}, expanded = true, pin_in = {x=0,y=0}, pin_out = {x=0,y=0} },
+        { id = 1, name = "Trigger: Webhook", color = {0.2, 0.5, 0.9, 1}, expanded = true },
+        { id = 2, name = "Transform: JSON", color = {0.9, 0.6, 0.1, 1}, expanded = true },
+        { id = 3, name = "LLM: Classify", color = {0.6, 0.2, 0.9, 1}, expanded = true },
+        { id = 4, name = "LLM: Summarize", color = {0.6, 0.2, 0.9, 1}, expanded = false },
+        { id = 5, name = "Action: Slack", color = {0.1, 0.8, 0.4, 1}, expanded = true },
     },
     links = {
         { id = 1, start = 1, end_node = 2, type = "data" },
@@ -67,9 +67,16 @@ function M.init()
     f_vert:close(); f_frag:close()
     
     imgui.init(); M.nodes_ctx = imgui.gui.imnodes_CreateContext(); imgui.gui.imnodes_StyleColorsDark(nil)
-    imgui.gui.imnodes_PushStyleVar_Float(imgui.gui.ImNodesStyleVar_LinkLineSegmentsPerLength, 1.2)
-    imgui.gui.imnodes_GetIO().AltMouseButton = 2 
     
+    -- BESPOKE HIGH-PERFORMANCE STYLE
+    local style = imgui.gui.imnodes_GetStyle()
+    style.NodeCornerRounding = 12.0
+    style.NodePaddingX = 12.0
+    style.NodePaddingY = 12.0
+    style.PinCircleRadius = 5.0 -- Larger ports
+    style.LinkLineSegmentsPerLength = 2.0 -- Maximum smoothness for 16-bit indices
+    
+    imgui.gui.imnodes_GetIO().AltMouseButton = 2 
     for _, n in ipairs(M.nodes) do M.node_map[n.id] = n end
 
     local pool = command.create_pool(device, graphics_family); cb = command.allocate_buffers(device, pool, 1)[1]
@@ -92,36 +99,24 @@ function M.on_imgui_callback(cb, func_ptr, data_ptr)
     end
 end
 
--- MANUAL GLOW LINK DRAWING
-function M.draw_manual_link(draw_list, p1, p2, r, g, b)
+function M.handle_node_collisions()
     local gui = imgui.gui
-    -- Curvature based on distance
-    local dx = math.abs(p2.x - p1.x)
-    local offset = math.min(150, math.max(50, dx * 0.5))
-    local cp1 = ffi.new("ImVec2_c", { p1.x + offset, p1.y })
-    local cp2 = ffi.new("ImVec2_c", { p2.x - offset, p2.y })
-    local pulse = 0.8 + math.sin(os.clock() * 4) * 0.2
-
-    local steps = 12
-    for i = 1, steps do
-        local t = i / steps
-        local thickness = 2.0 + (1.0 - t)^2 * 23.0
-        local alpha = 0.01 + (t * t) * 0.12
-        gui.ImDrawList_PathClear(draw_list)
-        gui.ImDrawList_PathLineTo(draw_list, p1)
-        gui.ImDrawList_PathBezierCubicCurveTo(draw_list, cp1, cp2, p2, 48)
-        gui.ImDrawList_PathStroke(draw_list, M.rgba_to_u32(r, g, b, alpha * pulse), 0, thickness)
+    local min_dist = 300
+    for i=1, #M.nodes do
+        for j=i+1, #M.nodes do
+            local n1, n2 = M.nodes[i], M.nodes[j]
+            local p1, p2 = gui.imnodes_GetNodeGridSpacePos(n1.id), gui.imnodes_GetNodeGridSpacePos(n2.id)
+            local dx, dy = p2.x - p1.x, p2.y - p1.y
+            local dist = math.sqrt(dx*dx + dy*dy)
+            if dist < min_dist then
+                if dist < 1 then dist = 1; dx = 1 end
+                local force = (min_dist - dist) * 0.05
+                local ox, oy = (dx / dist) * force, (dy / dist) * force
+                gui.imnodes_SetNodeGridSpacePos(n1.id, ffi.new("ImVec2_c", { p1.x - ox, p1.y - oy }))
+                gui.imnodes_SetNodeGridSpacePos(n2.id, ffi.new("ImVec2_c", { p2.x + ox, p2.y + oy }))
+            end
+        end
     end
-    
-    gui.ImDrawList_PathClear(draw_list)
-    gui.ImDrawList_PathLineTo(draw_list, p1)
-    gui.ImDrawList_PathBezierCubicCurveTo(draw_list, cp1, cp2, p2, 48)
-    gui.ImDrawList_PathStroke(draw_list, M.rgba_to_u32(r + 0.3, g + 0.3, b + 0.3, 0.8), 0, 2.5)
-
-    gui.ImDrawList_PathClear(draw_list)
-    gui.ImDrawList_PathLineTo(draw_list, p1)
-    gui.ImDrawList_PathBezierCubicCurveTo(draw_list, cp1, cp2, p2, 48)
-    gui.ImDrawList_PathStroke(draw_list, M.rgba_to_u32(1, 1, 1, 1.0), 0, 1.0)
 end
 
 function M.update()
@@ -144,8 +139,6 @@ function M.update()
                 for _, log in ipairs(telemetry.logs) do table.insert(M.logs, log); if #M.logs > 100 then table.remove(M.logs, 1) end end
             end
         end
-    else
-        M.telemetry.ptr = (M.telemetry.ptr + 1) % 100; M.telemetry.concurrency[M.telemetry.ptr] = 800 + math.sin(os.clock()) * 100; M.telemetry.latency[M.telemetry.ptr] = 20 + math.random() * 5
     end
 
     imgui.new_frame(); local gui = imgui.gui
@@ -173,53 +166,55 @@ function M.update()
             if gui.igBeginPopup("GraphContextMenu", 0) then
                 if gui.igMenuItem_Bool("Add Agent Node", nil, false, true) then
                     local nid = M.next_node_id; M.next_node_id = nid + 1
-                    local n = { id = nid, name = "Agent: " .. nid, color = {math.random(), math.random(), math.random(), 1}, expanded = true, pin_in = {x=0,y=0}, pin_out = {x=0,y=0} }
+                    local n = { id = nid, name = "Agent: " .. nid, color = {math.random(), math.random(), math.random(), 1}, expanded = true }
                     table.insert(M.nodes, n); M.node_map[nid] = n
                 end
                 gui.igEndPopup()
             end
 
             gui.imnodes_BeginNodeEditor()
+            -- Inject Additive Blending before imnodes draws links (this only works if they aren't batched with nodes)
+            gui.ImDrawList_AddCallback(gui.igGetWindowDrawList(), bespoke_lib.orchestrator_dummy_callback, ffi.cast("void*", 1))
+
             for _, node in ipairs(M.nodes) do
                 gui.igPushID_Int(node.id); gui.imnodes_BeginNode(node.id); gui.imnodes_BeginNodeTitleBar()
                 if gui.igArrowButton("##collapse", node.expanded and gui.ImGuiDir_Down or gui.ImGuiDir_Right) then node.expanded = not node.expanded end
                 gui.igSameLine(0, 5); gui.igTextUnformatted(node.name, nil); gui.imnodes_EndNodeTitleBar()
                 
-                -- INPUT PORT
-                gui.imnodes_BeginInputAttribute(node.id * 100, 1)
-                gui.igDummy(ffi.new("ImVec2_c", {16, 16}))
-                local min, max = gui.igGetItemRectMin(), gui.igGetItemRectMax()
-                node.pin_in = { x = (min.x + max.x) * 0.5, y = (min.y + max.y) * 0.5 }
-                gui.imnodes_EndInputAttribute()
-                
+                -- NATIVE PIN PLACEMENT
+                gui.imnodes_BeginInputAttribute(node.id * 100, 1); gui.igText("In"); gui.imnodes_EndInputAttribute()
                 gui.igSameLine(0, 40)
-                
-                -- OUTPUT PORT
-                gui.imnodes_BeginOutputAttribute(node.id * 100 + 1, 1)
-                gui.igDummy(ffi.new("ImVec2_c", {16, 16}))
-                local minO, maxO = gui.igGetItemRectMin(), gui.igGetItemRectMax()
-                node.pin_out = { x = (minO.x + maxO.x) * 0.5, y = (minO.y + maxO.y) * 0.5 }
-                gui.imnodes_EndOutputAttribute()
+                gui.imnodes_BeginOutputAttribute(node.id * 100 + 1, 1); gui.igText("Out"); gui.imnodes_EndOutputAttribute()
                 
                 if node.expanded then gui.igSeparator(); gui.igText("Metrics:"); gui.igProgressBar(math.random(), ffi.new("ImVec2_c", {120, 15}), ""); gui.igText("State: ACTIVE") end
                 gui.imnodes_EndNode(); gui.igPopID()
             end
             
-            local dl = gui.igGetWindowDrawList()
-            gui.ImDrawList_AddCallback(dl, bespoke_lib.orchestrator_dummy_callback, ffi.cast("void*", 1))
+            -- NATIVE OVERLAPPING GLOW LINKS (Perfect Anchors)
             for _, link in ipairs(M.links) do
-                local n1 = M.node_map[link.start]; local n2 = M.node_map[link.end_node]
-                if n1 and n2 and n1.pin_out.x ~= 0 and n2.pin_in.x ~= 0 then
-                    local r, g, b = 0.2, 0.7, 1.0
-                    if link.type == "logic" then r, g, b = 0.8, 0.4, 1.0 elseif link.type == "action" then r, g, b = 0.4, 1.0, 0.6 end
-                    M.draw_manual_link(dl, ffi.new("ImVec2_c", n1.pin_out), ffi.new("ImVec2_c", n2.pin_in), r, g, b)
-                end
+                local r, g, b = 0.2, 0.7, 1.0
+                if link.type == "logic" then r, g, b = 0.8, 0.4, 1.0 elseif link.type == "action" then r, g, b = 0.4, 1.0, 0.6 end
+                local pulse = 0.8 + math.sin(os.clock() * 4) * 0.2
+                
+                -- Pass 1: Wide Neon Bloom
+                gui.imnodes_PushStyleVar_Float(gui.ImNodesStyleVar_LinkThickness, 12.0)
+                gui.imnodes_PushColorStyle(gui.ImNodesCol_Link, M.rgba_to_u32(r, g, b, 0.2 * pulse))
+                gui.imnodes_Link(link.id * 100 + 1, link.start * 100 + 1, link.end_node * 100)
+                gui.imnodes_PopColorStyle(); gui.imnodes_PopStyleVar(1)
+                
+                -- Pass 2: Sharp Core
+                gui.imnodes_PushStyleVar_Float(gui.ImNodesStyleVar_LinkThickness, 2.5)
+                gui.imnodes_PushColorStyle(gui.ImNodesCol_Link, M.rgba_to_u32(r + 0.3, g + 0.3, b + 0.3, 1.0))
+                gui.imnodes_Link(link.id * 100 + 2, link.start * 100 + 1, link.end_node * 100)
+                gui.imnodes_PopColorStyle(); gui.imnodes_PopStyleVar(1)
             end
-            gui.ImDrawList_AddCallback(dl, bespoke_lib.orchestrator_dummy_callback, ffi.cast("void*", 0))
 
             gui.imnodes_EndNodeEditor()
-            local pan = gui.imnodes_EditorContextGetPanning(); local limit = 5000
+            gui.ImDrawList_AddCallback(gui.igGetWindowDrawList(), bespoke_lib.orchestrator_dummy_callback, ffi.cast("void*", 0))
+
+            local pan = gui.imnodes_EditorContextGetPanning(); local limit = 3000
             if pan.x < -limit or pan.x > limit or pan.y < -limit or pan.y > limit then pan.x = math.max(-limit, math.min(limit, pan.x)); pan.y = math.max(-limit, math.min(limit, pan.y)); gui.imnodes_EditorContextResetPanning(pan) end
+            M.handle_node_collisions()
         gui.igEndChild(); gui.igSameLine(0, -1); gui.igBeginGroup()
             if gui.ImPlot_BeginPlot("Real-time Concurrency", ffi.new("ImVec2_c", {-1, 200}), 0) then
                 gui.ImPlot_SetupAxis(0, "", 8); gui.ImPlot_SetupAxis(1, "", 0); gui.ImPlot_SetupAxisLimits(1, 0, 1200, 2)
@@ -237,9 +232,6 @@ function M.update()
     end
 
     vk.vkResetCommandBuffer(cb, 0); vk.vkBeginCommandBuffer(cb, ffi.new("VkCommandBufferBeginInfo", { sType = vk.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO }))
-    local range = ffi.new("VkImageSubresourceRange", { aspectMask = vk.VK_IMAGE_ASPECT_COLOR_BIT, levelCount = 1, layerCount = 1 })
-    local bar = ffi.new("VkImageMemoryBarrier[1]", {{ sType=vk.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, oldLayout=vk.VK_IMAGE_LAYOUT_UNDEFINED, newLayout=vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, image=ffi.cast("VkImage", sw.images[img_idx]), subresourceRange=range, dstAccessMask=vk.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT }})
-    vk.vkCmdPipelineBarrier(cb, vk.VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, vk.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, nil, 0, nil, 1, bar)
     local color_attach = ffi.new("VkRenderingAttachmentInfo[1]")
     color_attach[0].sType = vk.VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO; color_attach[0].imageView = ffi.cast("VkImageView", sw.views[img_idx]); color_attach[0].imageLayout = vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL; color_attach[0].loadOp = vk.VK_ATTACHMENT_LOAD_OP_CLEAR; color_attach[0].storeOp = vk.VK_ATTACHMENT_STORE_OP_STORE; color_attach[0].clearValue.color.float32 = {0.02, 0.02, 0.03, 1.0}
     vk.vkCmdBeginRendering(cb, ffi.new("VkRenderingInfo", { sType=vk.VK_STRUCTURE_TYPE_RENDERING_INFO, renderArea={extent=sw.extent}, layerCount=1, colorAttachmentCount=1, pColorAttachments=color_attach }))
@@ -248,7 +240,7 @@ function M.update()
     vk.vkCmdDraw(cb, 3, 1, 0, 0)
     imgui.on_callback = M.on_imgui_callback; imgui.render(cb)
     vk.vkCmdEndRendering(cb)
-    bar[0].oldLayout, bar[0].newLayout = vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, vk.VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
+    local bar = ffi.new("VkImageMemoryBarrier[1]", {{ sType=vk.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, oldLayout=vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, newLayout=vk.VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, image=ffi.cast("VkImage", sw.images[img_idx]), subresourceRange={ aspectMask = vk.VK_IMAGE_ASPECT_COLOR_BIT, levelCount = 1, layerCount = 1 }, dstAccessMask=0 }})
     vk.vkCmdPipelineBarrier(cb, vk.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, vk.VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nil, 0, nil, 1, bar); vk.vkEndCommandBuffer(cb)
     vk.vkQueueSubmit(queue, 1, ffi.new("VkSubmitInfo", { sType=vk.VK_STRUCTURE_TYPE_SUBMIT_INFO, waitSemaphoreCount=1, pWaitSemaphores=ffi.new("VkSemaphore[1]", {image_available_sem}), pWaitDstStageMask=ffi.new("VkPipelineStageFlags[1]", {vk.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT}), commandBufferCount=1, pCommandBuffers=ffi.new("VkCommandBuffer[1]", {cb}), signalSemaphoreCount=1, pSignalSemaphores=ffi.new("VkSemaphore[1]", {sw.semaphores[img_idx]}) }), frame_fence)
     sw:present(queue, img_idx, sw.semaphores[img_idx])

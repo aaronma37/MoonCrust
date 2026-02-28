@@ -76,19 +76,15 @@ ffi.cdef[[
         ImNodesStyleFlags Flags;
     } ImNodesStyle;
 
-    typedef struct ImNodesConfigFlags {
-        int Flags;
-    } ImNodesConfigFlags;
-
     typedef struct ImNodesIO {
-        struct { const bool* Modifier; } EmulateThreeButtonMouse;
-        struct { const bool* Modifier; } LinkDetachWithModifierClick;
-        struct { const bool* Modifier; } MultipleSelectModifier;
+        struct { int Modifier; } EmulateThreeButtonMouse;
+        struct { int Modifier; } LinkDetachWithModifierClick;
+        struct { int Modifier; } MultipleSelectModifier;
         int AltMouseButton;
         float AutoPanningSpeed;
     } ImNodesIO;
 
-    // imnodes Functions (Corrected to imnodes_ prefix from cimnodes)
+    // imnodes Functions
     void* imnodes_CreateContext();
     void imnodes_DestroyContext(void* context);
     void imnodes_SetCurrentContext(void* context);
