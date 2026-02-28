@@ -27,12 +27,13 @@ local M = {
     agents = {},
     telemetry = { concurrency = ffi.new("float[100]"), latency = ffi.new("float[100]"), ptr = 0 },
     logs = {}, auto_scroll = true, last_packet_time = 0,
+    zoom = 1.0,
     nodes = {
-        { id = 1, name = "Trigger: Webhook", color = {0.2, 0.5, 0.9, 1}, expanded = true },
-        { id = 2, name = "Transform: JSON", color = {0.9, 0.6, 0.1, 1}, expanded = true },
-        { id = 3, name = "LLM: Classify", color = {0.6, 0.2, 0.9, 1}, expanded = true },
-        { id = 4, name = "LLM: Summarize", color = {0.6, 0.2, 0.9, 1}, expanded = false },
-        { id = 5, name = "Action: Slack", color = {0.1, 0.8, 0.4, 1}, expanded = true },
+        { id = 1, name = "Trigger: Webhook", color = {0.2, 0.5, 0.9, 1}, expanded = true, pin_in = {x=0,y=0}, pin_out = {x=0,y=0} },
+        { id = 2, name = "Transform: JSON", color = {0.9, 0.6, 0.1, 1}, expanded = true, pin_in = {x=0,y=0}, pin_out = {x=0,y=0} },
+        { id = 3, name = "LLM: Classify", color = {0.6, 0.2, 0.9, 1}, expanded = true, pin_in = {x=0,y=0}, pin_out = {x=0,y=0} },
+        { id = 4, name = "LLM: Summarize", color = {0.6, 0.2, 0.9, 1}, expanded = false, pin_in = {x=0,y=0}, pin_out = {x=0,y=0} },
+        { id = 5, name = "Action: Slack", color = {0.1, 0.8, 0.4, 1}, expanded = true, pin_in = {x=0,y=0}, pin_out = {x=0,y=0} },
     },
     links = {
         { id = 1, start = 1, end_node = 2, type = "data" },
@@ -67,15 +68,6 @@ function M.init()
     f_vert:close(); f_frag:close()
     
     imgui.init(); M.nodes_ctx = imgui.gui.imnodes_CreateContext(); imgui.gui.imnodes_StyleColorsDark(nil)
-    
-    -- BESPOKE HIGH-PERFORMANCE STYLE
-    local style = imgui.gui.imnodes_GetStyle()
-    style.NodeCornerRounding = 12.0
-    style.NodePaddingX = 12.0
-    style.NodePaddingY = 12.0
-    style.PinCircleRadius = 5.0 -- Larger ports
-    style.LinkLineSegmentsPerLength = 2.0 -- Maximum smoothness for 16-bit indices
-    
     imgui.gui.imnodes_GetIO().AltMouseButton = 2 
     for _, n in ipairs(M.nodes) do M.node_map[n.id] = n end
 
@@ -99,9 +91,39 @@ function M.on_imgui_callback(cb, func_ptr, data_ptr)
     end
 end
 
+function M.draw_glow_wire(draw_list, p1, p2, r, g, b, zoom)
+    local gui = imgui.gui
+    local dx = math.abs(p2.x - p1.x)
+    local offset = math.min(150 * zoom, math.max(50 * zoom, dx * 0.5))
+    local cp1 = ffi.new("ImVec2_c", { p1.x + offset, p1.y })
+    local cp2 = ffi.new("ImVec2_c", { p2.x - offset, p2.y })
+    local pulse = 0.8 + math.sin(os.clock() * 4) * 0.2
+
+    local steps = 12
+    for i = 1, steps do
+        local t = i / steps
+        local thickness = (2.0 + (1.0 - t)^2 * 23.0) * zoom
+        local alpha = 0.01 + (t * t) * 0.12
+        gui.ImDrawList_PathClear(draw_list)
+        gui.ImDrawList_PathLineTo(draw_list, p1)
+        gui.ImDrawList_PathBezierCubicCurveTo(draw_list, cp1, cp2, p2, 48)
+        gui.ImDrawList_PathStroke(draw_list, M.rgba_to_u32(r, g, b, alpha * pulse), 0, thickness)
+    end
+    
+    gui.ImDrawList_PathClear(draw_list)
+    gui.ImDrawList_PathLineTo(draw_list, p1)
+    gui.ImDrawList_PathBezierCubicCurveTo(draw_list, cp1, cp2, p2, 48)
+    gui.ImDrawList_PathStroke(draw_list, M.rgba_to_u32(r + 0.3, g + 0.3, b + 0.3, 0.8), 0, 2.5 * zoom)
+
+    gui.ImDrawList_PathClear(draw_list)
+    gui.ImDrawList_PathLineTo(draw_list, p1)
+    gui.ImDrawList_PathBezierCubicCurveTo(draw_list, cp1, cp2, p2, 48)
+    gui.ImDrawList_PathStroke(draw_list, M.rgba_to_u32(1, 1, 1, 1.0), 0, 1.0 * zoom)
+end
+
 function M.handle_node_collisions()
     local gui = imgui.gui
-    local min_dist = 300
+    local min_dist = 250 * M.zoom
     for i=1, #M.nodes do
         for j=i+1, #M.nodes do
             local n1, n2 = M.nodes[i], M.nodes[j]
@@ -162,58 +184,76 @@ function M.update()
         gui.igNextColumn(); gui.igColumns(1, nil, false); gui.igSeparator()
 
         gui.igBeginChild_Str("GraphSpace", ffi.new("ImVec2_c", {gui.igGetContentRegionAvail().x - 400, 0}), true, 0)
-            if gui.igIsWindowHovered(0) and gui.igIsMouseClicked_Bool(1, false) then gui.igOpenPopup_Str("GraphContextMenu", 0) end
+            if gui.igIsWindowHovered(0) then
+                local io = gui.igGetIO_Nil()
+                M.zoom = math.max(0.3, math.min(2.0, M.zoom + io.MouseWheel * 0.05))
+                if gui.igIsMouseClicked_Bool(1, false) then gui.igOpenPopup_Str("GraphContextMenu", 0) end
+            end
             if gui.igBeginPopup("GraphContextMenu", 0) then
                 if gui.igMenuItem_Bool("Add Agent Node", nil, false, true) then
                     local nid = M.next_node_id; M.next_node_id = nid + 1
-                    local n = { id = nid, name = "Agent: " .. nid, color = {math.random(), math.random(), math.random(), 1}, expanded = true }
+                    local n = { id = nid, name = "Agent: " .. nid, color = {math.random(), math.random(), math.random(), 1}, expanded = true, pin_in = {x=0,y=0}, pin_out = {x=0,y=0} }
                     table.insert(M.nodes, n); M.node_map[nid] = n
                 end
                 gui.igEndPopup()
             end
 
-            gui.imnodes_BeginNodeEditor()
-            -- Inject Additive Blending before imnodes draws links (this only works if they aren't batched with nodes)
-            gui.ImDrawList_AddCallback(gui.igGetWindowDrawList(), bespoke_lib.orchestrator_dummy_callback, ffi.cast("void*", 1))
+            gui.imnodes_PushStyleVar_Float(gui.ImNodesStyleVar_GridSpacing, 24.0 * M.zoom)
+            gui.imnodes_PushStyleVar_Float(gui.ImNodesStyleVar_PinCircleRadius, 5.0 * M.zoom)
+            gui.imnodes_PushStyleVar_Float(gui.ImNodesStyleVar_NodeCornerRounding, 12.0 * M.zoom)
 
+            gui.imnodes_BeginNodeEditor()
             for _, node in ipairs(M.nodes) do
                 gui.igPushID_Int(node.id); gui.imnodes_BeginNode(node.id); gui.imnodes_BeginNodeTitleBar()
                 if gui.igArrowButton("##collapse", node.expanded and gui.ImGuiDir_Down or gui.ImGuiDir_Right) then node.expanded = not node.expanded end
                 gui.igSameLine(0, 5); gui.igTextUnformatted(node.name, nil); gui.imnodes_EndNodeTitleBar()
                 
-                -- NATIVE PIN PLACEMENT
-                gui.imnodes_BeginInputAttribute(node.id * 100, 1); gui.igText("In"); gui.imnodes_EndInputAttribute()
-                gui.igSameLine(0, 40)
-                gui.imnodes_BeginOutputAttribute(node.id * 100 + 1, 1); gui.igText("Out"); gui.imnodes_EndOutputAttribute()
+                -- FORCE ABSOLUTE PIN LAYOUT
+                local start_cursor = gui.igGetCursorPos()
                 
-                if node.expanded then gui.igSeparator(); gui.igText("Metrics:"); gui.igProgressBar(math.random(), ffi.new("ImVec2_c", {120, 15}), ""); gui.igText("State: ACTIVE") end
+                -- IN PORT (Far Left)
+                gui.imnodes_BeginInputAttribute(node.id * 100, 1)
+                gui.igDummy(ffi.new("ImVec2_c", {16 * M.zoom, 16 * M.zoom}))
+                local minI, maxI = gui.igGetItemRectMin(), gui.igGetItemRectMax()
+                node.pin_in = { x = minI.x - 2, y = (minI.y + maxI.y) * 0.5 }
+                gui.imnodes_EndInputAttribute()
+                
+                -- OUT PORT (Far Right)
+                gui.igSetCursorPos(ffi.new("ImVec2_c", { start_cursor.x + 150 * M.zoom, start_cursor.y }))
+                gui.imnodes_BeginOutputAttribute(node.id * 100 + 1, 1)
+                gui.igDummy(ffi.new("ImVec2_c", {16 * M.zoom, 16 * M.zoom}))
+                local minO, maxO = gui.igGetItemRectMin(), gui.igGetItemRectMax()
+                node.pin_out = { x = maxO.x + 2, y = (minO.y + maxO.y) * 0.5 }
+                gui.imnodes_EndOutputAttribute()
+                
+                if node.expanded then
+                    gui.igSetCursorPos(ffi.new("ImVec2_c", { start_cursor.x, start_cursor.y + 25 * M.zoom }))
+                    gui.igSeparator()
+                    gui.igProgressBar(math.random(), ffi.new("ImVec2_c", {160 * M.zoom, 15 * M.zoom}), "")
+                end
                 gui.imnodes_EndNode(); gui.igPopID()
             end
             
-            -- NATIVE OVERLAPPING GLOW LINKS (Perfect Anchors)
+            local dl = gui.igGetWindowDrawList()
+            gui.ImDrawList_AddCallback(dl, bespoke_lib.orchestrator_dummy_callback, ffi.cast("void*", 1))
             for _, link in ipairs(M.links) do
-                local r, g, b = 0.2, 0.7, 1.0
-                if link.type == "logic" then r, g, b = 0.8, 0.4, 1.0 elseif link.type == "action" then r, g, b = 0.4, 1.0, 0.6 end
-                local pulse = 0.8 + math.sin(os.clock() * 4) * 0.2
-                
-                -- Pass 1: Wide Neon Bloom
-                gui.imnodes_PushStyleVar_Float(gui.ImNodesStyleVar_LinkThickness, 12.0)
-                gui.imnodes_PushColorStyle(gui.ImNodesCol_Link, M.rgba_to_u32(r, g, b, 0.2 * pulse))
-                gui.imnodes_Link(link.id * 100 + 1, link.start * 100 + 1, link.end_node * 100)
-                gui.imnodes_PopColorStyle(); gui.imnodes_PopStyleVar(1)
-                
-                -- Pass 2: Sharp Core
-                gui.imnodes_PushStyleVar_Float(gui.ImNodesStyleVar_LinkThickness, 2.5)
-                gui.imnodes_PushColorStyle(gui.ImNodesCol_Link, M.rgba_to_u32(r + 0.3, g + 0.3, b + 0.3, 1.0))
-                gui.imnodes_Link(link.id * 100 + 2, link.start * 100 + 1, link.end_node * 100)
-                gui.imnodes_PopColorStyle(); gui.imnodes_PopStyleVar(1)
+                local n1 = M.node_map[link.start]; local n2 = M.node_map[link.end_node]
+                if n1 and n2 and n1.pin_out.x ~= 0 then
+                    local r, g, b = 0.2, 0.7, 1.0
+                    if link.type == "logic" then r, g, b = 0.8, 0.4, 1.0 elseif link.type == "action" then r, g, b = 0.4, 1.0, 0.6 end
+                    M.draw_glow_wire(dl, ffi.new("ImVec2_c", n1.pin_out), ffi.new("ImVec2_c", n2.pin_in), r, g, b, M.zoom)
+                end
             end
+            gui.ImDrawList_AddCallback(dl, bespoke_lib.orchestrator_dummy_callback, ffi.cast("void*", 0))
 
             gui.imnodes_EndNodeEditor()
-            gui.ImDrawList_AddCallback(gui.igGetWindowDrawList(), bespoke_lib.orchestrator_dummy_callback, ffi.cast("void*", 0))
+            gui.imnodes_PopStyleVar(3)
 
-            local pan = gui.imnodes_EditorContextGetPanning(); local limit = 3000
-            if pan.x < -limit or pan.x > limit or pan.y < -limit or pan.y > limit then pan.x = math.max(-limit, math.min(limit, pan.x)); pan.y = math.max(-limit, math.min(limit, pan.y)); gui.imnodes_EditorContextResetPanning(pan) end
+            local pan = gui.imnodes_EditorContextGetPanning(); local limit = 5000
+            if pan.x < -limit or pan.x > limit or pan.y < -limit or pan.y > limit then
+                pan.x = math.max(-limit, math.min(limit, pan.x)); pan.y = math.max(-limit, math.min(limit, pan.y))
+                gui.imnodes_EditorContextResetPanning(pan)
+            end
             M.handle_node_collisions()
         gui.igEndChild(); gui.igSameLine(0, -1); gui.igBeginGroup()
             if gui.ImPlot_BeginPlot("Real-time Concurrency", ffi.new("ImVec2_c", {-1, 200}), 0) then
