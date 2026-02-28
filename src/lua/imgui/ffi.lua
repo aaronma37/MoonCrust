@@ -563,6 +563,10 @@ ffi.cdef[[
     bool igIsItemHovered(int flags);
     void igBeginTooltip(void);
     void igEndTooltip(void);
+    ImVec2_c igGetItemRectMin(void);
+    ImVec2_c igGetItemRectMax(void);
+    ImVec2_c igGetItemRectSize(void);
+    bool igIsItemActive(void);
 
     // Window Positioning
     void igSetNextWindowPos(const ImVec2_c pos, ImGuiCond cond, const ImVec2_c pivot);
