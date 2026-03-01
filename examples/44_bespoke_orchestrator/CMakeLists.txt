@@ -5,74 +5,52 @@ set(CMAKE_CXX_STANDARD 17)
 
 include(FetchContent)
 
-# 1. Fetch imnodes (C++ Library)
-message(STATUS "Fetching imnodes...")
-FetchContent_Declare(
-    imnodes
-    GIT_REPOSITORY https://github.com/Nelarius/imnodes.git
-    GIT_TAG master
-)
+# 1. Fetch all dependencies (C++ Libraries and C Wrappers)
+message(STATUS "Fetching ImGui Suite dependencies...")
+FetchContent_Declare(cimgui GIT_REPOSITORY https://github.com/cimgui/cimgui.git GIT_TAG master GIT_SUBMODULES_RECURSE ON)
+FetchContent_Declare(cimplot GIT_REPOSITORY https://github.com/cimgui/cimplot.git GIT_TAG master GIT_SUBMODULES_RECURSE ON)
+FetchContent_Declare(cimplot3d GIT_REPOSITORY https://github.com/cimgui/cimplot3d.git GIT_TAG master GIT_SUBMODULES_RECURSE ON)
+FetchContent_Declare(imnodes GIT_REPOSITORY https://github.com/Nelarius/imnodes.git GIT_TAG master)
+FetchContent_Declare(cimnodes GIT_REPOSITORY https://github.com/cimgui/cimnodes.git GIT_TAG master)
 
-# 2. Fetch cimnodes (C Wrapper)
-message(STATUS "Fetching cimnodes...")
-FetchContent_Declare(
-    cimnodes
-    GIT_REPOSITORY https://github.com/cimgui/cimnodes.git
-    GIT_TAG master
-)
+FetchContent_MakeAvailable(cimgui cimplot cimplot3d imnodes cimnodes)
 
-# Manually populate to avoid add_subdirectory
-FetchContent_GetProperties(imnodes)
-if(NOT imnodes_POPULATED)
-    FetchContent_Populate(imnodes)
-endif()
-
-FetchContent_GetProperties(cimnodes)
-if(NOT cimnodes_POPULATED)
-    FetchContent_Populate(cimnodes)
-endif()
-
-# 3. Reuse ImGui Suite from Example 41
-set(CIMGUI_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../41_imgui_visualizer/cimgui)
-set(CIMPLOT_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../41_imgui_visualizer/cimplot)
-set(CIMPLOT3D_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../41_imgui_visualizer/cimplot3d)
-
-# 4. Define the Dashboard Shared Library
+# 2. Define the Dashboard Shared Library
 add_library(orchestrator_all SHARED
     bridge.cpp
     
     # ImGui Core
-    ${CIMGUI_DIR}/cimgui.cpp
-    ${CIMGUI_DIR}/imgui/imgui.cpp
-    ${CIMGUI_DIR}/imgui/imgui_draw.cpp
-    ${CIMGUI_DIR}/imgui/imgui_demo.cpp
-    ${CIMGUI_DIR}/imgui/imgui_widgets.cpp
-    ${CIMGUI_DIR}/imgui/imgui_tables.cpp
+    ${cimgui_SOURCE_DIR}/cimgui.cpp
+    ${cimgui_SOURCE_DIR}/imgui/imgui.cpp
+    ${cimgui_SOURCE_DIR}/imgui/imgui_draw.cpp
+    ${cimgui_SOURCE_DIR}/imgui/imgui_demo.cpp
+    ${cimgui_SOURCE_DIR}/imgui/imgui_widgets.cpp
+    ${cimgui_SOURCE_DIR}/imgui/imgui_tables.cpp
     
     # ImPlot Suite
-    ${CIMPLOT_DIR}/cimplot.cpp
-    ${CIMPLOT_DIR}/implot/implot.cpp
-    ${CIMPLOT_DIR}/implot/implot_items.cpp
-    ${CIMPLOT_DIR}/implot/implot_demo.cpp
+    ${cimplot_SOURCE_DIR}/cimplot.cpp
+    ${cimplot_SOURCE_DIR}/implot/implot.cpp
+    ${cimplot_SOURCE_DIR}/implot/implot_items.cpp
+    ${cimplot_SOURCE_DIR}/implot/implot_demo.cpp
     
-    ${CIMPLOT3D_DIR}/cimplot3d.cpp
-    ${CIMPLOT3D_DIR}/implot3d/implot3d.cpp
-    ${CIMPLOT3D_DIR}/implot3d/implot3d_items.cpp
-    ${CIMPLOT3D_DIR}/implot3d/implot3d_meshes.cpp
-    ${CIMPLOT3D_DIR}/implot3d/implot3d_demo.cpp
+    ${cimplot3d_SOURCE_DIR}/cimplot3d.cpp
+    ${cimplot3d_SOURCE_DIR}/implot3d/implot3d.cpp
+    ${cimplot3d_SOURCE_DIR}/implot3d/implot3d_items.cpp
+    ${cimplot3d_SOURCE_DIR}/implot3d/implot3d_meshes.cpp
+    ${cimplot3d_SOURCE_DIR}/implot3d/implot3d_demo.cpp
 
-    # imnodes Suite (Fetched)
+    # imnodes Suite
     ${cimnodes_SOURCE_DIR}/cimnodes.cpp
     ${imnodes_SOURCE_DIR}/imnodes.cpp
 )
 
 target_include_directories(orchestrator_all PUBLIC
-    ${CIMGUI_DIR}
-    ${CIMGUI_DIR}/imgui
-    ${CIMPLOT_DIR}
-    ${CIMPLOT_DIR}/implot
-    ${CIMPLOT3D_DIR}
-    ${CIMPLOT3D_DIR}/implot3d
+    ${cimgui_SOURCE_DIR}
+    ${cimgui_SOURCE_DIR}/imgui
+    ${cimplot_SOURCE_DIR}
+    ${cimplot_SOURCE_DIR}/implot
+    ${cimplot3d_SOURCE_DIR}
+    ${cimplot3d_SOURCE_DIR}/implot3d
     ${imnodes_SOURCE_DIR}
     ${cimnodes_SOURCE_DIR}
 )
