@@ -8,153 +8,223 @@ local robot = require("mc.robot")
 local decoder = require("examples.42_robot_visualizer.decoder")
 local icons = require("examples.42_robot_visualizer.ui.icons")
 local ui = require("examples.42_robot_visualizer.ui.consts")
+local input = require("mc.input")
 
 panels.register("pretty_viewer", "Pretty Message Viewer", function(gui, node_id, params)
     if _G._FONT_MAIN then gui.igPushFont(_G._FONT_MAIN) end
     if not panels.states[node_id] then
         panels.states[node_id] = { 
-            selected_ch = nil, filter = ffi.new("char[128]"), schema = nil, last_ts = 0ULL, cached_vals = {}, facet_synced = false,
+            selected_ch = nil, filter = ffi.new("char[128]"), schema = nil, last_ts = 0ULL, cached_vals = {}, 
+            facet_synced = false, 
+            initialized = false, -- Add initialization guard
             p_val64 = ffi.new("uint32_t[2]"),
             p_val32 = ffi.new("uint32_t[1]")
         }
     end
     local p_state = panels.states[node_id]
     local channels = playback.channels or {}
-    
-    if params and params.topic_name and not p_state.facet_synced then
-        for _, ch in ipairs(channels) do if ch.topic == params.topic_name then p_state.selected_ch, p_state.facet_synced = ch, true break end end
+
+    -- Only sync from params on the FIRST initialization or if explicitly requested
+    if params and params.topic_name and not p_state.initialized then
+        for _, ch in ipairs(channels) do 
+            if ch.topic == params.topic_name then 
+                p_state.selected_ch, p_state.facet_synced, p_state.initialized = ch, true, true 
+                break 
+            end 
+        end
     end
+    -- If we still haven't found a match but have channels, we are initialized anyway
+    if not p_state.initialized and #channels > 0 then p_state.initialized = true end
+
+    -- Tiled Topic Selector (No Overlays)
+    if p_state.selected_ch then
+        gui.igTextColored(ui.V4_LIVE, icons.SEARCH .. " Active Topic: " .. p_state.selected_ch.topic)
+        gui.igSameLine(gui.igGetContentRegionAvail().x - 80, 0)
+        if gui.igButton("Clear", ui.V2_BTN_SMALL) then 
+            print("[DEBUG] Clear selection for node " .. node_id)
+            p_state.selected_ch, p_state.facet_synced = nil, false 
+        end
+    else        gui.igTextDisabled(icons.SEARCH .. " Search Topics:")
+    end
+
+    local q = ffi.string(p_state.filter):lower()
     
-    local display_name = p_state.selected_ch and p_state.selected_ch.topic or "Select Topic..."
-    gui.igSetNextItemWidth(-1)
-    if gui.igBeginCombo("##TopicSelector", icons.SEARCH .. "  " .. display_name, 0) then
-        gui.igInputText("##Search", p_state.filter, 128, 0, nil, nil)
-        local q = ffi.string(p_state.filter):lower()
-        for _, ch in ipairs(channels) do
-            if q == "" or ch.topic:lower():find(q, 1, true) then
-                if gui.igSelectable_Bool(ch.topic, p_state.selected_ch and ch.id == p_state.selected_ch.id, 0, ui.V2_ZERO) then
-                    p_state.selected_ch, p_state.schema, p_state.facet_synced = ch, nil, true
-                    p_state.cached_vals = {}
-                    gui.igCloseCurrentPopup()
+    -- Persistent scrollable list (collapses when topic is selected to save space)
+    local list_height = p_state.selected_ch and 0 or -1 
+    local match_count = 0
+    
+    if not p_state.selected_ch then
+        gui.igSetNextItemWidth(-1)
+        if gui.igInputText("##Search", p_state.filter, 128, 0, nil, nil) then
+            print("[DEBUG] Search Topics text changed: " .. ffi.string(p_state.filter))
+        end
+
+        if gui.igBeginChild_Str("##TopicList", ffi.new("ImVec2_c", {0, list_height}), true, 0) then
+            for _, ch in ipairs(channels) do
+                if q == "" or ch.topic:lower():find(q, 1, true) then
+                    match_count = match_count + 1
+                    local is_selected = (p_state.selected_ch ~= nil) and (ch.id == p_state.selected_ch.id)
+                    local clicked = gui.igSelectable_Bool(ch.topic, is_selected, 0, ui.V2_ZERO)
+                    
+                    if clicked then
+                        print("[DEBUG] Selected topic: " .. ch.topic)
+                        p_state.selected_ch, p_state.schema, p_state.facet_synced = ch, nil, true
+                        p_state.cached_vals = {}
+                    end
                 end
             end
+            if #channels == 0 then 
+                gui.igTextColored(ui.V4_PAUSED, "No topics available.")
+                gui.igTextDisabled("Load an MCAP file via Ctrl+O")
+            elseif match_count == 0 then 
+                gui.igTextDisabled("(No matches found)") 
+            end
+            gui.igEndChild()
         end
-        gui.igEndCombo()
     end
     
+    if input.key_down(224) and input.key_pressed(4) then -- Ctrl+A for internal debug
+        print(string.format("[SEARCH DEBUG] q='%s' total_channels=%d matches=%d", q, #channels, match_count))
+    end
+
     if p_state.selected_ch then
+        gui.igSeparator()
         local ch = p_state.selected_ch
         playback.mark_visual(ch.id)
         if _G._GPU_INSPECTOR then _G._GPU_INSPECTOR.set_channel(ch) end
-        
+
         local buf = playback.get_msg_buffer(ch.id)
         if buf and buf.size > 0 then
             if gui.igTreeNode_Str(icons.LIST .. " Metadata") then 
-                gui.igText("Topic: %s", ch.topic); gui.igText("Type: %s", ch.schema); gui.igText("Size: %d bytes", buf.size)
+                gui.igText("Topic: %s", ch.topic); gui.igText("Type: %s", ch.schema or "(None)"); gui.igText("Size: %d bytes", buf.size)
+                if gui.igButton("Force Sync Data", ui.V2_BTN_SMALL) then
+                    local indexer = require("examples.42_robot_visualizer.indexer")
+                    local latest = indexer.find_latest_for_channel(ch.id, playback.playback_time_ns)
+                    if latest then
+                        robot.lib.mcap_load_into_buffer(playback.bridge, latest.offset, math.min(tonumber(latest.size), playback.MSG_BUF_SIZE), buf.data)
+                        buf.size = tonumber(latest.size)
+                        print("[DEBUG] Forced sync for " .. ch.topic)
+                    end
+                end
                 gui.igTreePop() 
             end
 
-            if _G._GPU_INSPECTOR and _G._GPU_INSPECTOR.ch and _G._GPU_INSPECTOR.ch.id == ch.id then
+            if _G._GPU_INSPECTOR and _G._GPU_INSPECTOR.ch and _G._GPU_INSPECTOR.ch.id == ch.id and _G._GPU_INSPECTOR.flattened then
                 if gui.igTreeNode_Str(icons.CHART .. " Live Values (GPU Parsed)") then
                     gui.igTextColored(ui.V4_LIVE, "SILICON-DIRECT PIPELINE ACTIVE")
-                    
-                    if gui.igBeginTable("ValueTable", 2, bit.bor(panels.Flags.TableBorders, panels.Flags.TableResizable), ui.V2_ZERO, 0) then
+
+                    local results = _G._GPU_INSPECTOR.results_ptr
+                    if results ~= nil and gui.igBeginTable("ValueTable", 2, bit.bor(panels.Flags.TableBorders, panels.Flags.TableResizable), ui.V2_ZERO, 0) then
                         gui.igTableSetupColumn("Field", 0, 0, 0); gui.igTableSetupColumn("Value", 0, 0, 0); gui.igTableHeadersRow()
-                        
-                        local results = _G._GPU_INSPECTOR.results_ptr
+
                         for i, f in ipairs(_G._GPU_INSPECTOR.flattened) do
                             gui.igTableNextRow(0, 0); gui.igTableNextColumn(); gui.igText("%s", f.name)
                             gui.igTableNextColumn()
-                            
+
                             local base = (i-1) * 2
-                            if f.type:find("64") or f.type == "double" then
-                                p_state.p_val64[0], p_state.p_val64[1] = results[base], results[base+1]
-                                local d_val = ffi.cast("double*", p_state.p_val64)[0]
-                                gui.igText("%.6f", d_val)
-                            elseif f.type:find("float") then
-                                p_state.p_val32[0] = results[base]
-                                local f_val = ffi.cast("float*", p_state.p_val32)[0]
-                                gui.igText("%.4f", f_val)
-                            elseif f.type:find("uint") then
-                                gui.igText("%u", results[base])
+                            -- Ensure we don't read out of bounds of the results buffer (1MB)
+                            if (base + 1) * 4 < 1024 * 1024 then
+                                if f.type:find("64") or f.type == "double" then
+                                    p_state.p_val64[0], p_state.p_val64[1] = results[base], results[base+1]
+                                    local d_val = ffi.cast("double*", p_state.p_val64)[0]
+                                    gui.igText("%.6f", d_val)
+                                elseif f.type:find("float") then
+                                    p_state.p_val32[0] = results[base]
+                                    local f_val = ffi.cast("float*", p_state.p_val32)[0]
+                                    gui.igText("%.4f", f_val)
+                                elseif f.type:find("uint") then
+                                    gui.igText("%u", results[base])
+                                else
+                                    gui.igText("%d", ffi.cast("int32_t", results[base]))
+                                end
                             else
-                                gui.igText("%d", ffi.cast("int32_t", results[base]))
+                                gui.igTextDisabled("(Out of bounds)")
                             end
                         end
                         gui.igEndTable()
                     end
                     gui.igTreePop()
                 end
-            end
-        else gui.igTextDisabled("(No data received yet)") end
+            elseif _G._GPU_INSPECTOR and _G._GPU_INSPECTOR.ch and _G._GPU_INSPECTOR.ch.id == ch.id then
+                gui.igTextColored(ui.V4_PAUSED, icons.ERROR .. " Schema missing or unsupported for this topic.")
+            end        else gui.igTextDisabled("(No data received yet)") end
     end
     if _G._FONT_MAIN then gui.igPopFont() end
 end)
 
 panels.register("plotter", "Topic Plotter", function(gui, node_id, params)
     if _G._FONT_MAIN then gui.igPushFont(_G._FONT_MAIN) end
-                    if not panels.states[node_id] then
-                        local pool_idx = (node_id % 8) + 1
-                        local tex_bindless_idx = 104 + pool_idx
-                        local tex = ffi.new("ImTextureRef_c")
-                        tex._TexID = ffi.cast("ImTextureID", tex_bindless_idx)
-                        
-                        panels.states[node_id] = { 
-                            selected_ch = nil, filter = ffi.new("char[128]"), field_name = nil, schema = nil, flattened = nil, 
-                            facet_synced = false, gpu_mode = true, range_min = 0.0, range_max = 20.0, 
-                            -- Pre-allocated callback data block (PERSISTENT ANCHOR)
-                            cb_data = ffi.new("PlotCallbackData"),
-                            p_gpu = ffi.new("bool[1]", true),
-                            p_limits = ffi.new("ImPlotRect_c[1]"),
-                            p_tex = tex,
-                            p_tex_idx = pool_idx - 1,
-                            p_p1 = ffi.new("ImPlotPoint_c"),
-                            p_p2 = ffi.new("ImPlotPoint_c"),
-                            p_uv0 = ffi.new("ImVec2_c", {0, 1}),
-                            p_uv1 = ffi.new("ImVec2_c", {1, 0}),
-                            p_spec = ffi.new("ImPlotSpec_c")
-                        }
-                    end
+    if not panels.states[node_id] then
+        local pool_idx = (node_id % 8) + 1
+        local tex_bindless_idx = 104 + pool_idx
+        local tex = ffi.new("ImTextureRef_c")
+        tex._TexID = ffi.cast("ImTextureID", tex_bindless_idx)
+
+        panels.states[node_id] = { 
+            selected_ch = nil, filter = ffi.new("char[128]"), field_name = nil, schema = nil, flattened = nil, 
+            facet_synced = false, gpu_mode = true, range_min = 0.0, range_max = 20.0, 
+            cb_data = ffi.new("PlotCallbackData"),
+            p_gpu = ffi.new("bool[1]", true),
+            p_limits = ffi.new("ImPlotRect_c[1]"),
+            p_tex = tex,
+            p_tex_idx = pool_idx - 1,
+            p_p1 = ffi.new("ImPlotPoint_c"),
+            p_p2 = ffi.new("ImPlotPoint_c"),
+            p_uv0 = ffi.new("ImVec2_c", {0, 1}),
+            p_uv1 = ffi.new("ImVec2_c", {1, 0}),
+            p_spec = ffi.new("ImPlotSpec_c")
+        }
+    end
     local p_state = panels.states[node_id]
     local channels = playback.channels or {}
-    
+
     if params and params.topic_name and not p_state.facet_synced then
         for _, ch in ipairs(channels) do if ch.topic == params.topic_name then p_state.selected_ch, p_state.schema, p_state.facet_synced = ch, nil, true break end end
     end
     if params and params.field_name and not p_state.field_name then p_state.field_name = params.field_name end
-    
-    local current_topic = p_state.selected_ch and p_state.selected_ch.topic or "Select Topic..."
-    gui.igSetNextItemWidth(gui.igGetContentRegionAvail().x * 0.4)
-    if gui.igBeginCombo("##PlotTopic", icons.SEARCH .. "  " .. current_topic, 0) then
+
+    -- Tiled Layout for Plotter Controls
+    local avail_w = gui.igGetContentRegionAvail().x
+    if not (p_state.selected_ch and p_state.field_name) then -- Show big selectors if setup is incomplete
+        gui.igTextDisabled(icons.SEARCH .. " Select Topic & Field:")
         gui.igInputText("##Search", p_state.filter, 128, 0, nil, nil)
+        
         local q = ffi.string(p_state.filter):lower()
-        for _, ch in ipairs(channels) do
-            if q == "" or ch.topic:lower():find(q, 1, true) then
-                if gui.igSelectable_Bool(ch.topic, p_state.selected_ch and ch.id == p_state.selected_ch.id, 0, ui.V2_ZERO) then
-                    p_state.selected_ch, p_state.schema, p_state.flattened, p_state.facet_synced = ch, nil, nil, true
+        if gui.igBeginChild_Str("##PlotTopicList", ffi.new("ImVec2_c", {avail_w * 0.5, 120}), true, 0) then
+            for _, ch in ipairs(channels) do
+                if q == "" or ch.topic:lower():find(q, 1, true) then
+                    if gui.igSelectable_Bool(ch.topic, p_state.selected_ch and ch.id == p_state.selected_ch.id, 0, ui.V2_ZERO) then
+                        p_state.selected_ch, p_state.schema, p_state.flattened, p_state.facet_synced = ch, nil, nil, true
+                    end
                 end
             end
+            gui.igEndChild()
         end
-        gui.igEndCombo()
+        gui.igSameLine(0, 5)
+        if gui.igBeginChild_Str("##PlotFieldList", ffi.new("ImVec2_c", {0, 120}), true, 0) then
+            if p_state.selected_ch then
+                if not p_state.schema then
+                    local raw = robot.lib.mcap_get_schema_content(playback.bridge, p_state.selected_ch.id)
+                    if raw ~= nil then p_state.schema = decoder.parse_schema(ffi.string(raw)); p_state.flattened = decoder.get_flattened_fields(p_state.schema) end
+                end
+                if p_state.flattened then 
+                    for _, f in ipairs(p_state.flattened) do 
+                        if gui.igSelectable_Bool(f.name, p_state.field_name == f.name, 0, ui.V2_ZERO) then p_state.field_name = f.name end 
+                    end 
+                end
+            else
+                gui.igTextDisabled("(Select Topic First)")
+            end
+            gui.igEndChild()
+        end
+    else -- Compact mode once selected
+        gui.igTextColored(ui.V4_LIVE, icons.CHART .. " " .. p_state.selected_ch.topic .. " -> " .. p_state.field_name)
+        gui.igSameLine(avail_w - 120, 0)
+        if gui.igButton(icons.GEAR .. " Change", ui.V2_BTN_SMALL) then p_state.field_name = nil end
     end
-    
-    gui.igSameLine(0, 5)
-    if p_state.selected_ch then
-        if not p_state.schema then
-            local raw = robot.lib.mcap_get_schema_content(playback.bridge, p_state.selected_ch.id)
-            if raw ~= nil then p_state.schema = decoder.parse_schema(ffi.string(raw)); p_state.flattened = decoder.get_flattened_fields(p_state.schema) end
-        end
-        gui.igSetNextItemWidth(gui.igGetContentRegionAvail().x * 0.4)
-        if gui.igBeginCombo("##PlotField", p_state.field_name or "Select Field...", 0) then
-            if p_state.flattened then for _, f in ipairs(p_state.flattened) do if gui.igSelectable_Bool(f.name, p_state.field_name == f.name, 0, ui.V2_ZERO) then p_state.field_name = f.name end end end
-            gui.igEndCombo()
-        end
-    end
-    
-    gui.igSameLine(0, 5)
+
     p_state.p_gpu[0] = p_state.gpu_mode
     if gui.igCheckbox("GPU", p_state.p_gpu) then p_state.gpu_mode = p_state.p_gpu[0] end
-    
     gui.igSameLine(0, 5)
     local trigger_fit = gui.igButton("Fit View", ui.V2_BTN_SMALL)
 
@@ -165,7 +235,7 @@ panels.register("plotter", "Topic Plotter", function(gui, node_id, params)
             if gui.ImPlot_BeginPlot(string.format("%s: %s###%d", p_state.selected_ch.topic, p_state.field_name, node_id), ui.V2_FULL, 0) then
                 gui.ImPlot_SetupAxis(0, "Samples (Last 1000)", 0); 
                 gui.ImPlot_SetupAxis(3, "Value", 0)
-                
+
                 if trigger_fit then
                     gui.ImPlot_SetupAxisLimits(0, 0, playback.HISTORY_MAX, 1) 
                     gui.ImPlot_SetupAxisLimits(3, 0, 20, 1) -- Default snap range
@@ -174,14 +244,14 @@ panels.register("plotter", "Topic Plotter", function(gui, node_id, params)
                 p_state.p_limits[0] = gui.ImPlot_GetPlotLimits(0, 3)
                 local cur_min = tonumber(p_state.p_limits[0].Y.Min)
                 local cur_max = tonumber(p_state.p_limits[0].Y.Max)
-                
-                                    if p_state.gpu_mode then
-                                        local p_pos, p_size = gui.ImPlot_GetPlotPos(), gui.ImPlot_GetPlotSize()
-                                        local d = p_state.cb_data
-                                        d.ch_id, d.field_offset, d.is_double = p_state.selected_ch.id, target.offset or 0, target.is_double and 1 or 0
-                                        d.tex_idx = p_state.p_tex_idx
-                                        d.range_min, d.range_max, d.x, d.y, d.w, d.h = cur_min, cur_max, p_pos.x, p_pos.y, p_size.x, p_size.y
-                                        require("examples.42_robot_visualizer.view_3d").enqueue_plot(d)                    
+
+                if p_state.gpu_mode then
+                    local p_pos, p_size = gui.ImPlot_GetPlotPos(), gui.ImPlot_GetPlotSize()
+                    local d = p_state.cb_data
+                    d.ch_id, d.field_offset, d.is_double = p_state.selected_ch.id, target.offset or 0, target.is_double and 1 or 0
+                    d.tex_idx = p_state.p_tex_idx
+                    d.range_min, d.range_max, d.x, d.y, d.w, d.h = cur_min, cur_max, p_pos.x, p_pos.y, p_size.x, p_size.y
+                    require("examples.42_robot_visualizer.view_3d").enqueue_plot(d)                    
                     p_state.p_p1.x, p_state.p_p1.y = 0, cur_min
                     p_state.p_p2.x, p_state.p_p2.y = playback.HISTORY_MAX, cur_max
                     gui.ImPlot_PlotImage("##gpu_plot", p_state.p_tex, p_state.p_p1, p_state.p_p2, ui.V2_ZERO, ui.V2_ONE, ui.V4_WHITE, p_state.p_spec)
@@ -196,7 +266,6 @@ panels.register("plotter", "Topic Plotter", function(gui, node_id, params)
     end
     if _G._FONT_MAIN then gui.igPopFont() end
 end)
-
 panels.register("topics", "Topic List", function(gui, node_id)
     if _G._FONT_MAIN then gui.igPushFont(_G._FONT_MAIN) end
     if gui.igButton(icons.FOLDER .. " Dump All Schemas to Terminal", ui.V2_BTN_FILL) then

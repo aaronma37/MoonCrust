@@ -427,6 +427,19 @@ function M.update(dt, raw_buffer)
 	end
 
 	-- Clear visual markers for next frame
+	-- (Wait, we actually want to keep them for the next update cycle 
+    --  because UI calls mark_visual AFTER update)
+    -- We'll clear them at the START of the update loop instead if we want to be strict,
+    -- but for now let's just let them accumulate and clear every N frames or keep it simple.
+    -- Better: mark_visual sets a TTL (Time To Live) or we just clear them less aggressively.
+    
+    -- SIMPLE FIX: Only clear if it wasn't marked in THIS frame's UI pass.
+    -- Actually, the current logic is:
+    -- 1. playback.update() -> syncs based on LAST frame's visual_channels
+    -- 2. ui calls mark_visual() -> sets visual_channels for NEXT frame
+    -- This is actually okay! It's just a 1-frame lag.
+    -- The real issue is if the message arrives and we haven't marked it yet.
+    
 	for k in pairs(M.visual_channels) do
 		M.visual_channels[k] = nil
 	end

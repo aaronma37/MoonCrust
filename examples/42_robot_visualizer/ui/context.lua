@@ -73,6 +73,33 @@ function M.wrap(gui)
         return res
     end
 
+    gui.igSelectable_Bool = function(label, selected, flags, size)
+        local pos = gui.igGetCursorScreenPos()
+        local avail = gui.igGetContentRegionAvail()
+        local w, h = size.x, size.y
+        if w <= 0 then w = avail.x end
+        if h <= 0 then h = 20 end
+        
+        local w_pos = gui.igGetWindowPos()
+        local w_size = gui.igGetWindowSize()
+        
+        local res = gui._S.ffi_lib.igSelectable_Bool(label, selected, flags, size)
+        
+        local r, g, b = 0.1, 0.1, 0.1
+        if selected then r, g, b = 0.2, 0.3, 0.5 end
+
+        M.push({
+            x = pos.x, y = pos.y, w = w, h = h,
+            r = r, g = g, b = b, a = 1.0,
+            clip_min_x = w_pos.x, clip_min_y = w_pos.y,
+            clip_max_x = w_pos.x + w_size.x, clip_max_y = w_pos.y + w_size.y,
+            type = 6, -- Selectable
+            rounding = 2.0,
+            flags = (gui.igIsItemHovered(0) and 1 or 0)
+        })
+        return res
+    end
+
     local old_igSliderFloat = gui.igSliderFloat
     gui.igSliderFloat = function(label, v, v_min, v_max, format, flags)
         local pos = gui.igGetCursorScreenPos()
@@ -92,6 +119,29 @@ function M.wrap(gui)
             type = 3, -- Slider
             rounding = 2.0,
             extra = ffi.cast("uint32_t", (v[0] - v_min) / (v_max - v_min) * 1000.0) -- Packed progress
+        })
+        return res
+    end
+
+    local old_igInputText = gui.igInputText
+    gui.igInputText = function(label, buf, buf_size, flags, callback, user_data)
+        local pos = gui.igGetCursorScreenPos()
+        local avail = gui.igGetContentRegionAvail()
+        local w = (avail.x > 0) and avail.x or 100
+        
+        local w_pos = gui.igGetWindowPos()
+        local w_size = gui.igGetWindowSize()
+        
+        local res = old_igInputText(label, buf, buf_size, flags, callback, user_data)
+        
+        M.push({
+            x = pos.x, y = pos.y, w = w, h = 24,
+            r = 0.1, g = 0.12, b = 0.15, a = 1.0,
+            clip_min_x = w_pos.x, clip_min_y = w_pos.y,
+            clip_max_x = w_pos.x + w_size.x, clip_max_y = w_pos.y + w_size.y,
+            type = 5, -- InputText
+            rounding = 4.0,
+            flags = (gui.igIsItemActive() and 2 or 0)
         })
         return res
     end

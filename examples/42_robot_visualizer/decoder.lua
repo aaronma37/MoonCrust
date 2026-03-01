@@ -72,6 +72,7 @@ end
 
 function M.parse_schema(schema_text)
     if not schema_text then return nil end
+    print(string.format("[DECODER] Parsing schema (len=%d): %s...", #schema_text, schema_text:sub(1, 100):gsub("\n", " ")))
     local type_lib = {}
     local parts = {}
     for part in schema_text:gmatch("[^=]+") do table.insert(parts, part) end

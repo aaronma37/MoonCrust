@@ -22,8 +22,10 @@ local panels = require("examples.42_robot_visualizer.ui.panels")
 local config = require("examples.42_robot_visualizer.config")
 local theme = require("examples.42_robot_visualizer.ui.theme")
 local ui_consts = require("examples.42_robot_visualizer.ui.consts")
-local ui_context = require("examples.42_robot_visualizer.ui.context")
+local icons = require("examples.42_robot_visualizer.ui.icons")
+local panels = require("examples.42_robot_visualizer.ui.panels")
 local harvester = require("examples.42_robot_visualizer.ui.harvester")
+local ui_context = require("examples.42_robot_visualizer.ui.context")
 local decoder = require("examples.42_robot_visualizer.decoder")
 require("examples.42_robot_visualizer.ui.telemetry")
 require("examples.42_robot_visualizer.ui.inspector")
@@ -48,30 +50,31 @@ local state = {
     layout = config.layout, next_id = 10, last_perf = 0ULL, perf_freq = tonumber(ffi.C.SDL_GetPerformanceFrequency()), config_mtime = get_file_mtime(config_path), config_timer = 0, real_fps = 0, frame_times = {}, frame_times_idx = 1,
     picker = { trigger = false, title = "", query = ffi.new("char[128]"), selected_idx = 0, items = {}, results = {}, on_select = nil },
     file_dialog = { trigger = false, path = ffi.new("char[256]", "."), files = {}, current_dir = "." },
+    overlay_mode = nil, -- nil, "picker", or "file_browser"
     show_test_overlay = false,
-}
-function state.refresh_files()
+    }
+    function state.refresh_files()
     local p = io.popen('ls -ap "' .. state.file_dialog.current_dir .. '"')
     state.file_dialog.files = {}
     if p then for line in p:lines() do table.insert(state.file_dialog.files, line) end; p:close() end
-end
-state.refresh_files()
-for i=1, 60 do state.frame_times[i] = 0.0166 end 
-_G._PICKER_STATE, _G._PERF_STATS = state.picker, state
+    end
+    state.refresh_files()
+    for i=1, 60 do state.frame_times[i] = 0.0166 end
+    _G._PICKER_STATE, _G._PERF_STATS = state.picker, state
 
-local M = {}
-local device, queue, graphics_family, sw, surface, pipe_parse, layout_parse, bindless_set, raw_buffers
-local ui_buffers, text_buffers, overlay_buffers
-local MAX_UI_ELEMENTS = 10000
-local MAX_TEXT_INSTANCES = 20000
-local MAX_FRAMES_IN_FLIGHT = 2
-local current_frame = 0
-local frame_fences = ffi.new("VkFence[2]")
-local image_available_sems = ffi.new("VkSemaphore[2]")
-local render_finished_sems = ffi.new("VkSemaphore[2]")
-local command_buffers = ffi.new("VkCommandBuffer[2]")
+    local M = {}
+    local device, queue, graphics_family, sw, surface, pipe_parse, layout_parse, bindless_set, raw_buffers
+    local ui_buffers, text_buffers, overlay_buffers
+    local MAX_UI_ELEMENTS = 10000
+    local MAX_TEXT_INSTANCES = 20000
+    local MAX_FRAMES_IN_FLIGHT = 2
+    local current_frame = 0
+    local frame_fences = ffi.new("VkFence[2]")
+    local image_available_sems = ffi.new("VkSemaphore[2]")
+    local render_finished_sems = ffi.new("VkSemaphore[2]")
+    local command_buffers = ffi.new("VkCommandBuffer[2]")
 
-local static = {
+    local static = {
     pc_p = ffi.new("ParserPC"),
     cb_begin = ffi.new("VkCommandBufferBeginInfo", { sType = vk.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO }),
     mem_barrier = ffi.new("VkMemoryBarrier[1]", {{ sType = vk.VK_STRUCTURE_TYPE_MEMORY_BARRIER, srcAccessMask = vk.VK_ACCESS_SHADER_WRITE_BIT, dstAccessMask = vk.VK_ACCESS_SHADER_READ_BIT }}),
@@ -86,9 +89,9 @@ local static = {
     ui_pc = ffi.new("struct { uint32_t idx; uint32_t pad; float screen[2]; }"),
     text_pc = ffi.new("struct { uint32_t idx; uint32_t pad; float screen[2]; }"),
     overlay_pc = ffi.new("struct { uint32_t idx; uint32_t pad; float screen[2]; }"),
-}
+    }
 
-local function split_focused(direction)
+    local function split_focused(direction)
     local function find_and_split(node)
         if node.type == "view" then
             if node.id == panels.focused_id then
@@ -100,34 +103,69 @@ local function split_focused(direction)
         else return find_and_split(node.children[1]) or find_and_split(node.children[2]) end
         return false
     end; find_and_split(state.layout)
-end
+    end
 
-local function render_fuzzy_picker(gui)
-    static.v2_pos.x, static.v2_pos.y = _G._WIN_LW/2, 100; static.v2_size.x, static.v2_size.y = 400, 0
-    gui.igSetNextWindowPos(static.v2_pos, 0, ui_consts.V2_PIVOT_TOP); gui.igSetNextWindowSize(static.v2_size, 0)
-    if gui.igBeginPopupModal("FuzzyPicker", nil, bit.bor(panels.Flags.AlwaysAutoResize, panels.Flags.AlwaysOnTop)) then
+    local function find_last_view(node)
+        local best = nil
+        local function search(n)
+            if n.type == "view" then
+                if not best or n.id > best.id then best = n end
+            elseif n.type == "split" then
+                search(n.children[1]); search(n.children[2])
+            end
+        end
+        search(node); return best
+    end
+
+    local function render_fuzzy_picker(gui)
+    if state.overlay_mode ~= "picker" then return end
+    static.v2_pos.x, static.v2_pos.y = 0, 0; static.v2_size.x, static.v2_size.y = _G._WIN_LW, _G._WIN_LH
+    gui.igSetNextWindowPos(static.v2_pos, 0, ui_consts.V2_ZERO); gui.igSetNextWindowSize(static.v2_size, 0)
+
+    local flags = bit.bor(panels.Flags.NoDecoration, panels.Flags.NoMove, panels.Flags.NoSavedSettings)
+    if gui.igBegin("FuzzyPickerFullscreen", nil, flags) then
+        gui.igTextColored(ui_consts.V4_LIVE, icons.SEARCH .. " FUZZY PICKER: " .. state.picker.title)
+        gui.igSameLine(gui.igGetContentRegionAvail().x - 100, 0)
+        if gui.igButton("Close (Esc)", ui_consts.V2_BTN_SMALL) or input.key_pressed(41) then state.overlay_mode = nil end
+        gui.igSeparator()
+
+        gui.igSetNextItemWidth(-1)
         if gui.igInputText("##Search", state.picker.query, 128, 0, nil, nil) then
             state.picker.results = {}; local q = ffi.string(state.picker.query):lower()
             for _, item in ipairs(state.picker.items) do if item.name:lower():find(q, 1, true) then table.insert(state.picker.results, item) end end
             state.picker.selected_idx = 0
         end
         gui.igSetKeyboardFocusHere(-1)
-        for i, item in ipairs(state.picker.results) do
-            if gui.igSelectable_Bool(item.name, i-1 == state.picker.selected_idx, 0, ui_consts.V2_ZERO) then 
-                pcall(state.picker.on_select, item); gui.igCloseCurrentPopup() 
-            end
-        end
-        gui.igEndPopup()
-    end
-end
 
-local function render_file_dialog(gui)
-    if state.file_dialog.trigger then gui.igOpenPopup_Str("File Operations", 0); state.file_dialog.trigger = false; state.refresh_files() end
-    static.v2_pos.x, static.v2_pos.y = _G._WIN_LW/2, 100; static.v2_size.x, static.v2_size.y = 500, 400
-    gui.igSetNextWindowPos(static.v2_pos, 0, ui_consts.V2_PIVOT_TOP); gui.igSetNextWindowSize(static.v2_size, 0)
-    if gui.igBeginPopupModal("File Operations", nil, 0) then
-        gui.igText("Current Dir: " .. state.file_dialog.current_dir); gui.igSeparator()
-        if gui.igBeginChild_Str("FileList", ffi.new("ImVec2_c", {0, -40}), true, 0) then
+        local results = state.picker.results or {}
+        if gui.igBeginChild_Str("PickerResults", ui_consts.V2_ZERO, true, 0) then
+            for i, item in ipairs(results) do
+                if gui.igSelectable_Bool(item.name, i-1 == state.picker.selected_idx, 0, ui_consts.V2_ZERO) then 
+                    print("[DEBUG] FuzzyPicker: Selecting " .. tostring(item.name))
+                    local ok, err = pcall(state.picker.on_select, item)
+                    if not ok then print("[ERROR] on_select: " .. tostring(err)) end
+                    state.overlay_mode = nil
+                end
+            end
+            gui.igEndChild()
+        end
+        gui.igEnd()
+    end
+    end
+
+    local function render_file_dialog(gui)
+    if state.overlay_mode ~= "file_browser" then return end
+    static.v2_pos.x, static.v2_pos.y = 0, 0; static.v2_size.x, static.v2_size.y = _G._WIN_LW, _G._WIN_LH
+    gui.igSetNextWindowPos(static.v2_pos, 0, ui_consts.V2_ZERO); gui.igSetNextWindowSize(static.v2_size, 0)
+
+    local flags = bit.bor(panels.Flags.NoDecoration, panels.Flags.NoMove, panels.Flags.NoSavedSettings)
+    if gui.igBegin("FileBrowserFullscreen", nil, flags) then
+        gui.igTextColored(ui_consts.V4_LIVE, icons.FOLDER .. " LOAD MCAP: " .. state.file_dialog.current_dir)
+        gui.igSameLine(gui.igGetContentRegionAvail().x - 100, 0)
+        if gui.igButton("Close (Esc)", ui_consts.V2_BTN_SMALL) or input.key_pressed(41) then state.overlay_mode = nil end
+        gui.igSeparator()
+
+        if gui.igBeginChild_Str("FileList", ffi.new("ImVec2_c", {0, -60}), true, 0) then
             for _, f in ipairs(state.file_dialog.files) do
                 if gui.igSelectable_Bool(f, false, 0, ui_consts.V2_ZERO) then
                     if f == "../" then state.file_dialog.current_dir = state.file_dialog.current_dir:gsub("[^/]+/$", ""); if state.file_dialog.current_dir == "" then state.file_dialog.current_dir = "." end; state.refresh_files()
@@ -137,13 +175,13 @@ local function render_file_dialog(gui)
             end
             gui.igEndChild()
         end
-        gui.igInputText("Selected", state.file_dialog.path, 256, 0, nil, nil)
-        if gui.igButton("Load", ui_consts.V2_BTN_SMALL) then local p = ffi.string(state.file_dialog.path); playback.load_mcap(p); _G._ACTIVE_MCAP = p:match("([^/]+)$"); gui.igCloseCurrentPopup() end
-        gui.igSameLine(0, 10); if gui.igButton("Cancel", ui_consts.V2_BTN_SMALL) then gui.igCloseCurrentPopup() end
-        gui.igEndPopup()
+        gui.igText("Selected: %s", ffi.string(state.file_dialog.path))
+        if gui.igButton("Load Selected", ui_consts.V2_BTN_FILL) then 
+            local p = ffi.string(state.file_dialog.path); playback.load_mcap(p); _G._ACTIVE_MCAP = p:match("([^/]+)$"); state.overlay_mode = nil 
+        end
+        gui.igEnd()
     end
-end
-
+    end
 local function render_node(node, x, y, w, h, gui, id_path)
     id_path = id_path or "root"
     if node.type == "split" then
@@ -479,10 +517,6 @@ function M.update()
     view_3d.reset_frame()
     local win_w, win_h = _G._WIN_LW or 1280, _G._WIN_LH or 720
     
-    ui_context.init(ui_buffers[f_idx + 1].allocation.ptr, MAX_UI_ELEMENTS)
-    ui_context.reset()
-    
-    imgui.new_frame(); theme.apply(imgui.gui); M.header.draw(imgui.gui); render_node(state.layout, 0, 40, win_w, win_h - 40, imgui.gui)
     local cb = command_buffers[f_idx]; vk.vkResetCommandBuffer(cb, 0); vk.vkBeginCommandBuffer(cb, static.cb_begin)
     local out_idx, pt_cnt = (f_idx == 0) and 11 or 13, playback.last_lidar_points
     local in_off, str_u, pos_off = 0, 3, 0
@@ -585,9 +619,52 @@ function M.update()
     static.img_barrier[0].srcAccessMask = 0; vk.vkCmdPipelineBarrier(cb, vk.VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, vk.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, nil, 0, nil, 1, static.img_barrier)
     static.attachments[0].imageView = ffi.cast("VkImageView", sw.views[img_idx])
     static.attachments[0].clearValue.color.float32[0], static.attachments[0].clearValue.color.float32[1], static.attachments[0].clearValue.color.float32[2] = 0.02, 0.02, 0.03
+
+    if input.key_down(224) then -- Ctrl
+        if input.key_pressed(18) then -- O
+            state.overlay_mode = "file_browser"
+            state.refresh_files()
+        end
+        if input.key_pressed(19) then -- P
+            state.overlay_mode = "picker"
+            state.picker.title = "Select Topic"
+            state.picker.items = playback.channels
+            state.picker.results = playback.channels
+            state.picker.on_select = function(it) 
+                if panels.focused_id then
+                    split_focused("horizontal")
+                    local last = find_last_view(state.layout)
+                    if last then
+                        last.view_type = "pretty_viewer"
+                        last.title = it.topic .. "###" .. last.id
+                        last.params = { topic_name = it.topic } 
+                    end
+                else
+                    print("[WARN] No view focused to split. Select a view first.")
+                end
+            end
+        end
+    end
+
+    ui_context.init(ui_buffers[f_idx + 1].allocation.ptr, MAX_UI_ELEMENTS)
+    ui_context.reset()
+    imgui.new_frame()
+    local gui = imgui.gui
+    
+    local theme = require("examples.42_robot_visualizer.ui.theme")
+    theme.apply(gui)
+    M.header.draw(gui)
+
+    if state.overlay_mode then
+        if state.overlay_mode == "file_browser" then render_file_dialog(gui)
+        elseif state.overlay_mode == "picker" then render_fuzzy_picker(gui) end
+    else
+        render_node(state.layout, 0, 40, win_w, win_h - 40, gui)
+    end
+
     static.render_info.renderArea.extent = sw.extent; static.render_info.pColorAttachments = static.attachments
     vk.vkCmdBeginRendering(cb, static.render_info)
-    
+
     imgui.gui.igRender()
     local draw_data = imgui.gui.igGetDrawData()
     local text_count = 0
@@ -595,10 +672,10 @@ function M.update()
         text_count = harvester.harvest_text(draw_data, text_buffers[f_idx + 1])
     end
     state.last_text_count = text_count
-    
+
     static.ui_pc.idx = 60 + f_idx
     static.ui_pc.screen[0], static.ui_pc.screen[1] = win_w, win_h
-    
+
     static.viewport.width, static.viewport.height = win_w, win_h
     vk.vkCmdSetViewport(cb, 0, 1, static.viewport)
     static.scissor.extent.width, static.scissor.extent.height = win_w, win_h
@@ -609,17 +686,17 @@ function M.update()
     static.sets[0] = bindless_set; vk.vkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, M.layout_ui, 0, 1, static.sets, 0, nil)
     vk.vkCmdPushConstants(cb, M.layout_ui, vk.VK_SHADER_STAGE_VERTEX_BIT, 0, 16, static.ui_pc)
     if ui_context.count > 0 then vk.vkCmdDraw(cb, 4, ui_context.count, 0, 0) end
-    
+
     static.text_pc.idx = 62 + f_idx
     static.text_pc.screen[0], static.text_pc.screen[1] = win_w, win_h
     vk.vkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, M.pipe_text)
     vk.vkCmdPushConstants(cb, M.layout_ui, vk.VK_SHADER_STAGE_VERTEX_BIT, 0, 16, static.text_pc)
     if text_count > 0 then vk.vkCmdDraw(cb, 4, text_count, 0, 0) end
-    
+
     if state.show_test_overlay then
         vk.vkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, M.pipe_ui)
         local ptr = ffi.cast("UIElement*", overlay_buffers[f_idx + 1].allocation.ptr)
-        
+
         -- Background Rect
         ptr[0].x, ptr[0].y = 100, 100
         ptr[0].w, ptr[0].h = 400, 300
@@ -628,7 +705,7 @@ function M.update()
         ptr[0].clip_max_x, ptr[0].clip_max_y = win_w, win_h
         ptr[0].type = 0
         ptr[0].rounding = 20.0
-        
+
         -- A second "Shadow/Border" element to test multiple instances
         ptr[1].x, ptr[1].y = 95, 95
         ptr[1].w, ptr[1].h = 410, 310
@@ -637,15 +714,14 @@ function M.update()
         ptr[1].clip_max_x, ptr[1].clip_max_y = win_w, win_h
         ptr[1].type = 0
         ptr[1].rounding = 25.0
-        
+
         static.overlay_pc.idx = 64 + f_idx
         static.overlay_pc.screen[0], static.overlay_pc.screen[1] = win_w, win_h
         vk.vkCmdPushConstants(cb, M.layout_ui, vk.VK_SHADER_STAGE_VERTEX_BIT, 0, 16, static.overlay_pc)
         vk.vkCmdDraw(cb, 4, 2, 0, 0)
     end
-    
-    vk.vkCmdEndRendering(cb)
-    
+
+    vk.vkCmdEndRendering(cb)    
     -- HEARTBEAT MONITOR: Track health after frame completion
     state.heartbeat_timer = (state.heartbeat_timer or 0) + dt
     if state.heartbeat_timer > 5.0 then

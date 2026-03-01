@@ -77,6 +77,11 @@ function M.mouse_pressed(button)
     return bit.band(curr_mouse, mask) ~= 0 and bit.band(prev_mouse, mask) == 0
 end
 
+function M.mouse_released(button)
+    local mask = bit.lshift(1, button - 1)
+    return bit.band(curr_mouse, mask) == 0 and bit.band(prev_mouse, mask) ~= 0
+end
+
 -- Keyboard API
 function M.key_down(scancode)
     if not curr_keyboard or scancode < 0 or scancode >= num_keys then return false end

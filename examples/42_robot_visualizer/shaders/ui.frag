@@ -62,8 +62,19 @@ void main() {
         } else {
             oColor = vec4(vColor.rgb * 0.5, vColor.a * alpha);
         }
+    } else if (vType == 5) { // InputText
+        bool is_active = (vFlags & 2) != 0;
+        if (is_active) {
+            oColor = vec4(vColor.rgb * 1.5 + vec3(0.0, 0.4, 0.8), vColor.a * alpha);
+        } else {
+            oColor = vec4(vColor.rgb * 0.8, vColor.a * alpha);
+        }
     } else {
         oColor = vColor;
+        // Apply Hover Highlight (Flag 1)
+        if ((vFlags & 1) != 0) {
+            oColor.rgb += vec3(0.1, 0.12, 0.15);
+        }
         oColor.a *= alpha;
     }
 

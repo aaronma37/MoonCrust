@@ -17,7 +17,8 @@ _G._IMGUI_STATE = _G._IMGUI_STATE or {
 local S = _G._IMGUI_STATE
 
 local M = {
-    _persistence = S.persistence
+    _persistence = S.persistence,
+    _S = S
 }
 
 -- ImGui StyleVar Enum
@@ -41,7 +42,7 @@ M.WindowFlags = {
     NoInputs = 197120, DockNodeHost = 8388608
 }
 
--- ImGui Key Enum (Partial)
+-- ImGui Key Enum (Corrected to match imgui.h)
 local ImGuiKey = {
     Tab = 512, LeftArrow = 513, RightArrow = 514, UpArrow = 515, DownArrow = 516,
     PageUp = 517, PageDown = 518, Home = 519, End = 520,
@@ -49,6 +50,7 @@ local ImGuiKey = {
     Enter = 525, Escape = 526,
     LeftCtrl = 527, LeftShift = 528, LeftAlt = 529, LeftSuper = 530,
     RightCtrl = 531, RightShift = 532, RightAlt = 533, RightSuper = 534,
+    Menu = 535,
     _0 = 536, _1 = 537, _2 = 538, _3 = 539, _4 = 540,
     _5 = 541, _6 = 542, _7 = 543, _8 = 544, _9 = 545,
     A = 546, B = 547, C = 548, D = 549, E = 550, F = 551, G = 552,
@@ -64,6 +66,18 @@ local key_map = {
     [28]=ImGuiKey.Y, [29]=ImGuiKey.Z, [30]=ImGuiKey._1, [31]=ImGuiKey._2, [32]=ImGuiKey._3, [33]=ImGuiKey._4, [34]=ImGuiKey._5, [35]=ImGuiKey._6,
     [36]=ImGuiKey._7, [37]=ImGuiKey._8, [38]=ImGuiKey._9, [39]=ImGuiKey._0,
     [40]=ImGuiKey.Enter, [41]=ImGuiKey.Escape, [42]=ImGuiKey.Backspace, [43]=ImGuiKey.Tab, [44]=ImGuiKey.Space,
+    [45]=552, -- Minus
+    [46]=553, -- Equals
+    [47]=554, -- LeftBracket
+    [48]=555, -- RightBracket
+    [49]=556, -- Backslash
+    [51]=558, -- Semicolon
+    [52]=559, -- Apostrophe
+    [53]=560, -- Grave
+    [54]=561, -- Comma
+    [55]=562, -- Period
+    [56]=563, -- Slash
+    [76]=ImGuiKey.Delete,
     [79]=ImGuiKey.RightArrow, [80]=ImGuiKey.LeftArrow, [81]=ImGuiKey.DownArrow, [82]=ImGuiKey.UpArrow,
     [224]=ImGuiKey.LeftCtrl, [225]=ImGuiKey.LeftShift, [226]=ImGuiKey.LeftAlt, [227]=ImGuiKey.LeftSuper,
     [228]=ImGuiKey.RightCtrl, [229]=ImGuiKey.RightShift, [230]=ImGuiKey.RightAlt, [231]=ImGuiKey.RightSuper
@@ -72,7 +86,13 @@ local key_map = {
 local char_map = {
     [4]=97, [5]=98, [6]=99, [7]=100, [8]=101, [9]=102, [10]=103, [11]=104, [12]=105, [13]=106, [14]=107, [15]=108, [16]=109, [17]=110, [18]=111, [19]=112,
     [20]=113, [21]=114, [22]=115, [23]=116, [24]=117, [25]=118, [26]=119, [27]=120, [28]=121, [29]=122, [30]=49, [31]=50, [32]=51, [33]=52, [34]=53, [35]=54,
-    [36]=55, [37]=56, [38]=57, [39]=48, [44]=32
+    [36]=55, [37]=56, [38]=57, [39]=48, [44]=32,
+    [45]=45, [46]=61, [47]=91, [48]=93, [49]=92, [51]=59, [52]=39, [53]=96, [54]=44, [55]=46, [56]=47
+}
+
+local shift_char_map = {
+    [30]=33, [31]=64, [32]=35, [33]=36, [34]=37, [35]=94, [36]=38, [37]=42, [38]=40, [39]=41,
+    [45]=95, [46]=43, [47]=123, [48]=125, [49]=124, [51]=58, [52]=34, [53]=126, [54]=60, [55]=62, [56]=63
 }
 
 function M.get_glyph_ranges_default()
@@ -149,6 +169,7 @@ function M.init()
     S.plot3d_ctx = S.ffi_lib.ImPlot3D_CreateContext()
     local io = S.ffi_lib.igGetIO_Nil()
     io.DisplaySize.x, io.DisplaySize.y = 1280, 720
+    io.ConfigFlags = bit.bor(io.ConfigFlags, 1) -- ImGuiConfigFlags_NavEnableKeyboard
     
     -- ENABLE ANTI-ALIASING
     local style = S.ffi_lib.igGetStyle()
@@ -171,19 +192,39 @@ function M.new_frame()
     
     local mx, my = input.mouse_pos()
     S.ffi_lib.ImGuiIO_AddMousePosEvent(io, mx, my)
-    S.ffi_lib.ImGuiIO_AddMouseButtonEvent(io, 0, _G._MOUSE_L == true)
-    S.ffi_lib.ImGuiIO_AddMouseButtonEvent(io, 1, _G._MOUSE_R == true)
-    S.ffi_lib.ImGuiIO_AddMouseButtonEvent(io, 2, _G._MOUSE_M == true)
+    
+    -- Sync mouse buttons: Transition events + Current state fallback
+    for i=1, 3 do
+        local im_btn = (i == 1) and 0 or (i == 3 and 1 or 2)
+        local is_down = input.mouse_down(i)
+        if input.mouse_pressed(i) then
+            S.ffi_lib.ImGuiIO_AddMouseButtonEvent(io, im_btn, true)
+        elseif input.mouse_released(i) then
+            S.ffi_lib.ImGuiIO_AddMouseButtonEvent(io, im_btn, false)
+        else
+            -- Ensure state is correct even if transitions were messy
+            S.ffi_lib.ImGuiIO_AddMouseButtonEvent(io, im_btn, is_down)
+        end
+    end
+    
     S.ffi_lib.ImGuiIO_AddMouseWheelEvent(io, 0, _G._MOUSE_WHEEL or 0)
     _G._MOUSE_WHEEL = 0
 
     local shift = input.key_down(225) or input.key_down(229)
+    local ctrl = input.key_down(224) or input.key_down(228)
+
+    if shift and ctrl and input.mouse_pressed(1) then
+        print(string.format("[IMGUI DEBUG] MousePos=(%.1f, %.1f) WantCaptureMouse=%s", mx, my, tostring(io.WantCaptureMouse)))
+    end
     for scancode, im_key in pairs(key_map) do
         if input.key_pressed(scancode) then
             S.ffi_lib.ImGuiIO_AddKeyEvent(io, im_key, true)
             if char_map[scancode] then
                 local c = char_map[scancode]
-                if shift and c >= 97 and c <= 122 then c = c - 32 end
+                if shift then
+                    if shift_char_map[scancode] then c = shift_char_map[scancode]
+                    elseif c >= 97 and c <= 122 then c = c - 32 end
+                end
                 S.ffi_lib.ImGuiIO_AddInputCharacter(io, c)
             end
         elseif input.key_released(scancode) then
@@ -204,6 +245,7 @@ end
 
 M.gui = setmetatable({}, { 
     __index = function(t, k)
+        if M[k] ~= nil then return M[k] end
         if not S.ffi_lib then S.ffi_lib = ffi_loader() end
         if k:find("ImGuiStyleVar_") == 1 then return M.StyleVar[k:sub(15)] end
         if k:find("ImGuiWindowFlags_") == 1 then return M.WindowFlags[k:sub(18)] end

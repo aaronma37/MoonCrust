@@ -7,11 +7,16 @@ local M = {
     
     -- Common Flags
     Flags = { 
+        NoTitleBar = 1,
+        NoResize = 2,
+        NoMove = 4,
+        NoScrollbar = 8,
+        NoCollapse = 32,
         NoDecoration = 43, 
         AlwaysAutoResize = 64, 
-        NoSavedSettings = 65536,
-        AlwaysOnTop = 262144, 
         NoBackground = 128,
+        NoSavedSettings = 256, -- Corrected from 65536
+        AlwaysOnTop = 262144, 
         TableBorders = 3, 
         TableResizable = 16 
     },
