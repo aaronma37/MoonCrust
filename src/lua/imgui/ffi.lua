@@ -597,6 +597,8 @@ ffi.cdef[[
     void igPushID_Int(int int_id);
     void igPopID(void);
     void igSameLine(float offset_from_start_x, float spacing_w);
+    void igPushItemWidth(float item_width);
+    void igPopItemWidth(void);
     void igSetNextItemWidth(float item_width);
     void igSetKeyboardFocusHere(int offset);
     void igSetCursorPos(const ImVec2_c local_pos);
@@ -638,6 +640,10 @@ ffi.cdef[[
     float igGetColumnOffset(int column_index);
     void igSetColumnOffset(int column_index, float offset_x);
     int igGetColumnsCount(void);
+
+    // Widgets (Continued)
+    bool igInputInt(const char* label, int* v, int step, int step_fast, int flags);
+    bool igInputFloat(const char* label, float* v, float step, float step_fast, const char* format, int flags);
 
     // Logs / Scrolling
     void igSetScrollHereY(float center_y_ratio);

@@ -1,4 +1,4 @@
--- Simple JSON parser for MoonCrust (LuaJIT)
+-- Simple JSON parser and encoder for MoonCrust (LuaJIT)
 -- Based on rxi/json.lua but simplified for our needs.
 
 local json = {}
@@ -168,6 +168,48 @@ end
 function json.decode(str)
   local _, res = parse_value(str, 1)
   return res
+end
+
+local function encode_value(v)
+  if type(v) == "string" then
+    return string.char(34) .. v:gsub('"', '\\"') .. string.char(34)
+  elseif type(v) == "number" then
+    return tostring(v)
+  elseif type(v) == "boolean" then
+    return tostring(v)
+  elseif type(v) == "table" then
+    -- Check if it's an array
+    local is_array = true
+    local n = 0
+    for k in pairs(v) do
+      if type(k) ~= "number" then
+        is_array = false
+        break
+      end
+      n = math.max(n, k)
+    end
+    if is_array then
+      local res = "["
+      for i = 1, n do
+        res = res .. encode_value(v[i]) .. (i < n and "," or "")
+      end
+      return res .. "]"
+    else
+      local res = "{"
+      local first = true
+      for k, val in pairs(v) do
+        res = res .. (first and "" or ",") .. encode_value(tostring(k)) .. ":" .. encode_value(val)
+        first = false
+      end
+      return res .. "}"
+    end
+  else
+    return "null"
+  end
+end
+
+function json.encode(v)
+  return encode_value(v)
 end
 
 return json

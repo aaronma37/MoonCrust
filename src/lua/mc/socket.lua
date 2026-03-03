@@ -19,6 +19,7 @@ ffi.cdef[[
     int socket(int domain, int type, int protocol);
     int bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen);
     ssize_t recvfrom(int sockfd, void *buf, size_t len, int flags, struct sockaddr *src_addr, socklen_t *addrlen);
+    ssize_t sendto(int sockfd, const void *buf, size_t len, int flags, const struct sockaddr *dest_addr, socklen_t addrlen);
     int close(int fd);
     int fcntl(int fd, int cmd, ...);
     
@@ -60,6 +61,13 @@ function M.udp_listen(ip, port)
                 return ffi.string(buf, res)
             end
             return nil
+        end,
+        send = function(self, ip, port, data)
+            local dest_addr = ffi.new("struct sockaddr_in")
+            dest_addr.sin_family = AF_INET
+            dest_addr.sin_port = ffi.C.htons(port)
+            dest_addr.sin_addr.s_addr = ffi.C.inet_addr(ip)
+            return ffi.C.sendto(self.fd, data, #data, 0, ffi.cast("const struct sockaddr*", dest_addr), ffi.sizeof(dest_addr))
         end,
         close = function(self)
             ffi.C.close(self.fd)
