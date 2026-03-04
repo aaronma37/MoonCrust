@@ -1,0 +1,1 @@
+{"next_link_id":10,"links":[],"nodes":[{"y":300,"expanded":true,"id":1,"color":[0.2,0.5,0.9,1],"x":100,"config":[],"type":"trigger","name":"System Pulse"},{"y":300,"expanded":true,"id":2,"color":[0.6,0.2,0.8,1],"x":400,"config":{"use_llm":false,"goal":"Synthesize a universal GPU orchestrator."},"type":"overseer","name":"Shadow Overseer"}],"next_node_id":10}

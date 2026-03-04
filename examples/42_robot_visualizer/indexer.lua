@@ -19,9 +19,60 @@ local M = {
     channels = {}, -- [ch_id] = { indices = uint32_array, count = N }
 }
 
-function M.build(bridge)
+function M.build(bridge, path)
     if not bridge then return end
     
+    local cache_path = path .. ".idx"
+    local f = io.open(cache_path, "rb")
+    if f then
+        print("Indexer: Loading index from cache: " .. cache_path)
+        local start_t = ffi.C.SDL_GetTicks()
+        
+        -- Read count
+        local count_str = f:read(4)
+        if count_str and #count_str == 4 then
+            local count_ptr = ffi.cast("uint32_t*", count_str)
+            M.count = count_ptr[0]
+            
+            if M.count > M.capacity then
+                M.capacity = M.count + 100000
+                M.entries = ffi.new("McapIndexEntry[?]", M.capacity)
+            elseif not M.entries then
+                M.entries = ffi.new("McapIndexEntry[?]", M.capacity)
+            end
+            
+            -- Read entries
+            local entries_size = M.count * ffi.sizeof("McapIndexEntry")
+            local entries_data = f:read(entries_size)
+            ffi.copy(M.entries, entries_data, entries_size)
+            
+            -- Read channel count
+            local ch_count_str = f:read(4)
+            local ch_count = ffi.cast("uint32_t*", ch_count_str)[0]
+            
+            M.channels = {}
+            for i = 1, ch_count do
+                local ch_hdr = f:read(8)
+                local hdr_ptr = ffi.cast("uint32_t*", ch_hdr)
+                local ch_id = hdr_ptr[0]
+                local ch_n = hdr_ptr[1]
+                
+                local arr_size = ch_n * 4
+                local arr_data = f:read(arr_size)
+                local arr = ffi.new("uint32_t[?]", ch_n)
+                ffi.copy(arr, arr_data, arr_size)
+                
+                M.channels[ch_id] = { indices = arr, count = ch_n }
+            end
+            
+            f:close()
+            local end_t = ffi.C.SDL_GetTicks()
+            print(string.format("Indexer: Loaded %d messages (%d channels) from cache in %d ms", M.count, ch_count, tonumber(end_t - start_t)))
+            return
+        end
+        f:close()
+    end
+
     print("Indexer: Building message index...")
     local start_t = ffi.C.SDL_GetTicks()
     
@@ -38,7 +89,12 @@ function M.build(bridge)
     local temp_groups = {}
     
     while robot.lib.mcap_get_current(bridge, msg) do
-        if M.count >= M.capacity then break end
+        if M.count >= M.capacity then
+            M.capacity = M.capacity * 2
+            local new_entries = ffi.new("McapIndexEntry[?]", M.capacity)
+            ffi.copy(new_entries, M.entries, M.count * ffi.sizeof("McapIndexEntry"))
+            M.entries = new_entries
+        end
         
         local entry = M.entries[M.count]
         entry.timestamp = msg.log_time
@@ -54,16 +110,41 @@ function M.build(bridge)
     end
     
     -- Pack groups into efficient FFI arrays
+    local ch_count = 0
     for ch_id, indices in pairs(temp_groups) do
         local n = #indices
         local arr = ffi.new("uint32_t[?]", n)
         for i=1, n do arr[i-1] = indices[i] end
         M.channels[ch_id] = { indices = arr, count = n }
+        ch_count = ch_count + 1
     end
     
     local end_t = ffi.C.SDL_GetTicks()
-    print(string.format("Indexer: Indexed %d messages (%d channels) in %d ms", M.count, #M.channels, tonumber(end_t - start_t)))
+    print(string.format("Indexer: Indexed %d messages (%d channels) in %d ms", M.count, ch_count, tonumber(end_t - start_t)))
     robot.lib.mcap_rewind(bridge)
+    
+    -- Save cache
+    local fw = io.open(cache_path, "wb")
+    if fw then
+        print("Indexer: Saving index to cache: " .. cache_path)
+        -- Write count
+        local count_arr = ffi.new("uint32_t[1]", M.count)
+        fw:write(ffi.string(count_arr, 4))
+        
+        -- Write entries
+        fw:write(ffi.string(M.entries, M.count * ffi.sizeof("McapIndexEntry")))
+        
+        -- Write channel count
+        local ch_count_arr = ffi.new("uint32_t[1]", ch_count)
+        fw:write(ffi.string(ch_count_arr, 4))
+        
+        for ch_id, group in pairs(M.channels) do
+            local hdr = ffi.new("uint32_t[2]", ch_id, group.count)
+            fw:write(ffi.string(hdr, 8))
+            fw:write(ffi.string(group.indices, group.count * 4))
+        end
+        fw:close()
+    end
 end
 
 function M.find_latest_for_channel(ch_id, timestamp)

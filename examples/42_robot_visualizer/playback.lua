@@ -132,7 +132,7 @@ function M.load_mcap(path)
 	M.end_time = robot.lib.mcap_get_end_time(M.bridge)
 	M.current_time_ns, M.playback_time_ns, M.paused = M.start_time, M.start_time, true
 
-	indexer.build(M.bridge)
+	indexer.build(M.bridge, M.mcap_path)
 	M.discover_topics()
 
 	M._msg_anchor = ffi.new("McapMessage")
