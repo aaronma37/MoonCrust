@@ -50,8 +50,8 @@ void main()
   gl_Position = viewPos;
   gl_Position.xy += offset * size * viewPos.w;
 
-  // Bright HDR Blue for maximum visibility
-  float h = p.z * 0.2 + 0.5;
-  vColor = vec4(vec3(0.0, 0.5, 1.0) * h + vec3(0.0, 0.1, 0.4), 1.0);
+  // Bright HDR Blue for maximum visibility with topological bands
+  float h = 0.8 + 0.4 * fract(worldPos.z * 0.5);
+  vColor = vec4(vec3(0.2, 0.7, 1.0) * h + vec3(0.1, 0.3, 0.6), 1.0);
   vPos = worldPos;
 }

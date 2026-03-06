@@ -41,15 +41,15 @@ panels.register("perf", "Performance Stats", function(gui, node_id)
     gui.igDragFloat("Point Size", view3d.p_point_size, 0.5, 0.1, 500.0, "Point Size: %.1f", 0)
     
     gui.igSeparatorText("Lidar Alignment")
-    local l_off = ffi.new("int[1]", playback.lidar_offset or 0)
+    local l_off = ffi.new("int[1]", playback.lidar_offset or 48)
     gui.igSetNextItemWidth(-1)
     if gui.igDragInt("##LidarOff", l_off, 1.0, 0, 1024, "Lidar Offset: %d bytes", 0) then playback.lidar_offset = l_off[0] end
     
-    local l_str = ffi.new("int[1]", playback.lidar_stride or 12)
+    local l_str = ffi.new("int[1]", playback.lidar_stride or 20)
     gui.igSetNextItemWidth(-1)
     if gui.igDragInt("##LidarStr", l_str, 1.0, 4, 128, "Lidar Stride: %d bytes", 0) then playback.lidar_stride = l_str[0] end
 
-    local l_pos_off = ffi.new("int[1]", playback.lidar_pos_offset or 0)
+    local l_pos_off = ffi.new("int[1]", playback.lidar_pos_offset or 4)
     gui.igSetNextItemWidth(-1)
     if gui.igDragInt("##LidarPosOff", l_pos_off, 1.0, 0, 128, "XYZ Inner Offset: %d bytes", 0) then playback.lidar_pos_offset = l_pos_off[0] end
 
@@ -57,13 +57,13 @@ panels.register("perf", "Performance Stats", function(gui, node_id)
     
     gui.igCheckbox("Transform Lidar", view3d.p_lidar_transform)
     gui.igSameLine(0, 10)
-    if gui.igButton("Reset Axes", ffi.new("ImVec2_c")) then view3d.axis_map = {1, 2, 3, 0} end
+    if gui.igButton("Reset Axes", ffi.new("ImVec2_c")) then view3d.axis_map = {3, 2, -1, 0} end
     
     gui.igText("Axis Map: [" .. view3d.axis_map[1] .. "," .. view3d.axis_map[2] .. "," .. view3d.axis_map[3] .. "]")
-    if gui.igButton("Swap Y/Z", ffi.new("ImVec2_c", {-1, 25})) then
-        local old_y = view3d.axis_map[2]
-        view3d.axis_map[2] = view3d.axis_map[3]
-        view3d.axis_map[3] = old_y
+    if gui.igButton("Swap X/Z", ffi.new("ImVec2_c", {-1, 25})) then
+        local old_x = view3d.axis_map[1]
+        view3d.axis_map[1] = view3d.axis_map[3]
+        view3d.axis_map[3] = old_x
     end
     if gui.igButton("Invert Z", ffi.new("ImVec2_c", {-1, 25})) then
         view3d.axis_map[3] = -view3d.axis_map[3]

@@ -567,17 +567,18 @@ function M.update()
     if not playback._lidar_configured and v3d_pms and v3d_pms.objects then
         for _, o in ipairs(v3d_pms.objects) do
             if o.type == "lidar" and o.topic == playback.lidar_topic then
-                playback.lidar_stride = o.stride or 12
-                playback.lidar_offset = o.header_skip or 0
+                playback.lidar_stride = o.stride or 20
+                playback.lidar_offset = o.header_skip or 48
+                playback.lidar_pos_offset = o.pos_offset or 4
                 playback._lidar_configured = true
                 break
             end
         end
     end
 
-    local final_in_off = playback.lidar_offset or 0
-    local final_stride = playback.lidar_stride or 12
-    local final_pos_off = playback.lidar_pos_offset or 0
+    local final_in_off = playback.lidar_offset or 48
+    local final_stride = playback.lidar_stride or 20
+    local final_pos_off = playback.lidar_pos_offset or 4
     
     if playback.last_lidar_data_size and final_stride > 0 then
         local available = playback.last_lidar_data_size - final_in_off

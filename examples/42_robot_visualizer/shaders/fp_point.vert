@@ -77,10 +77,10 @@ void main()
 
   ClusterItem item = cluster_items[cluster_index];
   
-  // Bright HDR Blue base
-  float h = p.z * 0.2 + 0.5;
-  vec3 albedo = vec3(0.0, 0.5, 1.0) * h + vec3(0.0, 0.1, 0.4);
-  vec3 total_light = vec3(0.2) * albedo; // Ambient
+  // Bright HDR Blue base with topological height bands
+  float h = 0.8 + 0.4 * fract(worldPos.z * 0.5);
+  vec3 albedo = vec3(0.2, 0.7, 1.0) * h + vec3(0.1, 0.3, 0.6);
+  vec3 total_light = vec3(0.4) * albedo; // Ambient
 
   vec3 N = vec3(0.0, 0.0, 1.0); // Simple Billboard Normal
   

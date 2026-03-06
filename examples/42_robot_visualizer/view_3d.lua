@@ -28,7 +28,7 @@ local M = {
     poses = {},
     p_point_size = ffi.new("float[1]", 3.0),
     p_lidar_transform = ffi.new("bool[1]", true),
-    axis_map = {1, 2, 3, 0}, -- Default mapping (X, Y, Z, Padding)
+    axis_map = {3, 2, -1, 0}, -- Default mapping for Livox (Swap X/Z and Invert Z)
     view_lights = ffi.new("Light[1024]"),
     
     graph = nil,

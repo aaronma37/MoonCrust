@@ -16,6 +16,7 @@ void main() {
     gl_Position = pc.view_proj * vec4(p.xyz, 1.0);
     gl_PointSize = pc.point_size;
     
-    // Simple height-based color
-    vColor = vec4(0.2, 0.5, 1.0, 1.0) * (p.z + 1.0);
+    // Simple height-based color with topological bands
+    float h = 0.8 + 0.4 * fract(p.z * 0.5);
+    vColor = vec4(0.4, 0.7, 1.0, 1.0) * h + vec4(0.1, 0.3, 0.6, 0.0);
 }
