@@ -48,7 +48,12 @@ panels.register("perf", "Performance Stats", function(gui, node_id)
     local l_str = ffi.new("int[1]", playback.lidar_stride or 12)
     gui.igSetNextItemWidth(-1)
     if gui.igDragInt("##LidarStr", l_str, 1.0, 4, 128, "Lidar Stride: %d bytes", 0) then playback.lidar_stride = l_str[0] end
-    gui.igTextDisabled("(Shift+Arrows: Offset, Alt+Arrows: Stride)")
+
+    local l_pos_off = ffi.new("int[1]", playback.lidar_pos_offset or 0)
+    gui.igSetNextItemWidth(-1)
+    if gui.igDragInt("##LidarPosOff", l_pos_off, 1.0, 0, 128, "XYZ Inner Offset: %d bytes", 0) then playback.lidar_pos_offset = l_pos_off[0] end
+
+    gui.igTextDisabled("(Shift+Arrows: Offset, Alt+Arrows: Stride, Ctrl+Arrows: XYZ Inner Offset)")
     
     gui.igCheckbox("Transform Lidar", view3d.p_lidar_transform)
     gui.igSameLine(0, 10)

@@ -28,6 +28,7 @@ local M = {
 	pose_is_double = false, -- Float precision as found in airport log
 	lidar_offset = 76,
 	lidar_stride = 60,
+	lidar_pos_offset = 0,
 	just_sought = false,
 	bytes_processed = 0,
 	throughput_mbs = 0,
@@ -348,6 +349,7 @@ function M.update(dt, raw_buffer)
 		-- LiDAR point count (ZERO-COPY Silicon Extraction)
 		if ch_id == M.lidar_ch_id then
 			M.last_lidar_points = M.current_msg.point_count
+			M.last_lidar_data_size = tonumber(M.current_msg.data_size)
 		end
 
 		-- Pose Update (FFI Cast with offset and precision support)

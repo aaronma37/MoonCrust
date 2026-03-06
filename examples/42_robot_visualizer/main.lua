@@ -447,29 +447,32 @@ function M.update()
     end -- F2 or '2'
     
     -- Global Data Tweaking (No click required)
-    if not ctrl then
+    if not ctrl and not shift and not alt then
         -- POSE (No Modifiers)
-        if not shift and not alt then
-            if input.key_pressed(79) then playback.pose_offset = math.min(512, playback.pose_offset + 1) end -- Right
-            if input.key_pressed(80) then playback.pose_offset = math.max(0, playback.pose_offset - 1) end   -- Left
-            if input.key_pressed(82) then playback.pose_offset = math.min(512, playback.pose_offset + 8) end -- Up
-            if input.key_pressed(81) then playback.pose_offset = math.max(0, playback.pose_offset - 8) end   -- Down
-        end
-        -- LIDAR OFFSET (Shift + Right/Left)
-        if shift and not alt then
-            if input.key_pressed(79) then playback.lidar_offset = (playback.lidar_offset or 0) + 1 end
-            if input.key_pressed(80) then playback.lidar_offset = math.max(0, (playback.lidar_offset or 0) - 1) end
-        end
-        -- LIDAR STRIDE (Alt + Right/Left)
-        if alt and not shift then
-            if input.key_pressed(79) then playback.lidar_stride = (playback.lidar_stride or 12) + 1 end
-            if input.key_pressed(80) then playback.lidar_stride = math.max(1, (playback.lidar_stride or 12) - 1) end
-        end
+        if input.key_pressed(79) then playback.pose_offset = math.min(512, playback.pose_offset + 1) end -- Right
+        if input.key_pressed(80) then playback.pose_offset = math.max(0, playback.pose_offset - 1) end   -- Left
+        if input.key_pressed(82) then playback.pose_offset = math.min(512, playback.pose_offset + 8) end -- Up
+        if input.key_pressed(81) then playback.pose_offset = math.max(0, playback.pose_offset - 8) end   -- Down
     end
-    
+
+    -- LIDAR OFFSET (Shift + Right/Left)
+    if shift and not alt and not ctrl then
+        if input.key_pressed(79) then playback.lidar_offset = (playback.lidar_offset or 0) + 1 end
+        if input.key_pressed(80) then playback.lidar_offset = math.max(0, (playback.lidar_offset or 0) - 1) end
+    end
+    -- LIDAR STRIDE (Alt + Right/Left)
+    if alt and not shift and not ctrl then
+        if input.key_pressed(79) then playback.lidar_stride = (playback.lidar_stride or 12) + 1 end
+        if input.key_pressed(80) then playback.lidar_stride = math.max(1, (playback.lidar_stride or 12) - 1) end
+    end
+    -- LIDAR POS OFFSET (Ctrl + Right/Left)
+    if ctrl and not shift and not alt then
+        if input.key_pressed(79) then playback.lidar_pos_offset = (playback.lidar_pos_offset or 0) + 1 end
+        if input.key_pressed(80) then playback.lidar_pos_offset = math.max(0, (playback.lidar_pos_offset or 0) - 1) end
+    end
+
     if ctrl then
-        if input.key_pressed(18) then state.file_dialog.trigger = true end -- O
-        if input.key_pressed(25) then split_focused("v") end -- V
+        if input.key_pressed(18) then state.file_dialog.trigger = true end -- O        if input.key_pressed(25) then split_focused("v") end -- V
         if input.key_pressed(11) then split_focused("h") end -- H
         if input.key_pressed(19) then -- P
             local items = {}; for id, p in pairs(panels.list) do table.insert(items, { name = p.name, id = id }) end
@@ -574,7 +577,16 @@ function M.update()
 
     local final_in_off = playback.lidar_offset or 0
     local final_stride = playback.lidar_stride or 12
-    local final_pos_off = 0
+    local final_pos_off = playback.lidar_pos_offset or 0
+    
+    if playback.last_lidar_data_size and final_stride > 0 then
+        local available = playback.last_lidar_data_size - final_in_off
+        if available > 0 then
+            pt_cnt = math.floor(available / final_stride)
+        else
+            pt_cnt = 0
+        end
+    end
 
     static.pc_p.in_buf_idx, static.pc_p.in_offset_bytes, static.pc_p.out_buf_idx, static.pc_p.count = 50, lidar_gtb_off + final_in_off, out_idx, pt_cnt
     static.pc_p.mode = 0

@@ -24,10 +24,12 @@ layout(push_constant) uniform PC {
 
 float readFloatUnaligned(uint byte_off, uint buf_idx) {
     uint u32_idx = byte_off / 4;
-    uint shift = (byte_off % 4) * 8;
+    uint rem = byte_off % 4;
     uint v0 = all_buffers[nonuniformEXT(buf_idx)].u32[u32_idx];
-    if (shift == 0) return uintBitsToFloat(v0);
+    if (rem == 0) return uintBitsToFloat(v0);
+    
     uint v1 = all_buffers[nonuniformEXT(buf_idx)].u32[u32_idx + 1];
+    uint shift = rem * 8;
     uint val = (v0 >> shift) | (v1 << (32 - shift));
     return uintBitsToFloat(val);
 }
