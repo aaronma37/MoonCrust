@@ -100,8 +100,20 @@ function M.buffer(size, usage_type, initial_data, host_visible)
     }
     
     if initial_data then
-        local st = staging.new(pd, d, M.heaps.host, size + 1024)
-        st:upload_buffer(handle, initial_data, 0, q, family, size)
+        if obj.allocation.ptr then
+            ffi.copy(obj.allocation.ptr, initial_data, size)
+            -- Flush memory if it's not coherent (most PC host-visible memory IS coherent, but this is safer)
+            local range = ffi.new("VkMappedMemoryRange[1]", {{
+                sType = vk.VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE,
+                memory = obj.allocation.memory,
+                offset = obj.allocation.offset,
+                size = size
+            }})
+            vk.vkFlushMappedMemoryRanges(d, 1, range)
+        else
+            local st = staging.new(pd, d, M.heaps.host, size + 1024)
+            st:upload_buffer(handle, initial_data, 0, q, family, size)
+        end
     end
     
     return track(obj)

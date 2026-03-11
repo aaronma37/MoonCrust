@@ -27,9 +27,9 @@ cmake --build build -j$(nproc)
 ```
 
 ### 3. Running Examples
-Run an example by passing its number as an argument:
+Run an example by passing its directory path as an argument:
 ```bash
-./build/mooncrust 08
+./build/mooncrust examples/45_neurosymbolic_lowpoly
 ```
 
 ---
@@ -61,6 +61,7 @@ MoonCrust includes a wide range of examples demonstrating everything from basic 
 *   **27_obj_viewer**: A high-performance OBJ file loader and viewer.
 *   **30_sponza_gltf**: Loading and rendering the classic Sponza scene from GLTF with modern techniques.
 *   **40_particle_term**: A particle-based terminal emulator using **Simulated Annealing** and **SDF Fonts** to fluidly morph and settle particles into text characters.
+*   **45_neurosymbolic_lowpoly**: High-quality low-poly character generator with **hierarchical rigging** and **procedural (symbolic) animation** driven by mathematical functions.
 
 ### 🤖 Pathfinding & AI
 *   **10_moo_graph_search**: Multi-Objective Optimization (MOO) graph search on the GPU.

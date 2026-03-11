@@ -88,6 +88,33 @@ function M.mat4_scale(s, out)
     return m
 end
 
+function M.mat4_translate(x, y, z, out)
+    local m = M.mat4_identity(out)
+    m.m[12], m.m[13], m.m[14] = x, y, z
+    return m
+end
+
+function M.mat4_rotate_x(angle, out)
+    local m = M.mat4_identity(out)
+    local c, s = math.cos(angle), math.sin(angle)
+    m.m[5], m.m[6], m.m[9], m.m[10] = c, -s, s, c
+    return m
+end
+
+function M.mat4_rotate_y(angle, out)
+    local m = M.mat4_identity(out)
+    local c, s = math.cos(angle), math.sin(angle)
+    m.m[0], m.m[2], m.m[8], m.m[10] = c, -s, s, c
+    return m
+end
+
+function M.mat4_rotate_z(angle, out)
+    local m = M.mat4_identity(out)
+    local c, s = math.cos(angle), math.sin(angle)
+    m.m[0], m.m[1], m.m[4], m.m[5] = c, -s, s, c
+    return m
+end
+
 function M.mat4_ortho(left, right, bottom, top, near, far, out)
     local m = out or ffi.new("mc_mat4")
     for i=0,15 do m.m[i] = 0 end

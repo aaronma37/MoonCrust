@@ -39,6 +39,38 @@ function M.make_cube(w, h, d, r, g, b)
     return mesh
 end
 
+function M.make_pyramid(w, h, d, r, g, b)
+    local hw, hh, hd = w/2, h/2, d/2
+    local mesh = M.create_mesh()
+    
+    -- Vertices: Bottom base (4 verts) and Top Tip (1 vert)
+    -- But for shading, we need separate vertices for each face to have flat normals
+    local verts = {
+        -- Base (Facing Down)
+        {-hw, -hh,  hd,  0, -1,  0, r, g, b}, { hw, -hh,  hd,  0, -1,  0, r, g, b}, { hw, -hh, -hd,  0, -1,  0, r, g, b}, {-hw, -hh, -hd,  0, -1,  0, r, g, b},
+        -- Front Face
+        {-hw, -hh,  hd,  0,  0.5, 1, r, g, b}, { hw, -hh,  hd,  0,  0.5, 1, r, g, b}, { 0,  hh,  0,  0,  0.5, 1, r, g, b},
+        -- Back Face
+        { hw, -hh, -hd,  0,  0.5,-1, r, g, b}, {-hw, -hh, -hd,  0,  0.5,-1, r, g, b}, { 0,  hh,  0,  0,  0.5,-1, r, g, b},
+        -- Left Face
+        {-hw, -hh, -hd, -1,  0.5, 0, r, g, b}, {-hw, -hh,  hd, -1,  0.5, 0, r, g, b}, { 0,  hh,  0, -1,  0.5, 0, r, g, b},
+        -- Right Face
+        { hw, -hh,  hd,  1,  0.5, 0, r, g, b}, { hw, -hh, -hd,  1,  0.5, 0, r, g, b}, { 0,  hh,  0,  1,  0.5, 0, r, g, b},
+    }
+    
+    local indices = {
+        0, 1, 2,  2, 3, 0, -- Base
+        4, 5, 6,           -- Front
+        7, 8, 9,           -- Back
+        10, 11, 12,        -- Left
+        13, 14, 15         -- Right
+    }
+    
+    mesh.vertices = verts
+    mesh.indices = indices
+    return mesh
+end
+
 function M.translate(mesh, x, y, z)
     local res = M.create_mesh()
     for _, v in ipairs(mesh.vertices) do

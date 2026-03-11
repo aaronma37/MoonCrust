@@ -62,6 +62,22 @@ add_executable(mooncrust
     src/main.cpp 
     src/lua/mc/image_loader.c
 )
+
+# 5. Lua Embedding
+message(STATUS "Adding Lua embedding...")
+file(GLOB RECURSIVE LUA_FILES RELATIVE ${CMAKE_CURRENT_SOURCE_DIR} "src/lua/*.lua")
+set(EMBEDDED_LUA_H ${CMAKE_CURRENT_SOURCE_DIR}/src/embedded_lua.h)
+
+add_custom_command(
+    OUTPUT ${EMBEDDED_LUA_H}
+    COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tools/embed_lua.py ${EMBEDDED_LUA_H} ${LUA_FILES}
+    DEPENDS ${LUA_FILES} ${CMAKE_CURRENT_SOURCE_DIR}/tools/embed_lua.py
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    COMMENT "Embedding Lua files into ${EMBEDDED_LUA_H}"
+)
+
+# Ensure embedded_lua.h is generated before compiling main.cpp
+set_source_files_properties(src/main.cpp PROPERTIES OBJECT_DEPENDS ${EMBEDDED_LUA_H})
 add_dependencies(mooncrust luajit_project)
 
 # Export symbols for LuaJIT FFI

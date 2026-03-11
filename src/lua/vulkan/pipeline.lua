@@ -91,7 +91,7 @@ function M.create_graphics_pipeline(device, layout, vert_or_shaders, frag_module
         sType = vk.VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
         vertexBindingDescriptionCount = options.vertex_binding and 1 or 0,
         pVertexBindingDescriptions = options.vertex_binding,
-        vertexAttributeDescriptionCount = options.vertex_attribute_count or (options.vertex_attributes and 1 or 0),
+        vertexAttributeDescriptionCount = options.vertex_attribute_count or (options.vertex_attributes and (ffi.sizeof(options.vertex_attributes) / ffi.sizeof("VkVertexInputAttributeDescription")) or 0),
         pVertexAttributeDescriptions = options.vertex_attributes
     })
 

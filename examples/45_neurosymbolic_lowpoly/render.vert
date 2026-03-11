@@ -4,7 +4,9 @@ layout(location = 0) in vec3 inPosition;
 layout(location = 1) in vec3 inNormal;
 layout(location = 2) in vec3 inColor;
 
-layout(location = 0) out vec3 fragGouraudColor;
+layout(location = 0) out vec3 fragNormal;
+layout(location = 1) out vec3 fragColor;
+layout(location = 2) out vec3 fragPos;
 
 layout(push_constant) uniform PushConstants {
     mat4 mvp;
@@ -12,20 +14,13 @@ layout(push_constant) uniform PushConstants {
 } pc;
 
 void main() {
+    vec4 worldPos = pc.model * vec4(inPosition, 1.0);
     gl_Position = pc.mvp * vec4(inPosition, 1.0);
     
-    // Gouraud Shading: Calculate lighting per vertex
-    vec3 worldNormal = normalize(mat3(pc.model) * inNormal);
+    fragPos = worldPos.xyz;
     
-    // Vector pointing FROM surface TO light source (Top-Right-Front)
-    vec3 lightDir = normalize(vec3(0.5, 1.0, 0.5));
-    
-    // Diffuse calculation
-    float diff = max(dot(worldNormal, lightDir), 0.0);
-    
-    // High ambient to ensure visibility (classic RS style had very flat, bright lighting)
-    float ambient = 0.6;
-    float intensity = clamp(ambient + diff * 0.5, 0.0, 1.0);
-    
-    fragGouraudColor = inColor * intensity;
+    // Low poly look: Use mat3 for normals to avoid translation effects.
+    // We don't normalize here to preserve magnitude if needed, but frag shader will.
+    fragNormal = mat3(pc.model) * inNormal;
+    fragColor = inColor;
 }

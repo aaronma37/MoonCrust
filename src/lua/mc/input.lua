@@ -84,6 +84,7 @@ end
 
 -- Keyboard API
 function M.key_down(scancode)
+    if not scancode then return false end
     if not curr_keyboard or scancode < 0 or scancode >= num_keys then return false end
     return curr_keyboard[scancode] ~= 0
 end
@@ -122,5 +123,11 @@ M.SCANCODE_8 = 37
 M.SCANCODE_9 = 38
 M.SCANCODE_0 = 39
 M.SCANCODE_Z = 29
+
+-- Arrow Keys
+M.SCANCODE_RIGHT = 79
+M.SCANCODE_LEFT = 80
+M.SCANCODE_DOWN = 81
+M.SCANCODE_UP = 82
 
 return M
