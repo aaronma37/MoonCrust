@@ -73,6 +73,9 @@ set_target_properties(mooncrust PROPERTIES
 if(UNIX AND NOT APPLE)
     # On Linux, we need -rdynamic and --whole-archive for LuaJIT to find C/C++ symbols
     target_link_options(mooncrust PRIVATE "-rdynamic" "-Wl,--whole-archive" "${LUAJIT_LIBRARY}" "-Wl,--no-whole-archive")
+elseif(WIN32)
+    # On Windows (MinGW), we need to export all symbols for LuaJIT FFI
+    target_link_options(mooncrust PRIVATE "-Wl,--export-all-symbols" "-Wl,--whole-archive" "${LUAJIT_LIBRARY}" "-Wl,--no-whole-archive")
 endif()
 
 target_link_libraries(mooncrust 

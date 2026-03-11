@@ -1,0 +1,64 @@
+name: Build MoonCrust
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
+  release:
+    types: [ created ]
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install Dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential cmake python3
+        
+    - name: Configure CMake
+      run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+        
+    - name: Build
+      run: cmake --build build -j$(nproc)
+        
+    - name: Upload Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: mooncrust-linux
+        path: build/mooncrust
+
+  build-windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup MSYS2
+      uses: msys2/setup-msys2@v2
+      with:
+        msystem: UCRT64
+        update: true
+        install: >-
+          git
+          make
+          mingw-w64-ucrt-x86_64-gcc
+          mingw-w64-ucrt-x86_64-cmake
+          python
+          
+    - name: Configure CMake
+      run: cmake -G "Unix Makefiles" -B build -DCMAKE_BUILD_TYPE=Release
+        
+    - name: Build
+      run: cmake --build build -j$(nproc)
+        
+    - name: Upload Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: mooncrust-windows
+        path: build/mooncrust.exe
