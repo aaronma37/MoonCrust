@@ -8,7 +8,7 @@ ffi.cdef[[
     void mc_free_image(unsigned char* pixels);
 ]]
 
-local libimg = ffi.load("src/lua/mc/libimage_loader.so")
+local libimg = ffi.C
 
 local M = {}
 

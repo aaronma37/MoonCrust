@@ -29,8 +29,8 @@ FetchContent_Declare(
     SDL3
     URL https://github.com/libsdl-org/SDL/archive/refs/tags/release-3.2.0.tar.gz
 )
-set(SDL_SHARED ON CACHE BOOL "" FORCE)
-set(SDL_STATIC OFF CACHE BOOL "" FORCE)
+set(SDL_SHARED OFF CACHE BOOL "" FORCE)
+set(SDL_STATIC ON CACHE BOOL "" FORCE)
 set(SDL_TEST OFF CACHE BOOL "" FORCE)
 set(SDL_AUDIO ON CACHE BOOL "" FORCE)
 set(SDL_RENDER OFF CACHE BOOL "" FORCE)
@@ -56,9 +56,12 @@ ExternalProject_Add(luajit_project
 
 # Setup variables for MoonCrust to use LuaJIT
 set(LUAJIT_INCLUDE_DIR ${LUAJIT_INSTALL_DIR}/include/luajit-2.1)
-set(LUAJIT_LIBRARY ${LUAJIT_INSTALL_DIR}/lib/libluajit-5.1.so)
+set(LUAJIT_LIBRARY ${LUAJIT_INSTALL_DIR}/lib/libluajit-5.1.a)
 
-add_executable(mooncrust src/main.cpp)
+add_executable(mooncrust 
+    src/main.cpp 
+    src/lua/mc/image_loader.c
+)
 add_dependencies(mooncrust luajit_project)
 
 # Export symbols for LuaJIT FFI
@@ -68,14 +71,14 @@ set_target_properties(mooncrust PROPERTIES
 )
 
 if(UNIX AND NOT APPLE)
-    # On Linux, we need -rdynamic to ensure LuaJIT can see the symbols
-    target_link_options(mooncrust PRIVATE "-rdynamic")
+    # On Linux, we need -rdynamic and --whole-archive for LuaJIT to find C/C++ symbols
+    target_link_options(mooncrust PRIVATE "-rdynamic" "-Wl,--whole-archive" "${LUAJIT_LIBRARY}" "-Wl,--no-whole-archive")
 endif()
 
 target_link_libraries(mooncrust 
     PRIVATE 
     volk 
-    SDL3::SDL3-shared
+    SDL3::SDL3-static
     ${LUAJIT_LIBRARY}
 )
 
@@ -89,3 +92,4 @@ target_include_directories(mooncrust PRIVATE
 if(UNIX AND NOT APPLE)
     target_link_libraries(mooncrust PRIVATE dl pthread)
 endif()
+set(CMAKE_BUILD_TYPE Release)

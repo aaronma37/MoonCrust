@@ -7,6 +7,66 @@
 #include <cstring>
 #include <set>
 #include <string>
+#include "embedded_lua.h"
+
+static int load_embedded_lua(lua_State *L) {
+    const char *module_name = luaL_checkstring(L, 1);
+    std::string key = module_name;
+    
+    // Convert Lua module name to our map key (e.g. "vulkan.ffi" -> "vulkan/ffi")
+    for (char &c : key) {
+        if (c == '.') c = '/';
+    }
+    
+    // Try both exact match (.lua) and directory index (/init.lua)
+    std::string file_key = key + ".lua";
+    std::string init_key = key + "/init.lua";
+    
+    auto it = embedded_lua_files.find(file_key);
+    if (it == embedded_lua_files.end()) {
+        it = embedded_lua_files.find(init_key);
+    }
+    
+    if (it != embedded_lua_files.end()) {
+        const auto& data = it->second;
+        if (luaL_loadbuffer(L, (const char*)data.first, data.second, it->first.c_str()) == 0) {
+            return 1;
+        } else {
+            return luaL_error(L, "error loading embedded module %s: %s", module_name, lua_tostring(L, -1));
+        }
+    }
+    
+    // Let it fall back to standard loaders
+    lua_pushstring(L, "\n\tno embedded file '");
+    lua_pushstring(L, file_key.c_str());
+    lua_pushstring(L, "' or '");
+    lua_pushstring(L, init_key.c_str());
+    lua_pushstring(L, "'");
+    lua_concat(L, 5);
+    return 1;
+}
+
+static void setup_embedded_loader(lua_State *L) {
+    lua_getglobal(L, "package");
+    // LuaJIT 2.1 uses 'loaders' instead of 'searchers' (which is Lua 5.2+)
+    lua_getfield(L, -1, "loaders");
+    if (lua_istable(L, -1)) {
+        int num_loaders = lua_objlen(L, -1);
+        
+        // Push our loader function
+        lua_pushcfunction(L, load_embedded_lua);
+        
+        // Shift existing loaders down
+        for (int i = num_loaders; i >= 1; i--) {
+            lua_rawgeti(L, -2, i);
+            lua_rawseti(L, -3, i + 1);
+        }
+        
+        // Insert our loader at index 2 (after preload)
+        lua_rawseti(L, -2, 2);
+    }
+    lua_pop(L, 2);
+}
 
 int main(int argc, char* argv[]) {
     if (volkInitialize() != VK_SUCCESS) {
@@ -26,6 +86,7 @@ int main(int argc, char* argv[]) {
 
     lua_State* L = luaL_newstate();
     luaL_openlibs(L);
+    setup_embedded_loader(L);
 
     SDL_Window* window = SDL_CreateWindow("MoonCrust", 1280, 720, SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE);
     if (!window) {
@@ -193,10 +254,85 @@ int main(int argc, char* argv[]) {
     }
     lua_setglobal(L, "_ARGS");
 
-    if (argc > 1) { lua_pushstring(L, argv[1]); lua_setglobal(L, "_STARTUP_ARG"); }
-    if (luaL_dofile(L, "src/lua/init.lua")) {
-        std::cerr << "Lua Error: " << lua_tostring(L, -1) << std::endl;
-        return 1;
+    std::string startup_script;
+    if (argc > 1) {
+        lua_pushstring(L, argv[1]); lua_setglobal(L, "_STARTUP_ARG");
+        // If the argument is a directory, append /main.lua
+        std::string arg1 = argv[1];
+        std::string base_dir;
+        
+        if (arg1.find(".lua") == std::string::npos) {
+            if (arg1.back() != '/' && arg1.back() != '\\') {
+                arg1 += "/";
+            }
+            startup_script = arg1 + "main.lua";
+            base_dir = arg1;
+        } else {
+            startup_script = arg1;
+            size_t last_slash = arg1.find_last_of("/\\");
+            if (last_slash != std::string::npos) {
+                base_dir = arg1.substr(0, last_slash + 1);
+            } else {
+                base_dir = "./";
+            }
+        }
+        
+        // Add the base_dir to package.path
+        lua_getglobal(L, "package");
+        lua_getfield(L, -1, "path");
+        std::string current_path = lua_tostring(L, -1);
+        lua_pop(L, 1);
+        std::string new_path = base_dir + "?.lua;" + base_dir + "?/init.lua;" + current_path;
+        lua_pushstring(L, new_path.c_str());
+        lua_setfield(L, -2, "path");
+        lua_pop(L, 1);
+        
+        // Inject globals that normally `src/lua/init.lua` injects so standalone runs match expected environment.
+        luaL_dostring(L, "local vulkan = require('vulkan')\n_G.vulkan = vulkan\n_G.mc = require('mc')");
+        
+    } else {
+        // Fallback to embedded init.lua if no arguments are passed
+        startup_script = "embedded_init";
+    }
+
+    if (startup_script == "embedded_init") {
+        if (luaL_dostring(L, "require('init')")) {
+            std::cerr << "Lua Error: " << lua_tostring(L, -1) << std::endl;
+            return 1;
+        }
+    } else {
+        if (luaL_dofile(L, startup_script.c_str())) {
+            std::cerr << "Lua Error: " << lua_tostring(L, -1) << std::endl;
+            return 1;
+        }
+        
+        // If the script returned a module table, call init() and setup update()
+        if (lua_istable(L, -1)) {
+            // Check for init
+            lua_getfield(L, -1, "init");
+            if (lua_isfunction(L, -1)) {
+                if (lua_pcall(L, 0, 0, 0) != 0) {
+                    std::cerr << "Init Error: " << lua_tostring(L, -1) << std::endl;
+                    lua_pop(L, 1);
+                }
+            } else {
+                lua_pop(L, 1); // pop non-function
+            }
+            
+            // Check for update
+            lua_getfield(L, -1, "update");
+            if (lua_isfunction(L, -1)) {
+                lua_setglobal(L, "_USER_UPDATE");
+                luaL_dostring(L, 
+                    "function mooncrust_update()\n"
+                    "    if mc and mc.tick then mc.tick() end\n"
+                    "    _USER_UPDATE()\n"
+                    "end"
+                );
+            } else {
+                lua_pop(L, 1); // pop non-function
+            }
+        }
     }
 
     bool running = true;

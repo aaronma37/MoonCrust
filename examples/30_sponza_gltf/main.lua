@@ -1,4 +1,5 @@
 local ffi = require("ffi")
+local mc = require("mc")
 local vk = require("vulkan.ffi")
 local pipeline = require("vulkan.pipeline")
 local descriptors = require("vulkan.descriptors")
@@ -8,7 +9,7 @@ local image = require("vulkan.image")
 local command = require("vulkan.command")
 local input = require("mc.input")
 local bit = require("bit")
-local loader = require("examples.30_sponza_gltf.loader")
+local loader = require("loader")
 
 local M = { cam_pos = {0, 2, 5}, cam_rot = {0, 0}, current_time = 0, frame_count = 0 }
 local device, queue, graphics_family, sw, pipe_layout, pipe_gbuffer, pipe_lighting, pipe_post
