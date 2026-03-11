@@ -13,16 +13,14 @@ local csg = require("csg")
 local generator = require("generator")
 
 local M = { 
-    cam_pos = {0, 5, 15},
+    cam_pos = {0, 5, 10},
     cam_yaw = math.pi,
-    cam_pitch = 0.1
+    cam_pitch = 0
 }
 
 local device, queue, sw, pipe_layout, graphics_pipe
 local v_buffer, i_buffer, idx_count, depth_img
 local cbs, image_available_sem, frame_fence
-
-local function clamp(x, lo, hi) return x < lo and lo or (x > hi and hi or x) end
 
 function M.init()
     print("Example 45: Neurosymbolic Low Poly Generator")
@@ -45,6 +43,10 @@ function M.init()
     idx_count = ic
     
     print("Mesh generated: " .. (#char_mesh.vertices) .. " vertices, " .. (#char_mesh.indices) .. " indices")
+    
+    -- Debug: Print first vertex data to verify colors
+    print(string.format("DEBUG Vertex 0: Pos(%.2f, %.2f, %.2f) Norm(%.2f, %.2f, %.2f) Col(%.2f, %.2f, %.2f)", 
+        v_data[0], v_data[1], v_data[2], v_data[3], v_data[4], v_data[5], v_data[6], v_data[7], v_data[8]))
 
     v_buffer = mc.gpu.buffer(v_size, "vertex", v_data)
     i_buffer = mc.gpu.buffer(i_size, "index", i_data)
@@ -66,14 +68,14 @@ function M.init()
     local f_mod = shader.create_module(device, shader.compile_glsl(io.open(get_dir().."render.frag"):read("*all"), vk.VK_SHADER_STAGE_FRAGMENT_BIT))
 
     graphics_pipe = pipeline.create_graphics_pipeline(device, pipe_layout, v_mod, f_mod, { 
-        -- Stride is now 36 bytes (9 floats: px, py, pz, nx, ny, nz, r, g, b)
         vertex_binding = ffi.new("VkVertexInputBindingDescription[1]", {{ binding = 0, stride = 36, inputRate = vk.VK_VERTEX_INPUT_RATE_VERTEX }}),
         vertex_attributes = ffi.new("VkVertexInputAttributeDescription[3]", {
             { location = 0, binding = 0, format = vk.VK_FORMAT_R32G32B32_SFLOAT, offset = 0 },
             { location = 1, binding = 0, format = vk.VK_FORMAT_R32G32B32_SFLOAT, offset = 12 },
             { location = 2, binding = 0, format = vk.VK_FORMAT_R32G32B32_SFLOAT, offset = 24 }
         }),
-        depth_test = true, depth_write = true, depth_format = depth_format
+        depth_test = true, depth_write = true, depth_format = depth_format,
+        cull_mode = vk.VK_CULL_MODE_NONE -- Disable culling for robustness during debug
     })
 
     -- 4. Sync
@@ -90,34 +92,32 @@ function M.update()
     local idx = sw:acquire_next_image(image_available_sem)
     if idx == nil then return end
     
-    local speed = 0.5
+    local speed = 0.2
     local rot_speed = 0.05
     if input.key_down(input.SCANCODE_A) then M.cam_yaw = M.cam_yaw - rot_speed end
     if input.key_down(input.SCANCODE_D) then M.cam_yaw = M.cam_yaw + rot_speed end
     
-    local forward = { math.sin(M.cam_yaw) * math.cos(M.cam_pitch), math.sin(M.cam_pitch), math.cos(M.cam_yaw) * math.cos(M.cam_pitch) }
-    local right = { math.sin(M.cam_yaw - math.pi/2), 0, math.cos(M.cam_yaw - math.pi/2) }
+    local forward = { math.sin(M.cam_yaw), 0, math.cos(M.cam_yaw) }
     
     if input.key_down(input.SCANCODE_W) then 
         M.cam_pos[1] = M.cam_pos[1] + forward[1] * speed
-        M.cam_pos[2] = M.cam_pos[2] + forward[2] * speed
         M.cam_pos[3] = M.cam_pos[3] + forward[3] * speed 
     end
     if input.key_down(input.SCANCODE_S) then 
         M.cam_pos[1] = M.cam_pos[1] - forward[1] * speed
-        M.cam_pos[2] = M.cam_pos[2] - forward[2] * speed
         M.cam_pos[3] = M.cam_pos[3] - forward[3] * speed 
     end
     
-    local view = mc.mat4_look_at(M.cam_pos, {M.cam_pos[1]+forward[1], M.cam_pos[2]+forward[2], M.cam_pos[3]+forward[3]}, {0, 1, 0})
+    local view = mc.mat4_look_at(M.cam_pos, {M.cam_pos[1]+forward[1], M.cam_pos[2], M.cam_pos[3]+forward[3]}, {0, 1, 0})
     local proj = mc.mat4_perspective(mc.rad(75), sw.extent.width/sw.extent.height, 0.1, 1000.0)
-    proj.m[5] = -proj.m[5] -- VULKAN Y-FLIP FIX
+    
+    -- VULKAN 1.1+ Way: No projection flip, use negative height viewport
     local mvp = mc.mat4_multiply(proj, view)
     local model = mc.mat4_identity()
 
     local pc = ffi.new("PCLowPoly")
-    for i=1,16 do pc.mvp[i-1] = mvp.m[i-1] end
-    for i=1,16 do pc.model[i-1] = model.m[i-1] end
+    for i=0,15 do pc.mvp[i] = mvp.m[i] end
+    for i=0,15 do pc.model[i] = model.m[i] end
 
     local cb = cbs[idx+1]
     vk.vkResetCommandBuffer(cb, 0); vk.vkBeginCommandBuffer(cb, ffi.new("VkCommandBufferBeginInfo", { sType = vk.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO }))
@@ -138,10 +138,7 @@ function M.update()
     color_attach[0].imageLayout = vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
     color_attach[0].loadOp = vk.VK_ATTACHMENT_LOAD_OP_CLEAR
     color_attach[0].storeOp = vk.VK_ATTACHMENT_STORE_OP_STORE
-    color_attach[0].clearValue.color.float32[0] = 0.5 -- sky color
-    color_attach[0].clearValue.color.float32[1] = 0.7
-    color_attach[0].clearValue.color.float32[2] = 0.9
-    color_attach[0].clearValue.color.float32[3] = 1.0
+    color_attach[0].clearValue.color.float32 = {0.5, 0.7, 0.9, 1.0}
     
     local depth_attach = ffi.new("VkRenderingAttachmentInfo[1]")
     depth_attach[0].sType = vk.VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO
@@ -161,7 +158,14 @@ function M.update()
     })
 
     vk.vkCmdBeginRendering(cb, render_info)
-    vk.vkCmdSetViewport(cb, 0, 1, ffi.new("VkViewport", { width=sw.extent.width, height=sw.extent.height, maxDepth=1 }))
+    
+    -- NEGATIVE HEIGHT VIEWPORT (Modern Vulkan Y-Flip)
+    local viewport = ffi.new("VkViewport", {
+        x = 0, y = tonumber(sw.extent.height),
+        width = tonumber(sw.extent.width), height = -tonumber(sw.extent.height),
+        minDepth = 0, maxDepth = 1
+    })
+    vk.vkCmdSetViewport(cb, 0, 1, viewport)
     vk.vkCmdSetScissor(cb, 0, 1, ffi.new("VkRect2D", { extent=sw.extent }))
     
     vk.vkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, graphics_pipe)

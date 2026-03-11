@@ -17,17 +17,15 @@ void main() {
     // Gouraud Shading: Calculate lighting per vertex
     vec3 worldNormal = normalize(mat3(pc.model) * inNormal);
     
-    // Use a top-down angled light simulating the sun
-    vec3 lightDir = normalize(vec3(0.5, -1.0, 0.5));
+    // Vector pointing FROM surface TO light source (Top-Right-Front)
+    vec3 lightDir = normalize(vec3(0.5, 1.0, 0.5));
     
-    // Calculate diffuse
-    float diff = max(dot(worldNormal, -lightDir), 0.0);
+    // Diffuse calculation
+    float diff = max(dot(worldNormal, lightDir), 0.0);
     
-    // Base ambient light so it's not super dark in the shadows
-    float ambient = 0.5;
-    
-    // Light intensity multiplier
-    float intensity = ambient + (diff * 0.8);
+    // High ambient to ensure visibility (classic RS style had very flat, bright lighting)
+    float ambient = 0.6;
+    float intensity = clamp(ambient + diff * 0.5, 0.0, 1.0);
     
     fragGouraudColor = inColor * intensity;
 }
