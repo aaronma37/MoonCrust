@@ -13,8 +13,8 @@ local csg = require("csg")
 local generator = require("generator")
 
 local M = { 
-    cam_pos = {0, 6, -15},
-    cam_yaw = 0,
+    cam_pos = {0, 5, 15},
+    cam_yaw = math.pi,
     cam_pitch = 0.1
 }
 
