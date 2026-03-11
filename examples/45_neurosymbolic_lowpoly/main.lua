@@ -13,9 +13,9 @@ local csg = require("csg")
 local generator = require("generator")
 
 local M = { 
-    cam_pos = {0, 15, -30},
+    cam_pos = {0, 6, -15},
     cam_yaw = 0,
-    cam_pitch = 0.2
+    cam_pitch = 0.1
 }
 
 local device, queue, sw, pipe_layout, graphics_pipe
@@ -39,12 +39,12 @@ function M.init()
     depth_img = mc.gpu.image(sw.extent.width, sw.extent.height, depth_format, "depth")
 
     -- 2. Generate CSG Mesh
-    print("Generating Neurosymbolic Forest...")
-    local forest_mesh = generator.generate_forest(50)
-    local v_data, v_size, i_data, i_size, ic = csg.build_buffer(forest_mesh)
+    print("Generating Classic Runescape Character...")
+    local char_mesh = generator.generate_character()
+    local v_data, v_size, i_data, i_size, ic = csg.build_buffer(char_mesh)
     idx_count = ic
     
-    print("Mesh generated: " .. (#forest_mesh.vertices) .. " vertices, " .. (#forest_mesh.indices) .. " indices")
+    print("Mesh generated: " .. (#char_mesh.vertices) .. " vertices, " .. (#char_mesh.indices) .. " indices")
 
     v_buffer = mc.gpu.buffer(v_size, "vertex", v_data)
     i_buffer = mc.gpu.buffer(i_size, "index", i_data)
@@ -66,10 +66,12 @@ function M.init()
     local f_mod = shader.create_module(device, shader.compile_glsl(io.open(get_dir().."render.frag"):read("*all"), vk.VK_SHADER_STAGE_FRAGMENT_BIT))
 
     graphics_pipe = pipeline.create_graphics_pipeline(device, pipe_layout, v_mod, f_mod, { 
-        vertex_binding = ffi.new("VkVertexInputBindingDescription[1]", {{ binding = 0, stride = 24, inputRate = vk.VK_VERTEX_INPUT_RATE_VERTEX }}),
-        vertex_attributes = ffi.new("VkVertexInputAttributeDescription[2]", {
+        -- Stride is now 36 bytes (9 floats: px, py, pz, nx, ny, nz, r, g, b)
+        vertex_binding = ffi.new("VkVertexInputBindingDescription[1]", {{ binding = 0, stride = 36, inputRate = vk.VK_VERTEX_INPUT_RATE_VERTEX }}),
+        vertex_attributes = ffi.new("VkVertexInputAttributeDescription[3]", {
             { location = 0, binding = 0, format = vk.VK_FORMAT_R32G32B32_SFLOAT, offset = 0 },
-            { location = 1, binding = 0, format = vk.VK_FORMAT_R32G32B32_SFLOAT, offset = 12 }
+            { location = 1, binding = 0, format = vk.VK_FORMAT_R32G32B32_SFLOAT, offset = 12 },
+            { location = 2, binding = 0, format = vk.VK_FORMAT_R32G32B32_SFLOAT, offset = 24 }
         }),
         depth_test = true, depth_write = true, depth_format = depth_format
     })
