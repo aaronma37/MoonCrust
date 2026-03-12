@@ -10,9 +10,8 @@ struct SplatData {
 layout(set = 0, binding = 0) buffer B0 { SplatData s[]; } all_large_splats[];
 layout(set = 0, binding = 0) buffer B1 { uint count; } all_large_counts[];
 
-layout(set = 0, binding = 2, r32ui) uniform uimage2D all_images_r[];
-layout(set = 0, binding = 2, r32ui) uniform uimage2D all_images_g[];
-layout(set = 0, binding = 2, r32ui) uniform uimage2D all_images_b[];
+// UNIFIED ARRAY: Use indices 0, 1, 2 for R, G, B
+layout(set = 0, binding = 2, r32ui) uniform uimage2D all_images_channels[];
 
 layout(push_constant) uniform PushConstants {
     mat4 view;
@@ -28,20 +27,22 @@ layout(push_constant) uniform PushConstants {
 
 layout (local_size_x = 256) in;
 
-void atomicAddFloat(uint img_id, ivec2 coords, vec3 color) {
+void atomicAddFloat(ivec2 coords, vec3 color) {
     uint r = uint(color.r * 65536.0);
     uint g = uint(color.g * 65536.0);
     uint b = uint(color.b * 65536.0);
-    if (r > 0) imageAtomicAdd(all_images_r[img_id], coords, r);
-    if (g > 0) imageAtomicAdd(all_images_g[img_id], coords, g);
-    if (b > 0) imageAtomicAdd(all_images_b[img_id], coords, b);
+    
+    // Explicit Indexing Fix
+    if (r > 0) imageAtomicAdd(all_images_channels[0], coords, r);
+    if (g > 0) imageAtomicAdd(all_images_channels[1], coords, g);
+    if (b > 0) imageAtomicAdd(all_images_channels[2], coords, b);
 }
 
 void main() {
     uint i = gl_GlobalInvocationID.x;
     if (i >= pc.count) return;
 
-    // 1. RESTORE GHOST ANATOMY
+    // 1. GHOST ANATOMY
     float u = float(i) / pc.count;
     float v = (float(i % 1024) / 1024.0) * 6.28318;
     float t = pc.time;
@@ -78,7 +79,7 @@ void main() {
     vec3 cyan = vec3(0.0, 1.0, 1.0);
     vec3 purple = vec3(1.0, 0.0, 1.0);
     float pulse = sin(t * 2.0) * 0.5 + 0.5;
-    vec3 base_color = mix(cyan, purple, pulse) * 2.5; // High intensity for tonemapping
+    vec3 base_color = mix(cyan, purple, pulse) * 2.5;
 
     // 2. Projection
     vec4 view_pos = pc.view * vec4(pos, 1.0);
@@ -116,7 +117,7 @@ void main() {
                 float d2 = dx * dx + dy2;
                 float power = -0.5 * d2 * inv_cov_diag;
                 if (power < -6.0) continue;
-                atomicAddFloat(0, ivec2(px, py), base_color * 0.002 * exp(power));
+                atomicAddFloat(ivec2(px, py), base_color * 0.002 * exp(power));
             }
         }
     }

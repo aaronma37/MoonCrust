@@ -1,10 +1,8 @@
 #version 450
 #extension GL_EXT_nonuniform_qualifier : require
 
-layout(set = 0, binding = 2, r32ui) uniform uimage2D all_images_r[];
-layout(set = 0, binding = 2, r32ui) uniform uimage2D all_images_g[];
-layout(set = 0, binding = 2, r32ui) uniform uimage2D all_images_b[];
-
+// Unified array name
+layout(set = 0, binding = 2, r32ui) uniform uimage2D all_images_channels[];
 layout(set = 0, binding = 2, rgba32f) uniform writeonly image2D out_images[];
 
 layout(push_constant) uniform PushConstants {
@@ -19,23 +17,25 @@ void main() {
     ivec2 pixel_coords = ivec2(gl_GlobalInvocationID.xy);
     if (pixel_coords.x >= pc.screen_w || pixel_coords.y >= pc.screen_h) return;
 
-    // 1. Read high-precision fixed-point atomics
-    float r = float(imageLoad(all_images_r[0], pixel_coords).r) / 65536.0;
-    float g = float(imageLoad(all_images_g[0], pixel_coords).r) / 65536.0;
-    float b = float(imageLoad(all_images_b[0], pixel_coords).r) / 65536.0;
+    // 1. Read from EXPLICIT isolated channels R=0, G=1, B=2
+    uint ri = imageLoad(all_images_channels[0], pixel_coords).r;
+    uint gi = imageLoad(all_images_channels[1], pixel_coords).r;
+    uint bi = imageLoad(all_images_channels[2], pixel_coords).r;
 
-    vec3 color = vec3(r, g, b);
+    // 2. IMMEDIATE CLEAR for next frame
+    imageStore(all_images_channels[0], pixel_coords, uvec4(0));
+    imageStore(all_images_channels[1], pixel_coords, uvec4(0));
+    imageStore(all_images_channels[2], pixel_coords, uvec4(0));
 
-    // 2. EXPOSURE TONEMAPPING
-    // This is the "Fix" for the white blob. It compresses high intensity 
-    // values while preserving their color/hue.
+    // Convert back to float
+    vec3 color = vec3(ri, gi, bi) / 65536.0;
+
+    // 3. EXPOSURE TONEMAPPING
     float exposure = 1.2;
     color = 1.0 - exp(-color * exposure);
     
-    // 3. Subtle Vignette for depth
-    vec2 uv = vec2(pixel_coords) / vec2(pc.screen_w, pc.screen_h);
-    float vignette = uv.x * uv.y * (1.0 - uv.x) * (1.0 - uv.y) * 15.0;
-    color *= pow(vignette, 0.1);
+    // Gamma
+    color = pow(color, vec3(1.0 / 2.2));
 
     imageStore(out_images[pc.img_id], pixel_coords, vec4(color, 1.0));
 }
