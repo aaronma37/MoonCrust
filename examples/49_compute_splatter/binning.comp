@@ -3,7 +3,7 @@
 
 struct Projected {
     vec2 pos;
-    float depth;
+    uint depth_key; 
     float pad1;
     vec4 cov;
     vec4 color_alpha;
@@ -11,7 +11,13 @@ struct Projected {
     vec4 sh_g;
     vec4 sh_b;
     vec4 world_pos;
-    float pad2[4];
+    float pad2[4]; 
+};
+
+struct CullData {
+    vec2 pos;
+    float radius;
+    uint pad;
 };
 
 struct SortEntry {
@@ -20,30 +26,23 @@ struct SortEntry {
 };
 
 layout(set = 0, binding = 0) buffer B0 { Projected p[]; } all_projected[];
-layout(set = 0, binding = 0) buffer B1 { uint count[]; } all_tile_counts[];
-layout(set = 0, binding = 0) buffer B2 { uint offsets[]; } all_tile_offsets[];
-layout(set = 0, binding = 0) buffer B3 { float data[]; } noise_table[];
-layout(set = 0, binding = 0) buffer B4 { uint data[]; } all_tile_data[];
-layout(set = 0, binding = 0) buffer B5 { uint current_offsets[]; } all_current_offsets[];
-layout(set = 0, binding = 0) buffer B6 { SortEntry entries[]; } all_sort_bufs[];
+layout(set = 0, binding = 0) buffer B1 { float data[]; } noise_table[];
+layout(set = 0, binding = 0) buffer B2 { SortEntry entries[]; } all_sort_bufs[];
+layout(set = 0, binding = 0) buffer B3 { CullData c[]; } all_cull_data[];
 
 layout(push_constant) uniform PushConstants {
     mat4 view;
     mat4 proj;
     float focal;
-    uint p_id, tc_id, to_id, count;
-    uint screen_w, screen_h;
+    uint p_id;
+    uint s_id;
+    uint c_id;
+    uint count;
     float time;
     uint noise_id;
-    uint s_id;
-    uint pad1[2];
     vec4 cam_pos;
     vec4 light_dir;
     vec4 world_offset;
-    uint mode;
-    uint td_id;
-    uint co_id;
-    uint pad2[5];
 } pc;
 
 layout (local_size_x = 256) in;
@@ -61,15 +60,6 @@ float get_noise(uint seed) {
     return fract(raw + hash(seed));
 }
 
-mat3 quatToMat3(vec4 q) {
-    float r = q.x, x = q.y, y = q.z, z = q.w;
-    return mat3(
-        1.0 - 2.0*(y*y + z*z), 2.0*(x*y - r*z), 2.0*(x*z + r*y),
-        2.0*(x*y + r*z), 1.0 - 2.0*(x*x + z*z), 2.0*(x*x + z*z),
-        2.0*(x*z - r*y), 2.0*(y*z + r*x), 1.0 - 2.0*(x*x + y*y)
-    );
-}
-
 vec4 quatFromDir(vec3 dir) {
     vec3 v = normalize(dir);
     vec3 up = abs(v.y) > 0.9 ? vec3(1,0,0) : vec3(0,1,0);
@@ -82,6 +72,15 @@ vec4 quatFromDir(vec3 dir) {
         return vec4(0.25 * s, (m[2][1] - m[1][2]) / s, (m[0][2] - m[2][0]) / s, (m[1][0] - m[0][1]) / s);
     }
     return vec4(1, 0, 0, 0);
+}
+
+mat3 quatToMat3(vec4 q) {
+    float r = q.x, x = q.y, y = q.z, z = q.w;
+    return mat3(
+        1.0 - 2.0*(y*y + z*z), 2.0*(x*y - r*z), 2.0*(x*z + r*y),
+        2.0*(x*y + r*z), 1.0 - 2.0*(x*x + z*z), 2.0*(y*z - r*x),
+        2.0*(x*z - r*y), 2.0*(y*z + r*x), 1.0 - 2.0*(x*x + y*y)
+    );
 }
 
 vec3 computeCov2D(vec3 pos_view, vec3 scale, vec4 rot) {
@@ -103,106 +102,68 @@ void splatCylinder(uint i, uint count, vec3 base, vec3 top, float radius, inout 
 
 void main() {
     uint global_i = gl_GlobalInvocationID.x;
-    uint splat_id;
-    vec2 ndc;
-    vec3 cov2d;
+    if (global_i >= pc.count) return;
 
-    if (pc.mode == 0) { // PROJECT & PREPARE SORT
-        if (global_i >= pc.count) return;
-        splat_id = global_i;
+    uint p_asset = 16384;
+    uint asset_idx = global_i / p_asset;
+    uint i = global_i % p_asset;
 
-        uint p_asset = 16384;
-        uint asset_idx = splat_id / p_asset;
-        uint i = splat_id % p_asset;
+    vec3 pos = vec3(0.0); vec3 scale = vec3(0.05); vec4 rot = vec4(1, 0, 0, 0);
+    vec3 color = vec3(1.0); float opacity = 0.005;
+    float x_offset = (float(asset_idx) - 1.0) * 5.0;
 
-        vec3 pos = vec3(0.0); vec3 scale = vec3(0.05); vec4 rot = vec4(1, 0, 0, 0);
-        vec3 color = vec3(1.0); float opacity = 0.005;
-        float x_offset = (float(asset_idx) - 1.0) * 5.0;
+    vec4 sr = vec4(0), sg = vec4(0), sb = vec4(0);
+    vec3 normal = vec3(0, 1, 0); 
 
-        vec4 sr = vec4(0), sg = vec4(0), sb = vec4(0);
-        vec3 normal = vec3(0, 1, 0); 
-
-        if (asset_idx == 0) { // TREE
-            if (i < 2000) { splatCylinder(i, 2000, vec3(0, 0, 0), vec3(0, 3, 0), 0.25, pos, scale, rot); color = vec3(0.3, 0.15, 0.05); normal = normalize(pos.xyz * vec3(1,0,1)); }
-            else if (i < 5000) { uint b = i-2000; float a = (b%4)*1.57; splatCylinder(b, 3000, vec3(0, 2, 0), vec3(sin(a)*1.5, 3.5, cos(a)*1.5), 0.12, pos, scale, rot); color = vec3(0.3, 0.15, 0.05); normal = normalize(pos.xyz); }
-            else { 
-                uint l = i-5000; float r = 2.0*pow(get_noise(l), 0.6), phi = get_noise(l+1)*6.28; 
-                pos = vec3(sin(phi)*r, 3.5+get_noise(l+2)*2.0, cos(phi)*r); scale = vec3(0.3, 0.1, 0.3); 
-                color = vec3(0.1, 0.5, 0.1); normal = normalize(pos - vec3(0, 4.5, 0));
-            }
-        } else if (asset_idx == 1) { // CHAIR
-            if (i < 4000) { uint l = i%4; vec3 lp = vec3((l<2?1:-1)*0.8, 0, (l%2==0?1:-1)*0.8); splatCylinder(i, 4000, lp, lp+vec3(0, 1.5, 0), 0.1, pos, scale, rot); color = vec3(0.5, 0.3, 0.1); normal = normalize(vec3(lp.x, 0, lp.z)); }
-            else if (i < 6000) { uint s = i-4000; pos = vec3(get_noise(s)*2.0-1.0, 1.6, get_noise(s+1)*2.0-1.0); scale = vec3(0.15, 0.01, 0.15); color = vec3(0.6, 0.4, 0.2); normal = vec3(0, 1, 0); }
-            else { uint b = i-6000; pos = vec3(get_noise(b)*2.0-1.0, 1.6+get_noise(b+1)*2.5, -0.9); scale = vec3(0.1, 0.1, 0.01); color = vec3(0.5, 0.3, 0.1); normal = vec3(0, 0, 1); }
-        } else { // GHOST
-            float u = float(i)/16384.0, t = pc.time, v = (float(i%1024)/1024.0)*6.28;
-            if (u < 0.2) { float phi = (u/0.2)*3.14, r = 1.2+0.1*sin(t*4.0+v*3.0); pos = vec3(r*sin(phi)*cos(v), 4.5+r*cos(phi), r*sin(phi)*sin(v)); normal = normalize(pos - vec3(0, 4.5, 0)); }
-            else if (u < 0.7) { float h = (u-0.2)/0.5, vertical = mix(4.0, 0.0, h), radius = 1.5*(1.0-h*0.4), wave = sin(h*4.0-t*3.0)*(h*1.5); pos = vec3(radius*cos(v)+wave, vertical, radius*sin(v)); normal = normalize(vec3(cos(v), 0, sin(v))); }
-            else { float h = (u-0.7)/0.3; bool left = (v<3.14); float aw = sin(t*5.0)*0.8; vec3 s = vec3(left?-1:1, 3.8, 0), e = vec3(left?-3:3, 2.5+aw, 1); pos = mix(s, e, h); float r = 0.3*(1.0-h*0.5); pos.y += r*cos(v*4.0); pos.z += r*sin(v*4.0); normal = normalize(pos - s); }
-            scale = vec3(0.08); color = mix(vec3(0,1,1), vec3(1,0,1), sin(t+u*5.0)*0.5+0.5) * 2.5;
+    if (asset_idx == 0) { // TREE
+        if (i < 2000) { splatCylinder(i, 2000, vec3(0, 0, 0), vec3(0, 3, 0), 0.25, pos, scale, rot); color = vec3(0.3, 0.15, 0.05); normal = normalize(pos.xyz * vec3(1,0,1)); }
+        else if (i < 5000) { uint b = i-2000; float a = (b%4)*1.57; splatCylinder(b, 3000, vec3(0, 2, 0), vec3(sin(a)*1.5, 3.5, cos(a)*1.5), 0.12, pos, scale, rot); color = vec3(0.3, 0.15, 0.05); normal = normalize(pos.xyz); }
+        else { 
+            uint l = i-5000; float r = 2.0*pow(get_noise(l), 0.6), phi = get_noise(l+1)*6.28; 
+            pos = vec3(sin(phi)*r, 3.5+get_noise(l+2)*2.0, cos(phi)*r); scale = vec3(0.3, 0.1, 0.3); 
+            color = vec3(0.1, 0.5, 0.1); normal = normalize(pos - vec3(0, 4.5, 0));
         }
+    } else if (asset_idx == 1) { // CHAIR
+        if (i < 4000) { uint l = i%4; vec3 lp = vec3((l<2?1:-1)*0.8, 0, (l%2==0?1:-1)*0.8); splatCylinder(i, 4000, lp, lp+vec3(0, 1.5, 0), 0.1, pos, scale, rot); color = vec3(0.5, 0.3, 0.1); normal = normalize(vec3(lp.x, 0, lp.z)); }
+        else if (i < 6000) { uint s = i-4000; pos = vec3(get_noise(s)*2.0-1.0, 1.6, get_noise(s+1)*2.0-1.0); scale = vec3(0.15, 0.01, 0.15); color = vec3(0.6, 0.4, 0.2); normal = vec3(0, 1, 0); }
+        else { uint b = i-6000; pos = vec3(get_noise(b)*2.0-1.0, 1.6+get_noise(b+1)*2.5, -0.9); scale = vec3(0.1, 0.1, 0.01); color = vec3(0.5, 0.3, 0.1); normal = vec3(0, 0, 1); }
+    } else { // GHOST
+        float u = float(i)/16384.0, t = pc.time, v = (float(i%1024)/1024.0)*6.28;
+        if (u < 0.2) { float phi = (u/0.2)*3.14, r = 1.2+0.1*sin(t*4.0+v*3.0); pos = vec3(r*sin(phi)*cos(v), 4.5+r*cos(phi), r*sin(phi)*sin(v)); normal = normalize(pos - vec3(0, 4.5, 0)); }
+        else if (u < 0.7) { float h = (u-0.2)/0.5, vertical = mix(4.0, 0.0, h), radius = 1.5*(1.0-h*0.4), wave = sin(h*4.0-t*3.0)*(h*1.5); pos = vec3(radius*cos(v)+wave, vertical, radius*sin(v)); normal = normalize(vec3(cos(v), 0, sin(v))); }
+        else { float h = (u-0.7)/0.3; bool left = (v<3.14); float aw = sin(t*5.0)*0.8; vec3 s = vec3(left?-1:1, 3.8, 0), e = vec3(left?-3:3, 2.5+aw, 1); pos = mix(s, e, h); float r = 0.3*(1.0-h*0.5); pos.y += r*cos(v*4.0); pos.z += r*sin(v*4.0); normal = normalize(pos - s); }
+        scale = vec3(0.08); color = mix(vec3(0,1,1), vec3(1,0,1), sin(t+u*5.0)*0.5+0.5) * 2.5;
+    }
 
-        pos.x += x_offset; pos += pc.world_offset.xyz;
-        vec3 ldir = normalize(pc.light_dir.xyz);
-        float diff = max(0.1, dot(normal, ldir));
-        sr.yzw = normal * diff * color.r; sg.yzw = normal * diff * color.g; sb.yzw = normal * diff * color.b;
+    pos.x += x_offset; pos += pc.world_offset.xyz;
+    vec3 ldir = normalize(pc.light_dir.xyz);
+    float diff = max(0.1, dot(normal, ldir));
+    sr.yzw = normal * diff * color.r; sg.yzw = normal * diff * color.g; sb.yzw = normal * diff * color.b;
 
-        vec4 pos_v = pc.view * vec4(pos, 1.0);
-        if (pos_v.z > -0.1 || opacity < 0.001) {
-            all_projected[pc.p_id].p[splat_id].depth = 0.0;
-            all_sort_bufs[pc.s_id].entries[global_i].depth_key = 0xFFFFFFFF;
-            all_sort_bufs[pc.s_id].entries[global_i].splat_id = splat_id;
-            return;
-        }
-        cov2d = computeCov2D(pos_v.xyz, scale, rot);
-        vec4 clip_p = pc.proj * pos_v; ndc = clip_p.xy / clip_p.w;
-
-        all_projected[pc.p_id].p[splat_id].pos = ndc;
-        all_projected[pc.p_id].p[splat_id].depth = -pos_v.z;
-        all_projected[pc.p_id].p[splat_id].cov = vec4(cov2d, 0.0);
-        all_projected[pc.p_id].p[splat_id].color_alpha = vec4(color, opacity * 10.0);
-        all_projected[pc.p_id].p[splat_id].sh_r = sr; all_projected[pc.p_id].p[splat_id].sh_g = sg; all_projected[pc.p_id].p[splat_id].sh_b = sb;
-        all_projected[pc.p_id].p[splat_id].world_pos = vec4(pos, 1.0);
-
-        all_sort_bufs[pc.s_id].entries[global_i].depth_key = uint((-pos_v.z) * 1000.0);
-        all_sort_bufs[pc.s_id].entries[global_i].splat_id = splat_id;
+    vec4 pos_v = pc.view * vec4(pos, 1.0);
+    if (pos_v.z > -0.1 || opacity < 0.001) {
+        all_projected[pc.p_id].p[global_i].depth_key = 0xFFFFFFFF;
+        all_sort_bufs[pc.s_id].entries[global_i].depth_key = 0xFFFFFFFF;
+        all_sort_bufs[pc.s_id].entries[global_i].splat_id = global_i;
         return;
-    } 
+    }
+    vec3 cov2d = computeCov2D(pos_v.xyz, scale, rot);
+    vec4 clip_p = pc.proj * pos_v; vec2 ndc = clip_p.xy / clip_p.w;
 
-    // MODES 1 & 2: Deterministic Binning using Sorted List
-    SortEntry entry = all_sort_bufs[pc.s_id].entries[global_i];
-    if (entry.depth_key == 0xFFFFFFFF) return;
-    splat_id = entry.splat_id;
+    all_projected[pc.p_id].p[global_i].pos = ndc;
+    all_projected[pc.p_id].p[global_i].depth_key = floatBitsToUint(-pos_v.z);
+    all_projected[pc.p_id].p[global_i].cov = vec4(cov2d, 0.0);
+    all_projected[pc.p_id].p[global_i].color_alpha = vec4(color, opacity * 10.0);
+    all_projected[pc.p_id].p[global_i].sh_r = sr; all_projected[pc.p_id].p[global_i].sh_g = sg; all_projected[pc.p_id].p[global_i].sh_b = sb;
+    all_projected[pc.p_id].p[global_i].world_pos = vec4(pos, 1.0);
 
-    ndc = all_projected[pc.p_id].p[splat_id].pos;
-    cov2d = all_projected[pc.p_id].p[splat_id].cov.xyz;
+    all_sort_bufs[pc.s_id].entries[global_i].depth_key = floatBitsToUint(-pos_v.z);
+    all_sort_bufs[pc.s_id].entries[global_i].splat_id = global_i;
 
-    vec2 p_pos = (ndc * 0.5 + 0.5) * vec2(pc.screen_w, pc.screen_h);
+    // POPULATE CULL HEADER (16 bytes)
     float mid = 0.5 * (cov2d.x + cov2d.z);
     float det = cov2d.x * cov2d.z - cov2d.y * cov2d.y;
     float lambda1 = mid + sqrt(max(0.1, mid * mid - det));
-    float rad = ceil(3.5 * sqrt(max(0.1, lambda1)));
-    rad = clamp(rad, 1.0, 128.0); 
-
-    ivec2 min_t = ivec2(floor((p_pos - rad) / 16.0));
-    ivec2 max_t = ivec2(floor((p_pos + rad) / 16.0));
-    uint txs = (pc.screen_w + 15) / 16;
-    uint tys = (pc.screen_h + 15) / 16;
-    min_t = clamp(min_t, ivec2(0), ivec2(int(txs) - 1, int(tys) - 1));
-    max_t = clamp(max_t, ivec2(0), ivec2(int(txs) - 1, int(tys) - 1));
-
-    for (int ty = min_t.y; ty <= max_t.y; ty++) {
-        for (int tx = min_t.x; tx <= max_t.x; tx++) {
-            uint tidx = uint(ty) * txs + uint(tx);
-            if (pc.mode == 1) {
-                atomicAdd(all_tile_counts[pc.tc_id].count[tidx], 1);
-            } else {
-                uint off = all_tile_offsets[pc.to_id].offsets[tidx];
-                uint loff = atomicAdd(all_current_offsets[pc.co_id].current_offsets[tidx], 1);
-                if (loff < 2048) {
-                    all_tile_data[pc.td_id].data[off + loff] = splat_id;
-                }
-            }
-        }
-    }
+    all_cull_data[pc.c_id].c[global_i].pos = ndc;
+    all_cull_data[pc.c_id].c[global_i].radius = ceil(3.5 * sqrt(max(0.1, lambda1)));
 }

@@ -12,7 +12,6 @@ layout(push_constant) uniform PushConstants {
     uint buf_id;
     uint k;
     uint j;
-    uint pad[61];
 } pc;
 
 layout (local_size_x = 256) in;
@@ -30,7 +29,17 @@ void main() {
         SortEntry e1 = all_sort_bufs[pc.buf_id].entries[i];
         SortEntry e2 = all_sort_bufs[pc.buf_id].entries[ixj];
 
-        if ((ascending && e1.depth_key > e2.depth_key) || (!ascending && e1.depth_key < e2.depth_key)) {
+        // DETERMINISTIC TIE-BREAKING: Compare ID if depths are equal
+        bool swap = false;
+        if (ascending) {
+            if (e1.depth_key > e2.depth_key) swap = true;
+            else if (e1.depth_key == e2.depth_key && e1.splat_id > e2.splat_id) swap = true;
+        } else {
+            if (e1.depth_key < e2.depth_key) swap = true;
+            else if (e1.depth_key == e2.depth_key && e1.splat_id < e2.splat_id) swap = true;
+        }
+
+        if (swap) {
             all_sort_bufs[pc.buf_id].entries[i] = e2;
             all_sort_bufs[pc.buf_id].entries[ixj] = e1;
         }
