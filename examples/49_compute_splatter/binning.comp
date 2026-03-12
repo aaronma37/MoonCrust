@@ -103,13 +103,11 @@ void splatCylinder(uint i, uint count, vec3 base, vec3 top, float radius, inout 
 
 void main() {
     uint global_i = gl_GlobalInvocationID.x;
-    // Note: Project pass runs on 49k, but Binning pass runs on 65k (the sorted list)
-    
+    uint splat_id;
     vec2 ndc;
     vec3 cov2d;
-    uint splat_id;
 
-    if (pc.mode == 0) {
+    if (pc.mode == 0) { // PROJECT & PREPARE SORT
         if (global_i >= pc.count) return;
         splat_id = global_i;
 
@@ -166,23 +164,23 @@ void main() {
         all_projected[pc.p_id].p[splat_id].sh_r = sr; all_projected[pc.p_id].p[splat_id].sh_g = sg; all_projected[pc.p_id].p[splat_id].sh_b = sb;
         all_projected[pc.p_id].p[splat_id].world_pos = vec4(pos, 1.0);
 
-        // Populate sort buffer
         all_sort_bufs[pc.s_id].entries[global_i].depth_key = uint((-pos_v.z) * 1000.0);
         all_sort_bufs[pc.s_id].entries[global_i].splat_id = splat_id;
-    } else {
-        // MODE 1: Process in SORTED order
-        // global_i is the index into the sorted sort_buf
-        SortEntry entry = all_sort_bufs[pc.s_id].entries[global_i];
-        if (entry.depth_key == 0xFFFFFFFF) return;
-        splat_id = entry.splat_id;
+        return;
+    } 
 
-        ndc = all_projected[pc.p_id].p[splat_id].pos;
-        cov2d = all_projected[pc.p_id].p[splat_id].cov.xyz;
-    }
+    // MODES 1 & 2: Deterministic Binning using Sorted List
+    SortEntry entry = all_sort_bufs[pc.s_id].entries[global_i];
+    if (entry.depth_key == 0xFFFFFFFF) return;
+    splat_id = entry.splat_id;
+
+    ndc = all_projected[pc.p_id].p[splat_id].pos;
+    cov2d = all_projected[pc.p_id].p[splat_id].cov.xyz;
 
     vec2 p_pos = (ndc * 0.5 + 0.5) * vec2(pc.screen_w, pc.screen_h);
     float mid = 0.5 * (cov2d.x + cov2d.z);
-    float lambda1 = mid + sqrt(max(0.1, mid * mid - (cov2d.x * cov2d.z - cov2d.y * cov2d.y)));
+    float det = cov2d.x * cov2d.z - cov2d.y * cov2d.y;
+    float lambda1 = mid + sqrt(max(0.1, mid * mid - det));
     float rad = ceil(3.5 * sqrt(max(0.1, lambda1)));
     rad = clamp(rad, 1.0, 128.0); 
 
@@ -196,7 +194,7 @@ void main() {
     for (int ty = min_t.y; ty <= max_t.y; ty++) {
         for (int tx = min_t.x; tx <= max_t.x; tx++) {
             uint tidx = uint(ty) * txs + uint(tx);
-            if (pc.mode == 0) {
+            if (pc.mode == 1) {
                 atomicAdd(all_tile_counts[pc.tc_id].count[tidx], 1);
             } else {
                 uint off = all_tile_offsets[pc.to_id].offsets[tidx];

@@ -70,7 +70,6 @@ void main() {
     vec3 final_color = vec3(0.0);
     float T = 1.0;
 
-    // 3. Render - NO SORTING NEEDED (Already sorted by Binner)
     for (uint base_i = 0; base_i < splat_count; base_i += CHUNK_SIZE) {
         uint current_chunk_size = min(CHUNK_SIZE, splat_count - base_i);
         
@@ -101,13 +100,12 @@ void main() {
         barrier();
         
         for (uint i = 0; i < current_chunk_size; i++) {
-            PrecalcSplat s = chunk_precalc[i];
-            vec2 d = pixel_pos - s.pos;
-            float power = s.inv_cov.x * d.x * d.x + 2.0 * s.inv_cov.y * d.x * d.y + s.inv_cov.z * d.y * d.y;
+            vec2 d = pixel_pos - chunk_precalc[i].pos;
+            float power = chunk_precalc[i].inv_cov.x * d.x * d.x + 2.0 * chunk_precalc[i].inv_cov.y * d.x * d.y + chunk_precalc[i].inv_cov.z * d.y * d.y;
             if (power > 0.0 || power < -4.5) continue;
-            float alpha = s.color_alpha.a * exp(power);
+            float alpha = chunk_precalc[i].color_alpha.a * exp(power);
             if (alpha < 0.0039) continue;
-            final_color += T * alpha * s.color_alpha.rgb;
+            final_color += T * alpha * chunk_precalc[i].color_alpha.rgb;
             T *= (1.0 - alpha);
             if (T < 0.01) break; 
         }
