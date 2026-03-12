@@ -1,0 +1,49 @@
+#version 450
+#extension GL_EXT_nonuniform_qualifier : require
+
+layout (local_size_x = 1024) in; 
+
+layout(set = 0, binding = 0) buffer B0 { uint counts[]; } all_tile_counts[];
+layout(set = 0, binding = 0) buffer B1 { uint offsets[]; } all_tile_offsets[];
+
+layout(push_constant) uniform PushConstants {
+    uint tc_id;
+    uint to_id;
+    uint num_tiles;
+} pc;
+
+shared uint temp[4096]; 
+
+void main() {
+    uint thid = gl_LocalInvocationID.x;
+    
+    // 1. Load counts into shared memory
+    for (uint i = 0; i < 4; i++) {
+        uint idx = thid * 4 + i;
+        temp[idx] = (idx < pc.num_tiles) ? all_tile_counts[pc.tc_id].counts[idx] : 0;
+    }
+    
+    // Wait for all threads to finish loading
+    barrier();
+
+    // 2. Perform Exclusive Scan (Serial on thread 0 is safe for 4096 elements)
+    if (thid == 0) {
+        uint sum = 0;
+        for (uint i = 0; i < 4096; i++) {
+            uint val = temp[i];
+            temp[i] = sum;
+            sum += val;
+        }
+    }
+    
+    // CRITICAL: Wait for thread 0 to finish the scan before anyone reads temp!
+    barrier();
+
+    // 3. Write results back to global memory
+    for (uint i = 0; i < 4; i++) {
+        uint idx = thid * 4 + i;
+        if (idx < pc.num_tiles) {
+            all_tile_offsets[pc.to_id].offsets[idx] = temp[idx];
+        }
+    }
+}

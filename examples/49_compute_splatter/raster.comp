@@ -11,7 +11,8 @@ struct Projected {
 
 layout(set = 0, binding = 0) buffer B0 { Projected p[]; } all_projected[];
 layout(set = 0, binding = 0) buffer B1 { uint count[]; } all_tile_counts[];
-layout(set = 0, binding = 0) buffer B2 { uint data[]; } all_tile_data[];
+layout(set = 0, binding = 0) buffer B2 { uint offsets[]; } all_tile_offsets[];
+layout(set = 0, binding = 0) buffer B3 { uint data[]; } all_tile_data[];
 
 layout(set = 0, binding = 2, rgba32f) uniform writeonly image2D all_images[];
 
@@ -22,6 +23,7 @@ layout(push_constant) uniform PushConstants {
     uint img_id;
     uint screen_w;
     uint screen_h;
+    uint to_id; // Now matches the order in main.lua
 } pc;
 
 layout (local_size_x = 16, local_size_y = 16) in;
@@ -35,10 +37,10 @@ void main() {
     uint tile_idx = gl_WorkGroupID.y * tiles_x + gl_WorkGroupID.x;
     uint local_id = gl_LocalInvocationIndex;
     
-    // 1. Load splats for this tile
-    uint actual_count = all_tile_counts[pc.tc_id].count[tile_idx];
-    uint splat_count = min(MAX_SPLATS_PER_TILE, actual_count);
-    
+    // 1. Load splats for this tile from PACKED buffer
+    uint splat_count = min(MAX_SPLATS_PER_TILE, all_tile_counts[pc.tc_id].count[tile_idx]);
+    uint base_offset = all_tile_offsets[pc.to_id].offsets[tile_idx];
+
     // Find next power of two for sorting
     uint sort_n = 1;
     if (splat_count > 0) {
@@ -48,18 +50,17 @@ void main() {
 
     for (uint i = local_id; i < MAX_SPLATS_PER_TILE; i += 256) {
         if (i < splat_count) {
-            uint splat_idx = all_tile_data[pc.td_id].data[tile_idx * 4096 + i];
+            uint splat_idx = all_tile_data[pc.td_id].data[base_offset + i];
             shared_indices[i] = splat_idx;
             shared_depths[i] = all_projected[pc.p_id].p[splat_idx].depth;
         } else {
-            shared_depths[i] = 1e10; // Closest first: padding goes to infinity
+            shared_depths[i] = 1e10; // Sorting Closest to Furthest
         }
     }
     
     barrier();
 
-    // 2. Dynamic Bitonic Sort (Shared Memory) - Closest to Furthest
-    // Only sort up to sort_n (next power of two of splat_count)
+    // 2. Bitonic Sort
     for (uint k = 2; k <= sort_n; k <<= 1) {
         for (uint j = k >> 1; j > 0; j >>= 1) {
             uint i = local_id;
@@ -89,9 +90,9 @@ void main() {
 
     vec2 pixel_pos = vec2(pixel_coords) + 0.5;
     vec3 final_color = vec3(0.0, 0.0, 0.0);
-    float T = 1.0; // Remaining Transmittance
+    float T = 1.0;
 
-    // 3. Front-to-Back Rendering with Early Exit
+    // 3. Render
     for (uint i = 0; i < splat_count; i++) {
         uint splat_idx = shared_indices[i];
         Projected pr = all_projected[pc.p_id].p[splat_idx];
@@ -111,16 +112,11 @@ void main() {
         float alpha = pr.color_alpha.a * exp(power);
         if (alpha < 1.0/255.0) continue;
 
-        // Front-to-back accumulation
         final_color += T * alpha * pr.color_alpha.rgb;
         T *= (1.0 - alpha);
-
-        // --- THE MASSIVE SPEEDUP: EARLY EXIT ---
         if (T < 0.01) break; 
     }
 
-    // Add background at the end based on remaining transmittance
     final_color += T * vec3(0.01, 0.01, 0.03);
-
     imageStore(all_images[pc.img_id], pixel_coords, vec4(final_color, 1.0));
 }

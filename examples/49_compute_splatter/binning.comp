@@ -3,7 +3,7 @@
 
 struct Projected {
     vec2 pos;
-    float depth; // Store depth for sorting
+    float depth;
     float pad1;
     vec4 cov;
     vec4 color_alpha;
@@ -11,8 +11,10 @@ struct Projected {
 
 layout(set = 0, binding = 0) buffer B0 { Projected p[]; } all_projected[];
 layout(set = 0, binding = 0) buffer B1 { uint count[]; } all_tile_counts[];
-layout(set = 0, binding = 0) buffer B2 { uint data[]; } all_tile_data[];
+layout(set = 0, binding = 0) buffer B2 { uint offsets[]; } all_tile_offsets[];
 layout(set = 0, binding = 0) buffer B3 { float data[]; } noise_table[];
+layout(set = 0, binding = 0) buffer B4 { uint data[]; } all_tile_data[];
+layout(set = 0, binding = 0) buffer B5 { uint current_offsets[]; } all_current_offsets[];
 
 layout(push_constant) uniform PushConstants {
     mat4 view;
@@ -20,13 +22,16 @@ layout(push_constant) uniform PushConstants {
     float focal;
     uint p_id;
     uint tc_id;
-    uint td_id;
+    uint to_id;
     uint count;
     uint screen_w;
     uint screen_h;
     float time;
     uint noise_id;
     vec4 world_offset;
+    uint mode; // 0 = Count, 1 = Write
+    uint td_id;
+    uint co_id;
 } pc;
 
 layout (local_size_x = 256) in;
@@ -160,10 +165,12 @@ void main() {
     float pixel_radius = focal_z * world_radius;
     float cov_val = pixel_radius * pixel_radius;
     
-    all_projected[pc.p_id].p[global_i].pos = ndc_pos;
-    all_projected[pc.p_id].p[global_i].depth = z; // Store view-space depth
-    all_projected[pc.p_id].p[global_i].cov = vec4(cov_val, 0.0, cov_val, 0.0);
-    all_projected[pc.p_id].p[global_i].color_alpha = vec4(base_color, opacity * 10.0);
+    if (pc.mode == 0) { // MODE_COUNT: Just store stats
+        all_projected[pc.p_id].p[global_i].pos = ndc_pos;
+        all_projected[pc.p_id].p[global_i].depth = z;
+        all_projected[pc.p_id].p[global_i].cov = vec4(cov_val, 0.0, cov_val, 0.0);
+        all_projected[pc.p_id].p[global_i].color_alpha = vec4(base_color, opacity * 10.0);
+    }
 
     // 4. BINNING
     vec2 pixel_pos = (ndc_pos * 0.5 + 0.5) * vec2(pc.screen_w, pc.screen_h);
@@ -182,9 +189,13 @@ void main() {
     for (int ty = min_tile.y; ty <= max_tile.y; ty++) {
         for (int tx = min_tile.x; tx <= max_tile.x; tx++) {
             uint tile_idx = ty * tiles_x + tx;
-            uint slot = atomicAdd(all_tile_counts[pc.tc_id].count[tile_idx], 1);
-            if (slot < 4096) {
-                all_tile_data[pc.td_id].data[tile_idx * 4096 + slot] = global_i;
+            if (pc.mode == 0) {
+                atomicAdd(all_tile_counts[pc.tc_id].count[tile_idx], 1);
+            } else {
+                uint base_offset = all_tile_offsets[pc.to_id].offsets[tile_idx];
+                uint local_offset = atomicAdd(all_current_offsets[pc.co_id].current_offsets[tile_idx], 1);
+                // Tight packing in global buffer
+                all_tile_data[pc.td_id].data[base_offset + local_offset] = global_i;
             }
         }
     }
