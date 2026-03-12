@@ -153,7 +153,7 @@ void main() {
             PrecalcSplat s = chunk_precalc[i];
             vec2 d = pixel_pos - s.pos;
             float power = s.inv_cov.x * d.x * d.x + 2.0 * s.inv_cov.y * d.x * d.y + s.inv_cov.z * d.y * d.y;
-            if (power > 0.0 || power < -8.0) continue;
+            if (power > 0.0 || power < -4.5) continue;
             float alpha = s.color_alpha.a * exp(power);
             if (alpha < 0.0039) continue;
             final_color += T * alpha * s.color_alpha.rgb;

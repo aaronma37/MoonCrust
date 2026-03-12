@@ -170,7 +170,7 @@ void main() {
     vec2 p_pos = (ndc * 0.5 + 0.5) * vec2(pc.screen_w, pc.screen_h);
     float mid = 0.5 * (cov2d.x + cov2d.z);
     float lambda1 = mid + sqrt(max(0.1, mid * mid - (cov2d.x * cov2d.z - cov2d.y * cov2d.y)));
-    float rad = ceil(3.0 * sqrt(max(0.1, lambda1)));
+    float rad = ceil(3.0 * sqrt(max(0.1, lambda1))) + 2.0;
     rad = clamp(rad, 1.0, 64.0); 
 
     ivec2 min_t = ivec2(floor((p_pos - rad) / 16.0));
