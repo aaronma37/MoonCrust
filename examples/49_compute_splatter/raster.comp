@@ -10,7 +10,7 @@ struct Projected {
     vec4 sh_r;
     vec4 sh_g;
     vec4 sh_b;
-    vec4 pad2[2];
+    vec4 world_pos;
 };
 
 layout(set = 0, binding = 0) buffer B0 { Projected p[]; } all_projected[];
@@ -30,7 +30,8 @@ layout(push_constant) uniform PushConstants {
     uint to_id;
     uint pad1; 
     vec4 cam_pos;
-    uint pad2[52];
+    vec4 light_dir;
+    uint pad2[48];
 } pc;
 
 layout (local_size_x = 16, local_size_y = 16) in;
@@ -47,8 +48,6 @@ struct PrecalcSplat {
     vec4 color_alpha;
 };
 shared PrecalcSplat chunk_precalc[CHUNK_SIZE];
-
-const float SH_C1 = 0.4886025119029199;
 
 void main() {
     ivec2 pixel_coords = ivec2(gl_GlobalInvocationID.xy);
@@ -131,17 +130,21 @@ void main() {
             chunk_precalc[local_id].pos = (pr.pos * 0.5 + 0.5) * screen_size;
             chunk_precalc[local_id].inv_cov = vec3(pr.cov.z, -pr.cov.y, pr.cov.x) * inv_det * -0.5;
             
-            // View-dependent SH (Direction in View Space)
-            // Reconstruct view-space direction from NDC and Depth
-            vec3 dir = normalize(vec3(pr.pos, 1.0)); // Rough approximation
+            // --- DYNAMIC BLINN-PHONG LIGHTING ---
+            vec3 world_pos = pr.world_pos.xyz;
+            vec3 normal = normalize(pr.sh_r.yzw + pr.sh_g.yzw + pr.sh_b.yzw); // Recover normal from SH-encoding
+            if (length(pr.sh_r.yzw) < 0.001) normal = vec3(0,1,0);
+
+            vec3 view_dir = normalize(pc.cam_pos.xyz - world_pos);
+            vec3 light_dir = normalize(pc.light_dir.xyz);
+            vec3 half_dir = normalize(view_dir + light_dir);
+
+            float diff = max(0.1, dot(normal, light_dir));
+            float spec = pow(max(0.0, dot(normal, half_dir)), 32.0) * 0.5;
             
-            vec3 color = pr.color_alpha.rgb;
-            // Evaluated polynomial: Y1 terms
-            color.r += SH_C1 * (-dir.y * pr.sh_r.y + dir.z * pr.sh_r.z - dir.x * pr.sh_r.w);
-            color.g += SH_C1 * (-dir.y * pr.sh_g.y + dir.z * pr.sh_g.z - dir.x * pr.sh_g.w);
-            color.b += SH_C1 * (-dir.y * pr.sh_b.y + dir.z * pr.sh_b.z - dir.x * pr.sh_b.w);
+            vec3 lit_color = pr.color_alpha.rgb * (diff + 0.2) + vec3(spec);
             
-            chunk_precalc[local_id].color_alpha = vec4(max(vec3(0.0), color), pr.color_alpha.a);
+            chunk_precalc[local_id].color_alpha = vec4(lit_color, pr.color_alpha.a);
         }
         
         barrier();

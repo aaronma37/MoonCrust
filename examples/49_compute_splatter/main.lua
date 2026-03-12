@@ -33,7 +33,8 @@ ffi.cdef([[
         float sh_r[4];
         float sh_g[4];
         float sh_b[4];
-        float pad2[8]; // Total 128 bytes
+        float world_pos[4];
+        float pad2[4]; 
     } Projected;
 
     typedef struct BinningPC {
@@ -48,13 +49,14 @@ ffi.cdef([[
         uint32_t screen_h;      // 152
         float time;             // 156
         uint32_t noise_id;      // 160
-        uint32_t pad1[3];       // 164, 168, 172 -> Pad to 176
+        uint32_t pad1[3];       // 164
         float cam_pos[4];       // 176
-        float world_offset[4];  // 192
-        uint32_t mode;          // 208
-        uint32_t td_id;         // 212
-        uint32_t co_id;         // 216
-        uint32_t pad2[9];       // 220...
+        float light_dir[4];     // 192
+        float world_offset[4];  // 208
+        uint32_t mode;          // 224
+        uint32_t td_id;         // 228
+        uint32_t co_id;         // 232
+        uint32_t pad2[5];       
     } BinningPC;
 
     typedef struct PrefixSumPC {
@@ -65,16 +67,17 @@ ffi.cdef([[
     } PrefixSumPC;
 
     typedef struct RasterPC {
-        uint32_t p_id;          // 0
-        uint32_t tc_id;         // 4
-        uint32_t td_id;         // 8
-        uint32_t img_id;        // 12
-        uint32_t screen_w;      // 16
-        uint32_t screen_h;      // 20
-        uint32_t to_id;         // 24
-        uint32_t pad1;          // 28
-        float cam_pos[4];       // 32
-        uint32_t pad2[52];
+        uint32_t p_id;          
+        uint32_t tc_id;         
+        uint32_t td_id;         
+        uint32_t img_id;        
+        uint32_t screen_w;      
+        uint32_t screen_h;      
+        uint32_t to_id;         
+        uint32_t pad1;          
+        float cam_pos[4];       
+        float light_dir[4];     // Added for real lighting
+        uint32_t pad2[48];
     } RasterPC;
 
     typedef struct HybridPC {
@@ -202,6 +205,10 @@ function M.update()
 	local proj = mc.math.mat4_perspective(mc.math.rad(70), aspect, 0.1, 100.0)
 	local focal = sw.extent.height / (2.0 * math.tan(mc.math.rad(70) * 0.5))
 
+	-- Orbiting light direction
+	local lt = M.current_time * 1.5
+	local light_dir = { math.sin(lt), 0.5, math.cos(lt), 0 }
+
 	vk.vkResetCommandBuffer(cb, 0)
 	vk.vkBeginCommandBuffer(cb, ffi.new("VkCommandBufferBeginInfo", { sType = vk.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO }))
 
@@ -215,7 +222,7 @@ function M.update()
 	vk.vkCmdPipelineBarrier(cb, vk.VK_PIPELINE_STAGE_TRANSFER_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nil, 2, b_sync, 0, nil)
 
 	graph:reset()
-	local pc_common = { view = view, proj = proj, focal = focal, p_id = 10, tc_id = 11, to_id = 12, count = GAUSSIAN_COUNT * 3, screen_w = sw.extent.width, screen_h = sw.extent.height, time = M.current_time, noise_id = 2, cam_pos = { M.cam_pos[1], M.cam_pos[2], M.cam_pos[3], 0 }, world_offset = { 0, 0, 0, 0 } }
+	local pc_common = { view = view, proj = proj, focal = focal, p_id = 10, tc_id = 11, to_id = 12, count = GAUSSIAN_COUNT * 3, screen_w = sw.extent.width, screen_h = sw.extent.height, time = M.current_time, noise_id = 2, cam_pos = { M.cam_pos[1], M.cam_pos[2], M.cam_pos[3], 0 }, light_dir = light_dir, world_offset = { 0, 0, 0, 0 } }
 
 	graph:add_pass("BinningCount", function(c)
 		vk.vkCmdBindPipeline(c, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_binning)
@@ -246,7 +253,7 @@ function M.update()
 	graph:add_pass("Raster", function(c)
 		vk.vkCmdBindPipeline(c, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_raster)
 		vk.vkCmdBindDescriptorSets(c, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_layout, 0, 1, ffi.new("VkDescriptorSet[1]", { bindless_set }), 0, nil)
-		local pc = ffi.new("RasterPC", { p_id = 10, tc_id = 11, td_id = 13, img_id = 3, screen_w = sw.extent.width, screen_h = sw.extent.height, to_id = 12, cam_pos = { M.cam_pos[1], M.cam_pos[2], M.cam_pos[3], 0 } })
+		local pc = ffi.new("RasterPC", { p_id = 10, tc_id = 11, td_id = 13, img_id = 3, screen_w = sw.extent.width, screen_h = sw.extent.height, to_id = 12, cam_pos = { M.cam_pos[1], M.cam_pos[2], M.cam_pos[3], 0 }, light_dir = light_dir })
 		vk.vkCmdPushConstants(c, pipe_layout, bit.bor(vk.VK_SHADER_STAGE_ALL_GRAPHICS, vk.VK_SHADER_STAGE_COMPUTE_BIT), 0, 256, pc)
 		vk.vkCmdDispatch(c, math.ceil(sw.extent.width / 16), math.ceil(sw.extent.height / 16), 1)
 	end):using(graph.projected, vk.VK_ACCESS_SHADER_READ_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT):using(graph.tile_counts, vk.VK_ACCESS_SHADER_READ_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT):using(graph.tile_offsets, vk.VK_ACCESS_SHADER_READ_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT):using(graph.tile_data, vk.VK_ACCESS_SHADER_READ_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT):using(graph.storage, vk.VK_ACCESS_SHADER_WRITE_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, vk.VK_IMAGE_LAYOUT_GENERAL)
