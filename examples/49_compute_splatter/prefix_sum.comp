@@ -3,23 +3,21 @@
 
 layout (local_size_x = 1) in; 
 
-layout(set = 0, binding = 0) buffer B0 { uint counts[]; } all_tile_counts[];
-layout(set = 0, binding = 0) buffer B1 { uint offsets[]; } all_tile_offsets[];
+layout(set = 0, binding = 0) buffer B0 { uint counts[]; } all_histograms[];
 
 layout(push_constant) uniform PushConstants {
-    uint tc_id;
-    uint to_id;
-    uint num_tiles;
+    uint buf_id;
+    uint alt_id;
+    uint hist_id;
+    uint pass;
+    uint count;
 } pc;
 
 void main() {
     uint sum = 0;
-    for (uint i = 0; i < pc.num_tiles; i++) {
-        uint val = all_tile_counts[pc.tc_id].counts[i];
-        
-        // DETERMINISTIC FIX: Offsets must match the TRUE counts
-        // so that Tile B's start point is correct regardless of Tile A's contents.
-        all_tile_offsets[pc.to_id].offsets[i] = sum;
+    for (uint i = 0; i < 256; i++) {
+        uint val = all_histograms[pc.hist_id].counts[i];
+        all_histograms[pc.hist_id].counts[i] = sum;
         sum += val;
     }
 }

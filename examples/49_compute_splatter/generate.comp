@@ -1,0 +1,95 @@
+#version 450
+#extension GL_EXT_nonuniform_qualifier : require
+
+struct Splat3D {
+    vec4 pos;    // xyz, w=opacity
+    vec4 scale;  // xyz, w=unused
+    vec4 rot;    // quaternion
+    vec4 color;  // rgb, w=unused
+    vec4 normal; // xyz, w=unused
+};
+
+layout(set = 0, binding = 0) buffer B0 { float data[]; } noise_table[];
+layout(set = 0, binding = 0) buffer B1 { Splat3D s[]; } all_src_splats[];
+
+layout(push_constant) uniform PushConstants {
+    uint src_id;
+    uint count;
+    uint noise_id;
+    float time;
+} pc;
+
+layout (local_size_x = 256) in;
+
+// --- MATH HELPERS ---
+float hash(uint x) {
+    x = ((x >> 16) ^ x) * 0x45d9f3b;
+    x = ((x >> 16) ^ x) * 0x45d9f3b;
+    x = (x >> 16) ^ x;
+    return float(x) / 4294967296.0;
+}
+
+float get_noise(uint seed) {
+    float raw = noise_table[pc.noise_id].data[seed % 1024];
+    return fract(raw + hash(seed));
+}
+
+vec4 quatFromDir(vec3 dir) {
+    vec3 v = normalize(dir);
+    vec3 up = abs(v.y) > 0.9 ? vec3(1,0,0) : vec3(0,1,0);
+    vec3 right = normalize(cross(up, v));
+    up = cross(v, right);
+    mat3 m = mat3(right, up, v);
+    float tr = m[0][0] + m[1][1] + m[2][2];
+    if (tr > 0) {
+        float s = sqrt(tr + 1.0) * 2;
+        return vec4(0.25 * s, (m[2][1] - m[1][2]) / s, (m[0][2] - m[2][0]) / s, (m[1][0] - m[0][1]) / s);
+    }
+    return vec4(1, 0, 0, 0);
+}
+
+void splatCylinder(uint i, uint count, vec3 base, vec3 top, float radius, out vec3 pos, out vec3 scale, out vec4 rot) {
+    vec3 dir = top - base;
+    pos = base + normalize(dir) * (float(i)/float(count)) * length(dir);
+    scale = vec3(radius, radius, radius * 1.5);
+    rot = quatFromDir(dir);
+}
+
+void main() {
+    uint global_i = gl_GlobalInvocationID.x;
+    if (global_i >= pc.count) return;
+
+    uint p_asset = 16384;
+    uint asset_idx = global_i / p_asset;
+    uint i = global_i % p_asset;
+
+    vec3 pos = vec3(0.0); vec3 scale = vec3(0.05); vec4 rot = vec4(1, 0, 0, 0);
+    vec3 color = vec3(1.0); float opacity = 0.005;
+    vec3 normal = vec3(0, 1, 0); 
+
+    if (asset_idx == 0) { // TREE
+        if (i < 2000) { splatCylinder(i, 2000, vec3(0, 0, 0), vec3(0, 3, 0), 0.25, pos, scale, rot); color = vec3(0.3, 0.15, 0.05); normal = normalize(pos.xyz * vec3(1,0,1)); }
+        else if (i < 5000) { uint b = i-2000; float a = (b%4)*1.57; splatCylinder(b, 3000, vec3(0, 2, 0), vec3(sin(a)*1.5, 3.5, cos(a)*1.5), 0.12, pos, scale, rot); color = vec3(0.3, 0.15, 0.05); normal = normalize(pos.xyz); }
+        else { 
+            uint l = i-5000; float r = 2.0*pow(get_noise(l), 0.6), phi = get_noise(l+1)*6.28; 
+            pos = vec3(sin(phi)*r, 3.5+get_noise(l+2)*2.0, cos(phi)*r); scale = vec3(0.3, 0.1, 0.3); 
+            color = vec3(0.1, 0.5, 0.1); normal = normalize(pos - vec3(0, 4.5, 0));
+        }
+    } else if (asset_idx == 1) { // CHAIR
+        if (i < 4000) { uint l = i%4; vec3 lp = vec3((l<2?1:-1)*0.8, 0, (l%2==0?1:-1)*0.8); splatCylinder(i, 4000, lp, lp+vec3(0, 1.5, 0), 0.1, pos, scale, rot); color = vec3(0.5, 0.3, 0.1); normal = normalize(vec3(lp.x, 0, lp.z)); }
+        else if (i < 6000) { uint s = i-4000; pos = vec3(get_noise(s)*2.0-1.0, 1.6, get_noise(s+1)*2.0-1.0); scale = vec3(0.15, 0.01, 0.15); color = vec3(0.6, 0.4, 0.2); normal = vec3(0, 1, 0); }
+        else { uint b = i-6000; pos = vec3(get_noise(b)*2.0-1.0, 1.6+get_noise(b+1)*2.5, -0.9); scale = vec3(0.1, 0.1, 0.01); color = vec3(0.5, 0.3, 0.1); normal = vec3(0, 0, 1); }
+    } else { // GHOST (Rest Pose)
+        float u = float(i)/16384.0, v = (float(i%1024)/1024.0)*6.28;
+        if (u < 0.2) { float phi = (u/0.2)*3.14, r = 1.2; pos = vec3(r*sin(phi)*cos(v), 4.5+r*cos(phi), r*sin(phi)*sin(v)); normal = normalize(pos - vec3(0, 4.5, 0)); }
+        else if (u < 0.7) { float h = (u-0.2)/0.5, vertical = mix(4.0, 0.0, h), radius = 1.5*(1.0-h*0.4); pos = vec3(radius*cos(v), vertical, radius*sin(v)); normal = normalize(vec3(cos(v), 0, sin(v))); }
+        else { float h = (u-0.7)/0.3; bool left = (v<3.14); vec3 s = vec3(left?-1:1, 3.8, 0), e = vec3(left?-3:3, 2.5, 1); pos = mix(s, e, h); float r = 0.3*(1.0-h*0.5); pos.y += r*cos(v*4.0); pos.z += r*sin(v*4.0); normal = normalize(pos - s); }
+        scale = vec3(0.08); color = vec3(0.5, 0.8, 1.0);
+    }
+
+    all_src_splats[pc.src_id].s[global_i].pos = vec4(pos, opacity);
+    all_src_splats[pc.src_id].s[global_i].scale = vec4(scale, 0.0);
+    all_src_splats[pc.src_id].s[global_i].rot = rot;
+    all_src_splats[pc.src_id].s[global_i].color = vec4(color, 0.0);
+    all_src_splats[pc.src_id].s[global_i].normal = vec4(normal, 0.0);
+}

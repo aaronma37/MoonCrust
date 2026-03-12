@@ -1,0 +1,32 @@
+#version 450
+#extension GL_EXT_nonuniform_qualifier : require
+
+struct SortEntry {
+    uint depth_key;
+    uint splat_id;
+};
+
+layout(set = 0, binding = 0) buffer B0 { SortEntry entries[]; } all_sort_bufs[];
+layout(set = 0, binding = 0) buffer B1 { SortEntry entries[]; } all_alt_bufs[];
+layout(set = 0, binding = 0) buffer B2 { uint offsets[]; } all_histograms[];
+
+layout(push_constant) uniform PushConstants {
+    uint buf_id;
+    uint alt_id;
+    uint hist_id;
+    uint pass;
+    uint count;
+} pc;
+
+layout (local_size_x = 256) in;
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= pc.count) return;
+
+    SortEntry entry = all_sort_bufs[pc.buf_id].entries[i];
+    uint bucket = (entry.depth_key >> (pc.pass * 8)) & 0xFF;
+
+    uint dest_idx = atomicAdd(all_histograms[pc.hist_id].offsets[bucket], 1);
+    all_alt_bufs[pc.alt_id].entries[dest_idx] = entry;
+}

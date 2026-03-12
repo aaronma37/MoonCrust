@@ -29,6 +29,7 @@ layout(set = 0, binding = 0) buffer B0 { Projected p[]; } all_projected[];
 layout(set = 0, binding = 0) buffer B1 { float data[]; } noise_table[];
 layout(set = 0, binding = 0) buffer B2 { SortEntry entries[]; } all_sort_bufs[];
 layout(set = 0, binding = 0) buffer B3 { CullData c[]; } all_cull_data[];
+layout(set = 0, binding = 0) buffer B4 { uint count; } all_counts[];
 
 layout(push_constant) uniform PushConstants {
     mat4 view;
@@ -40,6 +41,8 @@ layout(push_constant) uniform PushConstants {
     uint count;
     float time;
     uint noise_id;
+    uint count_id;
+    uint pad0;
     vec4 cam_pos;
     vec4 light_dir;
     vec4 world_offset;
@@ -142,28 +145,31 @@ void main() {
 
     vec4 pos_v = pc.view * vec4(pos, 1.0);
     if (pos_v.z > -0.1 || opacity < 0.001) {
-        all_projected[pc.p_id].p[global_i].depth_key = 0xFFFFFFFF;
-        all_sort_bufs[pc.s_id].entries[global_i].depth_key = 0xFFFFFFFF;
-        all_sort_bufs[pc.s_id].entries[global_i].splat_id = global_i;
         return;
     }
     vec3 cov2d = computeCov2D(pos_v.xyz, scale, rot);
     vec4 clip_p = pc.proj * pos_v; vec2 ndc = clip_p.xy / clip_p.w;
 
-    all_projected[pc.p_id].p[global_i].pos = ndc;
-    all_projected[pc.p_id].p[global_i].depth_key = floatBitsToUint(-pos_v.z);
-    all_projected[pc.p_id].p[global_i].cov = vec4(cov2d, 0.0);
-    all_projected[pc.p_id].p[global_i].color_alpha = vec4(color, opacity * 10.0);
-    all_projected[pc.p_id].p[global_i].sh_r = sr; all_projected[pc.p_id].p[global_i].sh_g = sg; all_projected[pc.p_id].p[global_i].sh_b = sb;
-    all_projected[pc.p_id].p[global_i].world_pos = vec4(pos, 1.0);
+    // FRUSTUM CULLING
+    if (abs(ndc.x) > 1.2 || abs(ndc.y) > 1.2) return;
 
-    all_sort_bufs[pc.s_id].entries[global_i].depth_key = floatBitsToUint(-pos_v.z);
-    all_sort_bufs[pc.s_id].entries[global_i].splat_id = global_i;
+    uint packed_idx = atomicAdd(all_counts[pc.count_id].count, 1);
+    if (packed_idx >= 65536) return; // Hard limit for sort buffer
+
+    all_projected[pc.p_id].p[packed_idx].pos = ndc;
+    all_projected[pc.p_id].p[packed_idx].depth_key = floatBitsToUint(-pos_v.z);
+    all_projected[pc.p_id].p[packed_idx].cov = vec4(cov2d, 0.0);
+    all_projected[pc.p_id].p[packed_idx].color_alpha = vec4(color, opacity * 10.0);
+    all_projected[pc.p_id].p[packed_idx].sh_r = sr; all_projected[pc.p_id].p[packed_idx].sh_g = sg; all_projected[pc.p_id].p[packed_idx].sh_b = sb;
+    all_projected[pc.p_id].p[packed_idx].world_pos = vec4(pos, 1.0);
+
+    all_sort_bufs[pc.s_id].entries[packed_idx].depth_key = floatBitsToUint(-pos_v.z);
+    all_sort_bufs[pc.s_id].entries[packed_idx].splat_id = packed_idx;
 
     // POPULATE CULL HEADER (16 bytes)
     float mid = 0.5 * (cov2d.x + cov2d.z);
     float det = cov2d.x * cov2d.z - cov2d.y * cov2d.y;
     float lambda1 = mid + sqrt(max(0.1, mid * mid - det));
-    all_cull_data[pc.c_id].c[global_i].pos = ndc;
-    all_cull_data[pc.c_id].c[global_i].radius = ceil(3.5 * sqrt(max(0.1, lambda1)));
+    all_cull_data[pc.c_id].c[packed_idx].pos = ndc;
+    all_cull_data[pc.c_id].c[packed_idx].radius = ceil(3.5 * sqrt(max(0.1, lambda1)));
 }
