@@ -23,9 +23,9 @@ Build a library of hundreds of procedurally generated, mathematically defined 3D
 - [x] `splatSphere` (Shell + Volume)
 - [x] `splatBox` (Faces + Volume)
 - [x] `splatCylinder` (Tube + Caps)
-- [ ] `splatBezier` (Curves)
+- [x] `splatBezier` (Curves)
 
-### Phase 3: Asset Generation [TODO]
-- [ ] Asset 001: Refactored Ghost
-- [ ] Asset 002: Stylized Tree
-- [ ] Asset 003: Simple Chair
+### Phase 3: Asset Generation [IN PROGRESS]
+- [x] Asset 001: Refactored Ghost (Batched)
+- [x] Asset 002: Stylized Tree (Batched)
+- [x] Asset 003: Simple Chair (Batched)

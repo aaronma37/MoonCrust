@@ -409,30 +409,23 @@ function M.update()
 				nil
 			)
 
-			local assets = {
-				{ type = 2, offset = { -4, 0, 0, 0 } }, -- Tree (First)
-				{ type = 3, offset = { -3, 0, 0, 0 } }, -- Chair (Center)
-				{ type = 0, offset = { -2, 0, 0, 0 } }, -- Ghost (Right)
-			}
-
-			for _, asset in ipairs(assets) do
-				local pc_val = ffi.new("SplatPC", {
-					view = view,
-					proj = proj,
-					focal = focal,
-					large_s_id = 0,
-					large_c_id = 1,
-					count = GAUSSIAN_COUNT,
-					screen_w = sw.extent.width,
-					screen_h = sw.extent.height,
-					time = M.current_time,
-					noise_id = 2,
-					asset_type = asset.type,
-					world_offset = asset.offset,
-				})
-				vk.vkCmdPushConstants(c, pipe_layout, vk.VK_SHADER_STAGE_ALL, 0, 256, pc_val)
-				vk.vkCmdDispatch(c, math.ceil(GAUSSIAN_COUNT / 256), 1, 1)
-			end
+			local total_count = GAUSSIAN_COUNT * 3
+			local pc_val = ffi.new("SplatPC", {
+				view = view,
+				proj = proj,
+				focal = focal,
+				large_s_id = 0,
+				large_c_id = 1,
+				count = total_count,
+				screen_w = sw.extent.width,
+				screen_h = sw.extent.height,
+				time = M.current_time,
+				noise_id = 2,
+				asset_type = 0, -- ignored in batch mode
+				world_offset = { 0, 0, 0, 0 },
+			})
+			vk.vkCmdPushConstants(c, pipe_layout, vk.VK_SHADER_STAGE_ALL, 0, 256, pc_val)
+			vk.vkCmdDispatch(c, math.ceil(total_count / 256), 1, 1)
 		end)
 		:using(
 			graph.r,
