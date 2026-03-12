@@ -56,19 +56,25 @@ static void setup_embedded_loader(lua_State *L) {
         // Push our loader function
         lua_pushcfunction(L, load_embedded_lua);
         
-        // Shift existing loaders down
-        for (int i = num_loaders; i >= 1; i--) {
-            lua_rawgeti(L, -2, i);
-            lua_rawseti(L, -3, i + 1);
-        }
-        
-        // Insert our loader at index 2 (after preload)
-        lua_rawseti(L, -2, 2);
+        // Append our loader at the end
+        lua_rawseti(L, -2, num_loaders + 1);
     }
     lua_pop(L, 2);
 }
 
 int main(int argc, char* argv[]) {
+    bool enableValidation = false;
+    const char* envVal = std::getenv("MOONCRUST_VALIDATION");
+    if (envVal && (strcmp(envVal, "1") == 0 || strcmp(envVal, "true") == 0)) {
+        enableValidation = true;
+    }
+    for (int i = 1; i < argc; ++i) {
+        if (strcmp(argv[i], "--validation") == 0) {
+            enableValidation = true;
+            break;
+        }
+    }
+
     if (volkInitialize() != VK_SUCCESS) {
         std::cerr << "Failed to initialize volk!" << std::endl;
         return 1;
@@ -87,6 +93,8 @@ int main(int argc, char* argv[]) {
     lua_State* L = luaL_newstate();
     luaL_openlibs(L);
     setup_embedded_loader(L);
+    lua_pushboolean(L, enableValidation);
+    lua_setglobal(L, "_VALIDATION_ENABLED");
 
     SDL_Window* window = SDL_CreateWindow("MoonCrust", 1280, 720, SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE);
     if (!window) {
@@ -106,6 +114,12 @@ int main(int argc, char* argv[]) {
     createInfo.pApplicationInfo = &appInfo;
     createInfo.enabledExtensionCount = static_cast<uint32_t>(extensions.size());
     createInfo.ppEnabledExtensionNames = extensions.data();
+
+    const char* validationLayer = "VK_LAYER_KHRONOS_validation";
+    if (enableValidation) {
+        createInfo.enabledLayerCount = 1;
+        createInfo.ppEnabledLayerNames = &validationLayer;
+    }
 
     VkInstance instance;
     VkResult res = vkCreateInstance(&createInfo, nullptr, &instance);
@@ -282,7 +296,7 @@ int main(int argc, char* argv[]) {
         lua_getfield(L, -1, "path");
         std::string current_path = lua_tostring(L, -1);
         lua_pop(L, 1);
-        std::string new_path = base_dir + "?.lua;" + base_dir + "?/init.lua;" + current_path;
+        std::string new_path = base_dir + "?.lua;" + base_dir + "?/init.lua;./src/lua/?.lua;./src/lua/?/init.lua;" + current_path;
         lua_pushstring(L, new_path.c_str());
         lua_setfield(L, -2, "path");
         lua_pop(L, 1);

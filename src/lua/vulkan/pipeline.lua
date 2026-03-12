@@ -14,9 +14,14 @@ function M.create_layout(device, layouts, push_constant_ranges)
         if type(push_constant_ranges) == "cdata" then
             pc_count = 1
             pPC = push_constant_ranges
-        else
+        elseif type(push_constant_ranges) == "table" then
             pc_count = #push_constant_ranges
-            pPC = ffi.new("VkPushConstantRange[?]", pc_count, push_constant_ranges)
+            pPC = ffi.new("VkPushConstantRange[?]", pc_count)
+            for i = 0, pc_count - 1 do
+                pPC[i].stageFlags = push_constant_ranges[i + 1].stageFlags or vk.VK_SHADER_STAGE_ALL
+                pPC[i].offset = push_constant_ranges[i + 1].offset or 0
+                pPC[i].size = push_constant_ranges[i + 1].size or 0
+            end
         end
     end
 

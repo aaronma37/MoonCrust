@@ -33,7 +33,7 @@ ffi.cdef([[
         uint32_t asset_type;
         uint32_t pad_align[3];
         float world_offset[4];
-        uint32_t pad[17];
+        uint32_t pad[16];
     } SplatPC;
 
     typedef struct ResolvePC {
@@ -65,7 +65,7 @@ function M.init()
 		mc.gpu.image(sw.extent.width, sw.extent.height, vk.VK_FORMAT_R32G32B32A32_SFLOAT, "storage_color_attachment")
 
 	large_splat_buf = mc.buffer(32 * MAX_LARGE_SPLATS, "storage") -- vec4, vec4
-	large_count_buf = mc.buffer(4, "storage") -- uint32
+	large_count_buf = mc.buffer(16, "indirect", ffi.new("uint32_t[4]", { 4, 0, 0, 0 })) -- VkDrawIndirectCommand (16 bytes)
 
 	-- Permutation Table (Noise Buffer)
 	local noise_data = ffi.new("float[1024]")
@@ -148,7 +148,7 @@ function M.init()
 	pipe_layout = pipeline.create_layout(
 		device,
 		{ mc.gpu.get_bindless_layout() },
-		ffi.new("VkPushConstantRange[1]", { { stageFlags = vk.VK_SHADER_STAGE_ALL, offset = 0, size = 256 } })
+		{ { stageFlags = bit.bor(vk.VK_SHADER_STAGE_ALL_GRAPHICS, vk.VK_SHADER_STAGE_COMPUTE_BIT), offset = 0, size = 256 } }
 	)
 	pipe_splat = pipeline.create_compute_pipeline(
 		device,
@@ -346,7 +346,7 @@ function M.update()
 			sub_range
 		)
 	end
-	vk.vkCmdFillBuffer(cb, large_count_buf.handle, 0, 4, 0) -- Reset large splat counter
+	vk.vkCmdFillBuffer(cb, large_count_buf.handle, 4, 4, 0) -- Reset only instanceCount (at offset 4)
 
 	local b_sync = ffi.new(
 		"VkBufferMemoryBarrier[1]",
@@ -356,7 +356,7 @@ function M.update()
 				srcAccessMask = vk.VK_ACCESS_TRANSFER_WRITE_BIT,
 				dstAccessMask = vk.VK_ACCESS_SHADER_READ_BIT + vk.VK_ACCESS_SHADER_WRITE_BIT,
 				buffer = large_count_buf.handle,
-				size = 4,
+				size = 16,
 			},
 		}
 	)
@@ -424,7 +424,7 @@ function M.update()
 				asset_type = 0, -- ignored in batch mode
 				world_offset = { 0, 0, 0, 0 },
 			})
-			vk.vkCmdPushConstants(c, pipe_layout, vk.VK_SHADER_STAGE_ALL, 0, 256, pc_val)
+			vk.vkCmdPushConstants(c, pipe_layout, bit.bor(vk.VK_SHADER_STAGE_ALL_GRAPHICS, vk.VK_SHADER_STAGE_COMPUTE_BIT), 0, 256, pc_val)
 			vk.vkCmdDispatch(c, math.ceil(total_count / 256), 1, 1)
 		end)
 		:using(
@@ -467,7 +467,7 @@ function M.update()
 				nil
 			)
 			local pc = ffi.new("ResolvePC", { img_id = 3, screen_w = sw.extent.width, screen_h = sw.extent.height })
-			vk.vkCmdPushConstants(c, pipe_layout, vk.VK_SHADER_STAGE_ALL, 0, 256, pc)
+			vk.vkCmdPushConstants(c, pipe_layout, bit.bor(vk.VK_SHADER_STAGE_ALL_GRAPHICS, vk.VK_SHADER_STAGE_COMPUTE_BIT), 0, 256, pc)
 			vk.vkCmdDispatch(c, math.ceil(sw.extent.width / 16), math.ceil(sw.extent.height / 16), 1)
 		end)
 		:using(
@@ -536,7 +536,7 @@ function M.update()
 				nil
 			)
 			local pc = ffi.new("HybridPC", { view = view, proj = proj, s_id = 0 })
-			vk.vkCmdPushConstants(c, pipe_layout, vk.VK_SHADER_STAGE_ALL, 0, 256, pc)
+			vk.vkCmdPushConstants(c, pipe_layout, bit.bor(vk.VK_SHADER_STAGE_ALL_GRAPHICS, vk.VK_SHADER_STAGE_COMPUTE_BIT), 0, 256, pc)
 			-- Indirect draw from the counter buffer
 			vk.vkCmdDrawIndirect(c, large_count_buf.handle, 0, 1, 16)
 			vk.vkCmdEndRendering(c)

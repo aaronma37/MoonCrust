@@ -9,6 +9,7 @@ layout(push_constant) uniform PushConstants {
     uint img_id;
     uint screen_w;
     uint screen_h;
+    uint pad[61];
 } pc;
 
 layout (local_size_x = 16, local_size_y = 16) in;

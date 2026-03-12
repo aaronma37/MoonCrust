@@ -7,8 +7,15 @@ struct SplatData {
     vec4 color_alpha;
 };
 
+struct VkDrawIndirectCommand {
+    uint vertexCount;
+    uint instanceCount;
+    uint firstVertex;
+    uint firstInstance;
+};
+
 layout(set = 0, binding = 0) buffer B0 { SplatData s[]; } all_large_splats[];
-layout(set = 0, binding = 0) buffer B1 { uint count; } all_large_counts[];
+layout(set = 0, binding = 0) buffer B1 { VkDrawIndirectCommand cmd; } all_large_counts[];
 layout(set = 0, binding = 0) buffer B2 { float data[]; } noise_table[];
 
 layout(set = 0, binding = 2, r32ui) uniform uimage2D all_images_channels[];
@@ -27,7 +34,7 @@ layout(push_constant) uniform PushConstants {
     uint asset_type;
     uint pad_align[3];
     vec4 world_offset;
-    uint pad[17];
+    uint pad[16];
 } pc;
 
 layout (local_size_x = 256) in;
@@ -178,7 +185,7 @@ void main() {
     float pixel_radius = focal_z * world_radius;
 
     if (pixel_radius > 4.0) {
-        uint slot = atomicAdd(all_large_counts[pc.large_c_id].count, 1);
+        uint slot = atomicAdd(all_large_counts[pc.large_c_id].cmd.instanceCount, 1);
         if (slot < 65536) {
             all_large_splats[pc.large_s_id].s[slot].pos_radius = vec4(pos, world_radius);
             all_large_splats[pc.large_s_id].s[slot].color_alpha = vec4(base_color, opacity * 2.5);
