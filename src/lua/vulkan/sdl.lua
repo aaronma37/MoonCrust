@@ -11,6 +11,8 @@ ffi.cdef[[
 
     void* SDL_CreateWindow(const char* title, int w, int h, SDL_WindowFlags flags);
     void SDL_DestroyWindow(void* window);
+    void SDL_SetWindowTitle(void* window, const char* title);
+    const char* SDL_GetWindowTitle(void* window);
     uint32_t SDL_GetWindowID(void* window);
     bool SDL_Vulkan_CreateSurface(void* window, void* instance, void* allocator, void** surface);
     bool SDL_GetWindowSize(void* window, int* w, int* h);

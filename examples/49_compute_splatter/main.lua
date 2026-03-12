@@ -9,7 +9,7 @@ local command = require("vulkan.command")
 local input = require("mc.input")
 local bit = require("bit")
 
-local M = { cam_pos = { 0, 0, 8 }, cam_rot = { 0, 0 }, current_time = 0, last_frame_ticks = 0 }
+local M = { cam_pos = { 0, 0, 8 }, cam_rot = { 0, 0 }, current_time = 0, last_frame_ticks = 0, fps_frames = 0, fps_timer = 0 }
 
 -- CONFIG
 local GAUSSIAN_COUNT = 16384
@@ -86,7 +86,7 @@ function M.init()
 	tile_count_buf = mc.buffer(tile_count * 4, "storage")
 	tile_offset_buf = mc.buffer(tile_count * 4, "storage")
 	tile_current_offset_buf = mc.buffer(tile_count * 4, "storage")
-	tile_data_buf = mc.buffer(4096 * 1024 * 4, "storage") -- 4M packed IDs
+	tile_data_buf = mc.buffer(16 * 1024 * 1024 * 4, "storage") -- 16M packed IDs
 
 	-- 2. Bindless Setup
 	bindless_set = mc.gpu.get_bindless_set()
@@ -141,6 +141,17 @@ function M.update()
 	if M.last_frame_ticks == 0 then M.last_frame_ticks = current_ticks end
 	local dt = (current_ticks - M.last_frame_ticks) / 1000.0
 	M.last_frame_ticks = current_ticks
+
+	-- FPS Counter Logic
+	M.fps_frames = M.fps_frames + 1
+	M.fps_timer = M.fps_timer + dt
+	if M.fps_timer >= 1.0 then
+		local fps = M.fps_frames / M.fps_timer
+		local title = string.format("MoonCrust | Splat Renderer | FPS: %.1f | Gaussians: %d", fps, GAUSSIAN_COUNT * 3)
+		sdl.SDL_SetWindowTitle(_G._SDL_WINDOW, title)
+		M.fps_timer = 0
+		M.fps_frames = 0
+	end
 
 	vk.vkWaitForFences(device, 1, ffi.new("VkFence[1]", { frame_fence }), vk.VK_TRUE, 0xFFFFFFFF)
 	vk.vkResetFences(device, 1, ffi.new("VkFence[1]", { frame_fence }))
@@ -207,7 +218,7 @@ function M.update()
 		pc.mode, pc.td_id, pc.co_id = 1, 13, 14
 		vk.vkCmdPushConstants(c, pipe_layout, bit.bor(vk.VK_SHADER_STAGE_ALL_GRAPHICS, vk.VK_SHADER_STAGE_COMPUTE_BIT), 0, 256, pc)
 		vk.vkCmdDispatch(c, math.ceil((GAUSSIAN_COUNT * 3) / 256), 1, 1)
-	end):using(graph.tile_offsets, vk.VK_ACCESS_SHADER_READ_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT):using(graph.tile_current_offsets, vk.VK_ACCESS_SHADER_WRITE_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT):using(graph.tile_data, vk.VK_ACCESS_SHADER_WRITE_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT)
+	end):using(graph.projected, vk.VK_ACCESS_SHADER_READ_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT):using(graph.tile_offsets, vk.VK_ACCESS_SHADER_READ_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT):using(graph.tile_current_offsets, vk.VK_ACCESS_SHADER_WRITE_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT):using(graph.tile_data, vk.VK_ACCESS_SHADER_WRITE_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT)
 
 	graph:add_pass("Raster", function(c)
 		vk.vkCmdBindPipeline(c, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_raster)

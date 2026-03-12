@@ -28,18 +28,33 @@ layout(push_constant) uniform PushConstants {
 
 layout (local_size_x = 16, local_size_y = 16) in;
 
-// Bumping to 4096. Uses 32KB shared memory (4096 * 8 bytes).
-#define MAX_SPLATS_PER_TILE 4096
+#define MAX_SPLATS_PER_TILE 2048
+#define CHUNK_SIZE 128
+
 shared uint shared_indices[MAX_SPLATS_PER_TILE];
 shared float shared_depths[MAX_SPLATS_PER_TILE];
 
+struct PrecalcSplat {
+    vec2 pos;
+    vec3 inv_cov;
+    vec4 color_alpha;
+};
+shared PrecalcSplat chunk_precalc[CHUNK_SIZE];
+
 void main() {
+    ivec2 pixel_coords = ivec2(gl_GlobalInvocationID.xy);
     uint tiles_x = (pc.screen_w + 15) / 16;
     uint tile_idx = gl_WorkGroupID.y * tiles_x + gl_WorkGroupID.x;
     uint local_id = gl_LocalInvocationIndex;
     
-    // 1. Load splats for this tile
+    // 1. Load indices and depths for sorting
     uint actual_count = all_tile_counts[pc.tc_id].count[tile_idx];
+    if (actual_count == 0) {
+        if (pixel_coords.x < pc.screen_w && pixel_coords.y < pc.screen_h) {
+            imageStore(all_images[pc.img_id], pixel_coords, vec4(0.01, 0.01, 0.03, 1.0));
+        }
+        return;
+    }
     uint splat_count = min(MAX_SPLATS_PER_TILE, actual_count);
     uint base_offset = all_tile_offsets[pc.to_id].offsets[tile_idx];
 
@@ -49,8 +64,8 @@ void main() {
     }
     sort_n = clamp(sort_n, 2, MAX_SPLATS_PER_TILE);
 
-    // Each thread loads 16 elements to hit 4096 total
-    for (uint i = 0; i < 16; i++) {
+    // Each thread loads 8 elements (256 * 8 = 2048)
+    for (uint i = 0; i < 8; i++) {
         uint idx = local_id + i * 256;
         if (idx < MAX_SPLATS_PER_TILE) {
             if (idx < splat_count) {
@@ -65,7 +80,7 @@ void main() {
     
     barrier();
 
-    // 2. Bitonic Sort
+    // 2. Bitonic Sort (Shared Memory)
     for (uint k = 2; k <= sort_n; k <<= 1) {
         for (uint j = k >> 1; j > 0; j >>= 1) {
             for (uint i_base = 0; i_base < sort_n; i_base += 256) {
@@ -77,9 +92,8 @@ void main() {
                         float d1 = shared_depths[i];
                         float d2 = shared_depths[ixj];
                         if ((ascending && d1 > d2) || (!ascending && d1 < d2)) {
-                            float temp_d = shared_depths[i];
-                            shared_depths[i] = shared_depths[ixj];
-                            shared_depths[ixj] = temp_d;
+                            shared_depths[i] = d2;
+                            shared_depths[ixj] = d1;
                             uint temp_idx = shared_indices[i];
                             shared_indices[i] = shared_indices[ixj];
                             shared_indices[ixj] = temp_idx;
@@ -91,38 +105,51 @@ void main() {
         }
     }
 
-    ivec2 pixel_coords = ivec2(gl_GlobalInvocationID.xy);
     if (pixel_coords.x >= pc.screen_w || pixel_coords.y >= pc.screen_h) return;
 
     vec2 pixel_pos = vec2(pixel_coords) + 0.5;
-    vec3 final_color = vec3(0.0, 0.0, 0.0);
+    vec2 screen_size = vec2(pc.screen_w, pc.screen_h);
+    vec3 final_color = vec3(0.0);
     float T = 1.0;
 
-    // 3. Render
-    for (uint i = 0; i < splat_count; i++) {
-        uint splat_idx = shared_indices[i];
-        Projected pr = all_projected[pc.p_id].p[splat_idx];
+    // 3. Render (Pre-calculated Chunked Rendering)
+    for (uint base_i = 0; base_i < splat_count; base_i += CHUNK_SIZE) {
+        uint current_chunk_size = min(CHUNK_SIZE, splat_count - base_i);
         
-        vec2 d = pixel_pos - (pr.pos * 0.5 + 0.5) * vec2(pc.screen_w, pc.screen_h);
-        float det = pr.cov.x * pr.cov.z - pr.cov.y * pr.cov.y;
-        if (det < 0.0001) continue;
-        float inv_det = 1.0 / det;
-        vec3 inv_cov = vec3(pr.cov.z, -pr.cov.y, pr.cov.x) * inv_det;
+        if (local_id < current_chunk_size) {
+            Projected pr = all_projected[pc.p_id].p[shared_indices[base_i + local_id]];
+            float det = pr.cov.x * pr.cov.z - pr.cov.y * pr.cov.y;
+            float inv_det = 1.0 / max(0.0001, det);
+            
+            chunk_precalc[local_id].pos = (pr.pos * 0.5 + 0.5) * screen_size;
+            chunk_precalc[local_id].inv_cov = vec3(pr.cov.z, -pr.cov.y, pr.cov.x) * inv_det * -0.5;
+            chunk_precalc[local_id].color_alpha = pr.color_alpha;
+        }
         
-        float power = -0.5 * (inv_cov.x * d.x * d.x + 
-                              2.0 * inv_cov.y * d.x * d.y + 
-                              inv_cov.z * d.y * d.y);
+        barrier();
         
-        if (power > 0.0 || power < -8.0) continue;
-        
-        float alpha = pr.color_alpha.a * exp(power);
-        if (alpha < 1.0/255.0) continue;
+        for (uint i = 0; i < current_chunk_size; i++) {
+            PrecalcSplat s = chunk_precalc[i];
+            vec2 d = pixel_pos - s.pos;
+            
+            float power = s.inv_cov.x * d.x * d.x + 
+                          2.0 * s.inv_cov.y * d.x * d.y + 
+                          s.inv_cov.z * d.y * d.y;
+            
+            if (power > 0.0 || power < -8.0) continue;
+            
+            float alpha = s.color_alpha.a * exp(power);
+            if (alpha < 0.0039) continue;
 
-        final_color += T * alpha * pr.color_alpha.rgb;
-        T *= (1.0 - alpha);
+            final_color += T * alpha * s.color_alpha.rgb;
+            T *= (1.0 - alpha);
+            if (T < 0.01) break; 
+        }
+        
         if (T < 0.01) break; 
+        barrier(); 
     }
 
-    final_color += T * vec3(0.01, 0.01, 0.03);
+    final_color += T * vec3(0.01, 0.01, 0.03); 
     imageStore(all_images[pc.img_id], pixel_coords, vec4(final_color, 1.0));
 }
