@@ -11,6 +11,7 @@ struct Projected {
 layout(set = 0, binding = 0) buffer B0 { Projected p[]; } all_projected[];
 layout(set = 0, binding = 0) buffer B1 { uint count[]; } all_tile_counts[];
 layout(set = 0, binding = 0) buffer B2 { uint data[]; } all_tile_data[];
+layout(set = 0, binding = 0) buffer B3 { float data[]; } noise_table[];
 
 layout(push_constant) uniform PushConstants {
     mat4 view;
@@ -23,24 +24,129 @@ layout(push_constant) uniform PushConstants {
     uint screen_w;
     uint screen_h;
     float time;
+    uint noise_id;
+    vec4 world_offset;
 } pc;
 
 layout (local_size_x = 256) in;
 
+// --- HASH-BASED NOISE (Prevents patterns from small noise tables) ---
+float hash(uint x) {
+    x = ((x >> 16) ^ x) * 0x45d9f3b;
+    x = ((x >> 16) ^ x) * 0x45d9f3b;
+    x = (x >> 16) ^ x;
+    return float(x) / 4294967296.0;
+}
+
+float get_noise(uint seed) {
+    // Mix the lookup table with a hash to break repetition
+    float raw = noise_table[pc.noise_id].data[seed % 1024];
+    return fract(raw + hash(seed));
+}
+
+// --- REFINED PRIMITIVES ---
+
+void splatSphere(uint i, uint count, vec3 center, float radius, float softness, vec3 color, float opacity, inout vec3 pos, inout float w_radius, inout vec3 b_color, inout float b_opacity) {
+    float phi = acos(1.0 - 2.0 * (float(i) + 0.5) / float(count));
+    float theta = 2.399963229728 * float(i);
+    float u = float(i) / float(count);
+    bool is_core = (u < 0.8);
+    float r = radius;
+    if (is_core) {
+        r *= pow(get_noise(i + 123), 0.6);
+        w_radius = 0.04 + get_noise(i + 456) * 0.04;
+        b_opacity = opacity;
+    } else {
+        r *= 0.9 + get_noise(i + 789) * softness;
+        w_radius = 0.06 + get_noise(i + 321) * 0.06;
+        b_opacity = opacity * 0.5;
+    }
+    pos = center + r * vec3(sin(phi) * cos(theta), sin(phi) * sin(theta), cos(phi));
+    b_color = color * (0.8 + 0.4 * get_noise(i + 555));
+}
+
+void splatCylinder(uint i, uint count, vec3 base, vec3 top, float radius, vec3 color, float opacity, inout vec3 pos, inout float w_radius, inout vec3 b_color, inout float b_opacity) {
+    vec3 dir = top - base; float height = length(dir); vec3 n_dir = normalize(dir);
+    vec3 tangent = normalize(abs(n_dir.x) > 0.9 ? vec3(0, 1, 0) : vec3(1, 0, 0));
+    tangent = normalize(cross(n_dir, tangent)); vec3 bitangent = cross(n_dir, tangent);
+    float h = get_noise(i) * height;
+    float angle = get_noise(i + 128) * 6.28318;
+    float r = radius * pow(get_noise(i + 256), 0.5);
+    pos = base + n_dir * h + tangent * r * cos(angle) + bitangent * r * sin(angle);
+    w_radius = 0.04 + get_noise(i + 333) * 0.03;
+    b_color = color;
+    b_opacity = opacity;
+}
+
+void splatBox(uint i, uint count, vec3 center, vec3 size, vec3 color, float opacity, inout vec3 pos, inout float w_radius, inout vec3 b_color, inout float b_opacity) {
+    vec3 p = vec3(get_noise(i), get_noise(i+128), get_noise(i+256)) - 0.5;
+    pos = center + p * size;
+    w_radius = 0.05;
+    b_color = color;
+    b_opacity = opacity;
+}
+
 void main() {
-    uint i = gl_GlobalInvocationID.x;
-    if (i >= pc.count) return;
+    uint global_i = gl_GlobalInvocationID.x;
+    if (global_i >= pc.count) return;
 
-    // 1. SYMBOLIC GENERATION
-    float u = float(i) / pc.count;
-    float v = (float(i % 1024) / 1024.0) * 6.28318;
-    float r = 2.0 + 0.5 * sin(u * 10.0 + pc.time * 2.0);
-    vec3 pos = vec3(r * sin(u * 3.14159) * cos(v), r * sin(u * 3.14159) * sin(v), r * cos(u * 3.14159));
-    pos.x += sin(pos.y * 2.0 + pc.time) * 0.5;
-    pos.z += cos(pos.x * 2.0 - pc.time * 1.5) * 0.5;
+    // Budget fixed to 16k per asset
+    uint points_per_asset = 16384;
+    uint asset_idx = global_i / points_per_asset;
+    uint i = global_i % points_per_asset;
+    uint count = points_per_asset;
 
-    vec3 color = vec3(0.1, 0.4, 1.0);
-    if (u > 0.8) color = vec3(1.0, 0.2, 0.5);
+    vec3 pos = vec3(0.0);
+    float world_radius = 0.05;
+    vec3 base_color = vec3(1.0);
+    float opacity = 0.002;
+
+    float x_offset = (float(asset_idx) - 1.0) * 5.0;
+
+    if (asset_idx == 0) { // TREE
+        uint trunk_count = count / 5; uint branch_count = count / 3; uint leaf_count = count - trunk_count - branch_count;
+        if (i < trunk_count) {
+            splatCylinder(i, trunk_count, vec3(0, 0, 0), vec3(0, 3, 0), 0.25, vec3(0.3, 0.15, 0.05), 0.006, pos, world_radius, base_color, opacity);
+        } else if (i < trunk_count + branch_count) {
+            uint b_i = i - trunk_count; uint b_idx = b_i % 4; uint b_sub = branch_count / 4;
+            float angle = float(b_idx) * 1.57; vec3 b_end = vec3(sin(angle) * 1.5, 3.5, cos(angle) * 1.5);
+            splatCylinder(b_i % b_sub, b_sub, vec3(0, 2, 0), b_end, 0.12, vec3(0.3, 0.15, 0.05), 0.005, pos, world_radius, base_color, opacity);
+        } else {
+            uint l_i = i - trunk_count - branch_count; uint l_idx = l_i % 3; uint l_sub = leaf_count / 3;
+            vec3 l_centers[3] = vec3[](vec3(0, 4.5, 0), vec3(1.2, 3.8, 0.8), vec3(-1.0, 4.0, -1.2));
+            splatSphere(l_i % l_sub, l_sub, l_centers[l_idx], 1.3, 0.3, vec3(0.1, 0.5, 0.1), 0.005, pos, world_radius, base_color, opacity);
+        }
+    } else if (asset_idx == 1) { // CHAIR
+        uint leg_count = count / 2; uint seat_count = count / 4; uint back_count = count - leg_count - seat_count;
+        if (i < leg_count) {
+            uint l_idx = i % 4; uint l_sub = leg_count / 4;
+            vec3 l_pos = vec3((l_idx < 2 ? 1 : -1) * 0.8, 0, (l_idx % 2 == 0 ? 1 : -1) * 0.8);
+            splatCylinder(i % l_sub, l_sub, l_pos, l_pos + vec3(0, 1.5, 0), 0.1, vec3(0.5, 0.3, 0.1), 0.006, pos, world_radius, base_color, opacity);
+        } else if (i < leg_count + seat_count) {
+            splatBox(i - leg_count, seat_count, vec3(0, 1.6, 0), vec3(2.0, 0.2, 2.0), vec3(0.6, 0.4, 0.2), 0.005, pos, world_radius, base_color, opacity);
+        } else {
+            splatBox(i - leg_count - seat_count, back_count, vec3(0, 3.1, -0.9), vec3(2.0, 3.0, 0.2), vec3(0.5, 0.3, 0.1), 0.005, pos, world_radius, base_color, opacity);
+        }
+    } else { // GHOST
+        float u = float(i) / float(count); float v = (float(i % 1024) / 1024.0) * 6.28318; float t = pc.time;
+        if (u < 0.2) {
+            float phi = (u / 0.2) * 3.14159; float r = 1.2 + 0.1 * sin(t * 4.0 + v * 3.0);
+            pos = vec3(r * sin(phi) * cos(v), 4.5 + r * cos(phi), r * sin(phi) * sin(v)); world_radius = 0.08;
+        } else if (u < 0.7) {
+            float h = (u - 0.2) / 0.5; float vertical = mix(4.0, 0.0, h); float radius = 1.5 * (1.0 - h * 0.4);
+            float wave = sin(h * 4.0 - t * 3.0) * (h * 1.5); pos = vec3(radius * cos(v) + wave, vertical, radius * sin(v));
+        } else {
+            float h = (u - 0.7) / 0.3; bool left = (v < 3.14159); float arm_wave = sin(t * 5.0) * 0.8;
+            vec3 start = vec3(left ? -1.0 : 1.0, 3.8, 0.0); vec3 end = vec3(left ? -3.0 : 3.0, 2.5 + arm_wave, 1.0);
+            pos = mix(start, end, h); float r = 0.3 * (1.0 - h * 0.5); pos.y += r * cos(v * 4.0); pos.z += r * sin(v * 4.0);
+        }
+        pos += (vec3(hash(global_i), hash(global_i+7), hash(global_i+13)) - 0.5) * world_radius * 0.5;
+        vec3 cyan = vec3(0.0, 1.0, 1.0); vec3 purple = vec3(1.0, 0.0, 1.0);
+        base_color = mix(cyan, purple, sin(t * 2.0) * 0.5 + 0.5) * 2.5;
+    }
+
+    pos.x += x_offset;
+    pos += pc.world_offset.xyz;
 
     // 2. PROJECTION
     vec4 view_pos = pc.view * vec4(pos, 1.0);
@@ -50,18 +156,18 @@ void main() {
     vec2 ndc_pos = clip_pos.xy / clip_pos.w;
     
     // 3. 2D COVARIANCE
-    float z = view_pos.z;
-    float scale = 0.015; 
+    float z = -view_pos.z;
     float focal_z = pc.focal / z;
-    float cov_val = focal_z * focal_z * scale;
+    float pixel_radius = focal_z * world_radius;
+    float cov_val = pixel_radius * pixel_radius;
     
-    all_projected[pc.p_id].p[i].pos = ndc_pos;
-    all_projected[pc.p_id].p[i].cov = vec4(cov_val + 0.3, 0.0, cov_val + 0.3, 0.0);
-    all_projected[pc.p_id].p[i].color_alpha = vec4(color * 0.8, 0.0);
+    all_projected[pc.p_id].p[global_i].pos = ndc_pos;
+    all_projected[pc.p_id].p[global_i].cov = vec4(cov_val, 0.0, cov_val, 0.0);
+    all_projected[pc.p_id].p[global_i].color_alpha = vec4(base_color, opacity * 2.5);
 
-    // 4. BINNING (4096 limit)
+    // 4. BINNING
     vec2 pixel_pos = (ndc_pos * 0.5 + 0.5) * vec2(pc.screen_w, pc.screen_h);
-    float radius = ceil(3.0 * sqrt(cov_val + 0.3));
+    float radius = 2.5 * pixel_radius;
     radius = min(radius, 128.0); 
 
     ivec2 min_tile = ivec2(floor((pixel_pos - radius) / 16.0));
@@ -73,12 +179,12 @@ void main() {
     min_tile = clamp(min_tile, ivec2(0), ivec2(tiles_x - 1, tiles_y - 1));
     max_tile = clamp(max_tile, ivec2(0), ivec2(tiles_x - 1, tiles_y - 1));
 
-    for (int y = min_tile.y; y <= max_tile.y; y++) {
-        for (int x = min_tile.x; x <= max_tile.x; x++) {
-            uint tile_idx = y * tiles_x + x;
+    for (int ty = min_tile.y; ty <= max_tile.y; ty++) {
+        for (int tx = min_tile.x; tx <= max_tile.x; tx++) {
+            uint tile_idx = ty * tiles_x + tx;
             uint slot = atomicAdd(all_tile_counts[pc.tc_id].count[tile_idx], 1);
-            if (slot < 4096) { // Increased capacity to 4k
-                all_tile_data[pc.td_id].data[tile_idx * 4096 + slot] = i;
+            if (slot < 4096) {
+                all_tile_data[pc.td_id].data[tile_idx * 4096 + slot] = global_i;
             }
         }
     }

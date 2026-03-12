@@ -48,6 +48,22 @@ ffi.cdef([[
         uint32_t s_id;
         uint32_t pad[31];
     } HybridPC;
+
+    typedef struct BinningPC {
+        mc_mat4 view;
+        mc_mat4 proj;
+        float focal;
+        uint32_t p_id, tc_id, td_id, count;
+        uint32_t screen_w, screen_h;
+        float time;
+        uint32_t pad[23];
+    } BinningPC;
+
+    typedef struct RasterPC {
+        uint32_t p_id, tc_id, td_id, img_id;
+        uint32_t screen_w, screen_h;
+        uint32_t pad[58];
+    } RasterPC;
 ]])
 
 function M.init()
@@ -74,6 +90,13 @@ function M.init()
 	end
 	noise_buf = mc.buffer(1024 * 4, "storage", noise_data)
 
+	-- Tile-based Binning Resources
+	local tiles_x, tiles_y = math.ceil(sw.extent.width / 16), math.ceil(sw.extent.height / 16)
+	local tile_count = tiles_x * tiles_y
+	projected_splat_buf = mc.buffer(GAUSSIAN_COUNT * 3 * 64, "storage") -- 3 assets
+	tile_count_buf = mc.buffer(tile_count * 4, "storage") -- uint32_t per tile
+	tile_data_buf = mc.buffer(tile_count * 4096 * 4, "storage") -- 4096 splat IDs per tile
+
 	-- 2. Bindless Setup
 	bindless_set = mc.gpu.get_bindless_set()
 	descriptors.update_buffer_set(
@@ -95,6 +118,36 @@ function M.init()
 		0,
 		large_count_buf.size,
 		1
+	)
+	descriptors.update_buffer_set(
+		device,
+		bindless_set,
+		0,
+		vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+		projected_splat_buf.handle,
+		0,
+		projected_splat_buf.size,
+		10 -- Arbitrary slot for projected
+	)
+	descriptors.update_buffer_set(
+		device,
+		bindless_set,
+		0,
+		vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+		tile_count_buf.handle,
+		0,
+		tile_count_buf.size,
+		11 -- Arbitrary slot for tile counts
+	)
+	descriptors.update_buffer_set(
+		device,
+		bindless_set,
+		0,
+		vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+		tile_data_buf.handle,
+		0,
+		tile_data_buf.size,
+		12 -- Arbitrary slot for tile data
 	)
 	descriptors.update_buffer_set(
 		device,
@@ -173,6 +226,30 @@ function M.init()
 		)
 	)
 
+	pipe_binning = pipeline.create_compute_pipeline(
+		device,
+		pipe_layout,
+		shader.create_module(
+			device,
+			shader.compile_glsl(
+				io.open("examples/49_compute_splatter/binning.comp"):read("*all"),
+				vk.VK_SHADER_STAGE_COMPUTE_BIT
+			)
+		)
+	)
+
+	pipe_raster = pipeline.create_compute_pipeline(
+		device,
+		pipe_layout,
+		shader.create_module(
+			device,
+			shader.compile_glsl(
+				io.open("examples/49_compute_splatter/raster.comp"):read("*all"),
+				vk.VK_SHADER_STAGE_COMPUTE_BIT
+			)
+		)
+	)
+
 	pipe_hybrid = pipeline.create_graphics_pipeline(
 		device,
 		pipe_layout,
@@ -231,6 +308,9 @@ function M.init()
 	graph.storage = graph:register_resource("StorageImg", rg.TYPE_IMAGE, storage_img.handle)
 	graph.l_splats = graph:register_resource("LargeSplats", rg.TYPE_BUFFER, large_splat_buf.handle)
 	graph.l_count = graph:register_resource("LargeCount", rg.TYPE_BUFFER, large_count_buf.handle)
+	graph.projected = graph:register_resource("Projected", rg.TYPE_BUFFER, projected_splat_buf.handle)
+	graph.tile_counts = graph:register_resource("TileCounts", rg.TYPE_BUFFER, tile_count_buf.handle)
+	graph.tile_data = graph:register_resource("TileData", rg.TYPE_BUFFER, tile_data_buf.handle)
 end
 
 function M.update()
@@ -347,9 +427,10 @@ function M.update()
 		)
 	end
 	vk.vkCmdFillBuffer(cb, large_count_buf.handle, 4, 4, 0) -- Reset only instanceCount (at offset 4)
+	vk.vkCmdFillBuffer(cb, tile_count_buf.handle, 0, tile_count_buf.size, 0) -- Reset all tile counts
 
 	local b_sync = ffi.new(
-		"VkBufferMemoryBarrier[1]",
+		"VkBufferMemoryBarrier[2]",
 		{
 			{
 				sType = vk.VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
@@ -357,6 +438,13 @@ function M.update()
 				dstAccessMask = vk.VK_ACCESS_SHADER_READ_BIT + vk.VK_ACCESS_SHADER_WRITE_BIT,
 				buffer = large_count_buf.handle,
 				size = 16,
+			},
+			{
+				sType = vk.VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
+				srcAccessMask = vk.VK_ACCESS_TRANSFER_WRITE_BIT,
+				dstAccessMask = vk.VK_ACCESS_SHADER_READ_BIT + vk.VK_ACCESS_SHADER_WRITE_BIT,
+				buffer = tile_count_buf.handle,
+				size = tile_count_buf.size,
 			},
 		}
 	)
@@ -367,7 +455,7 @@ function M.update()
 		0,
 		0,
 		nil,
-		1,
+		2,
 		b_sync,
 		0,
 		nil
@@ -394,10 +482,10 @@ function M.update()
 
 	graph:reset()
 
-	-- Pass 1: Splatting (Assigns large splats to buffer, atomics small splats)
+	-- Pass 1: Binning (Projects splats and assigns to tiles)
 	graph
-		:add_pass("Splat", function(c)
-			vk.vkCmdBindPipeline(c, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_splat)
+		:add_pass("Binning", function(c)
+			vk.vkCmdBindPipeline(c, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_binning)
 			vk.vkCmdBindDescriptorSets(
 				c,
 				vk.VK_PIPELINE_BIND_POINT_COMPUTE,
@@ -408,54 +496,38 @@ function M.update()
 				0,
 				nil
 			)
-
-			local total_count = GAUSSIAN_COUNT * 3
-			local pc_val = ffi.new("SplatPC", {
+			local pc = ffi.new("BinningPC", {
 				view = view,
 				proj = proj,
 				focal = focal,
-				large_s_id = 0,
-				large_c_id = 1,
-				count = total_count,
+				p_id = 10,
+				tc_id = 11,
+				td_id = 12,
+				count = GAUSSIAN_COUNT * 3,
 				screen_w = sw.extent.width,
 				screen_h = sw.extent.height,
 				time = M.current_time,
 				noise_id = 2,
-				asset_type = 0, -- ignored in batch mode
 				world_offset = { 0, 0, 0, 0 },
 			})
-			vk.vkCmdPushConstants(c, pipe_layout, bit.bor(vk.VK_SHADER_STAGE_ALL_GRAPHICS, vk.VK_SHADER_STAGE_COMPUTE_BIT), 0, 256, pc_val)
-			vk.vkCmdDispatch(c, math.ceil(total_count / 256), 1, 1)
+			vk.vkCmdPushConstants(
+				c,
+				pipe_layout,
+				bit.bor(vk.VK_SHADER_STAGE_ALL_GRAPHICS, vk.VK_SHADER_STAGE_COMPUTE_BIT),
+				0,
+				256,
+				pc
+			)
+			vk.vkCmdDispatch(c, math.ceil((GAUSSIAN_COUNT * 3) / 256), 1, 1)
 		end)
-		:using(
-			graph.r,
-			vk.VK_ACCESS_SHADER_WRITE_BIT,
-			vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-			vk.VK_IMAGE_LAYOUT_GENERAL
-		)
-		:using(
-			graph.g,
-			vk.VK_ACCESS_SHADER_WRITE_BIT,
-			vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-			vk.VK_IMAGE_LAYOUT_GENERAL
-		)
-		:using(
-			graph.b,
-			vk.VK_ACCESS_SHADER_WRITE_BIT,
-			vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-			vk.VK_IMAGE_LAYOUT_GENERAL
-		)
-		:using(graph.l_splats, vk.VK_ACCESS_SHADER_WRITE_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT)
-		:using(
-			graph.l_count,
-			vk.VK_ACCESS_SHADER_WRITE_BIT + vk.VK_ACCESS_SHADER_READ_BIT,
-			vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT
-		)
+		:using(graph.projected, vk.VK_ACCESS_SHADER_WRITE_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT)
+		:using(graph.tile_counts, vk.VK_ACCESS_SHADER_WRITE_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT)
+		:using(graph.tile_data, vk.VK_ACCESS_SHADER_WRITE_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT)
 
-	-- Pass 2: Resolve and Render Hybrid Large Splats
+	-- Pass 2: Raster (Tile-based splat composition)
 	graph
-		:add_pass("Resolve", function(c)
-			vk.vkCmdBindPipeline(c, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_resolve)
+		:add_pass("Raster", function(c)
+			vk.vkCmdBindPipeline(c, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_raster)
 			vk.vkCmdBindDescriptorSets(
 				c,
 				vk.VK_PIPELINE_BIND_POINT_COMPUTE,
@@ -466,89 +538,33 @@ function M.update()
 				0,
 				nil
 			)
-			local pc = ffi.new("ResolvePC", { img_id = 3, screen_w = sw.extent.width, screen_h = sw.extent.height })
-			vk.vkCmdPushConstants(c, pipe_layout, bit.bor(vk.VK_SHADER_STAGE_ALL_GRAPHICS, vk.VK_SHADER_STAGE_COMPUTE_BIT), 0, 256, pc)
+			local pc = ffi.new("RasterPC", {
+				p_id = 10,
+				tc_id = 11,
+				td_id = 12,
+				img_id = 3,
+				screen_w = sw.extent.width,
+				screen_h = sw.extent.height,
+			})
+			vk.vkCmdPushConstants(
+				c,
+				pipe_layout,
+				bit.bor(vk.VK_SHADER_STAGE_ALL_GRAPHICS, vk.VK_SHADER_STAGE_COMPUTE_BIT),
+				0,
+				256,
+				pc
+			)
 			vk.vkCmdDispatch(c, math.ceil(sw.extent.width / 16), math.ceil(sw.extent.height / 16), 1)
 		end)
-		:using(
-			graph.r,
-			vk.VK_ACCESS_SHADER_READ_BIT,
-			vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-			vk.VK_IMAGE_LAYOUT_GENERAL
-		)
-		:using(
-			graph.g,
-			vk.VK_ACCESS_SHADER_READ_BIT,
-			vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-			vk.VK_IMAGE_LAYOUT_GENERAL
-		)
-		:using(
-			graph.b,
-			vk.VK_ACCESS_SHADER_READ_BIT,
-			vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-			vk.VK_IMAGE_LAYOUT_GENERAL
-		)
+		:using(graph.projected, vk.VK_ACCESS_SHADER_READ_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT)
+		:using(graph.tile_counts, vk.VK_ACCESS_SHADER_READ_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT)
+		:using(graph.tile_data, vk.VK_ACCESS_SHADER_READ_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT)
 		:using(
 			graph.storage,
 			vk.VK_ACCESS_SHADER_WRITE_BIT,
 			vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
 			vk.VK_IMAGE_LAYOUT_GENERAL
 		)
-
-	graph
-		:add_pass("LargeSplats", function(c)
-			local color_attach = ffi.new("VkRenderingAttachmentInfo[1]")
-			color_attach[0].sType, color_attach[0].imageView, color_attach[0].imageLayout =
-				vk.VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-				storage_img.view,
-				vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
-			color_attach[0].loadOp, color_attach[0].storeOp =
-				vk.VK_ATTACHMENT_LOAD_OP_LOAD, vk.VK_ATTACHMENT_STORE_OP_STORE
-			vk.vkCmdBeginRendering(
-				c,
-				ffi.new(
-					"VkRenderingInfo",
-					{
-						sType = vk.VK_STRUCTURE_TYPE_RENDERING_INFO,
-						renderArea = { extent = sw.extent },
-						layerCount = 1,
-						colorAttachmentCount = 1,
-						pColorAttachments = color_attach,
-					}
-				)
-			)
-			vk.vkCmdSetViewport(
-				c,
-				0,
-				1,
-				ffi.new("VkViewport", { width = sw.extent.width, height = sw.extent.height, maxDepth = 1 })
-			)
-			vk.vkCmdSetScissor(c, 0, 1, ffi.new("VkRect2D", { extent = sw.extent }))
-			vk.vkCmdBindPipeline(c, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe_hybrid)
-			vk.vkCmdBindDescriptorSets(
-				c,
-				vk.VK_PIPELINE_BIND_POINT_GRAPHICS,
-				pipe_layout,
-				0,
-				1,
-				ffi.new("VkDescriptorSet[1]", { bindless_set }),
-				0,
-				nil
-			)
-			local pc = ffi.new("HybridPC", { view = view, proj = proj, s_id = 0 })
-			vk.vkCmdPushConstants(c, pipe_layout, bit.bor(vk.VK_SHADER_STAGE_ALL_GRAPHICS, vk.VK_SHADER_STAGE_COMPUTE_BIT), 0, 256, pc)
-			-- Indirect draw from the counter buffer
-			vk.vkCmdDrawIndirect(c, large_count_buf.handle, 0, 1, 16)
-			vk.vkCmdEndRendering(c)
-		end)
-		:using(
-			graph.storage,
-			vk.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-			vk.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-			vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
-		)
-		:using(graph.l_splats, vk.VK_ACCESS_SHADER_READ_BIT, vk.VK_PIPELINE_STAGE_VERTEX_SHADER_BIT)
-		:using(graph.l_count, vk.VK_ACCESS_INDIRECT_COMMAND_READ_BIT, vk.VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT)
 
 	-- Pass 3: Blit
 	graph
