@@ -24,20 +24,37 @@ local noise_buf
 local graph, sw_res = {}, {}
 
 ffi.cdef([[
+    typedef struct Projected {
+        float pos[2];
+        float depth;
+        float pad1;
+        float cov[4];
+        float color_alpha[4];
+        float sh_r[4];
+        float sh_g[4];
+        float sh_b[4];
+        float pad2[8]; // Total 128 bytes
+    } Projected;
+
     typedef struct BinningPC {
-        mc_mat4 view;
-        mc_mat4 proj;
-        float focal;
-        uint32_t p_id, tc_id, to_id, count;
-        uint32_t screen_w, screen_h;
-        float time;
-        uint32_t noise_id;
-        uint32_t pad_align[3]; // CRITICAL: 16-byte alignment gap for vec4 in GLSL
-        float world_offset[4];
-        uint32_t mode;
-        uint32_t td_id;
-        uint32_t co_id;
-        uint32_t pad[13];
+        mc_mat4 view;           // 0
+        mc_mat4 proj;           // 64
+        float focal;            // 128
+        uint32_t p_id;          // 132
+        uint32_t tc_id;         // 136
+        uint32_t to_id;         // 140
+        uint32_t count;         // 144
+        uint32_t screen_w;      // 148
+        uint32_t screen_h;      // 152
+        float time;             // 156
+        uint32_t noise_id;      // 160
+        uint32_t pad1[3];       // 164, 168, 172 -> Pad to 176
+        float cam_pos[4];       // 176
+        float world_offset[4];  // 192
+        uint32_t mode;          // 208
+        uint32_t td_id;         // 212
+        uint32_t co_id;         // 216
+        uint32_t pad2[9];       // 220...
     } BinningPC;
 
     typedef struct PrefixSumPC {
@@ -48,10 +65,16 @@ ffi.cdef([[
     } PrefixSumPC;
 
     typedef struct RasterPC {
-        uint32_t p_id, tc_id, td_id, img_id;
-        uint32_t screen_w, screen_h;
-        uint32_t to_id;
-        uint32_t pad[57];
+        uint32_t p_id;          // 0
+        uint32_t tc_id;         // 4
+        uint32_t td_id;         // 8
+        uint32_t img_id;        // 12
+        uint32_t screen_w;      // 16
+        uint32_t screen_h;      // 20
+        uint32_t to_id;         // 24
+        uint32_t pad1;          // 28
+        float cam_pos[4];       // 32
+        uint32_t pad2[52];
     } RasterPC;
 
     typedef struct HybridPC {
@@ -82,11 +105,11 @@ function M.init()
 
 	local tiles_x, tiles_y = math.ceil(sw.extent.width / 16), math.ceil(sw.extent.height / 16)
 	local tile_count = tiles_x * tiles_y
-	projected_splat_buf = mc.buffer(GAUSSIAN_COUNT * 3 * 64, "storage")
+	projected_splat_buf = mc.buffer(GAUSSIAN_COUNT * 3 * 128, "storage")
 	tile_count_buf = mc.buffer(tile_count * 4, "storage")
 	tile_offset_buf = mc.buffer(tile_count * 4, "storage")
 	tile_current_offset_buf = mc.buffer(tile_count * 4, "storage")
-	tile_data_buf = mc.buffer(16 * 1024 * 1024 * 4, "storage") -- 16M packed IDs
+	tile_data_buf = mc.buffer(16 * 1024 * 1024 * 4, "storage")
 
 	-- 2. Bindless Setup
 	bindless_set = mc.gpu.get_bindless_set()
@@ -192,7 +215,7 @@ function M.update()
 	vk.vkCmdPipelineBarrier(cb, vk.VK_PIPELINE_STAGE_TRANSFER_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nil, 2, b_sync, 0, nil)
 
 	graph:reset()
-	local pc_common = { view = view, proj = proj, focal = focal, p_id = 10, tc_id = 11, to_id = 12, count = GAUSSIAN_COUNT * 3, screen_w = sw.extent.width, screen_h = sw.extent.height, time = M.current_time, noise_id = 2, world_offset = { 0, 0, 0, 0 } }
+	local pc_common = { view = view, proj = proj, focal = focal, p_id = 10, tc_id = 11, to_id = 12, count = GAUSSIAN_COUNT * 3, screen_w = sw.extent.width, screen_h = sw.extent.height, time = M.current_time, noise_id = 2, cam_pos = { M.cam_pos[1], M.cam_pos[2], M.cam_pos[3], 0 }, world_offset = { 0, 0, 0, 0 } }
 
 	graph:add_pass("BinningCount", function(c)
 		vk.vkCmdBindPipeline(c, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_binning)
@@ -223,7 +246,8 @@ function M.update()
 	graph:add_pass("Raster", function(c)
 		vk.vkCmdBindPipeline(c, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_raster)
 		vk.vkCmdBindDescriptorSets(c, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_layout, 0, 1, ffi.new("VkDescriptorSet[1]", { bindless_set }), 0, nil)
-		vk.vkCmdPushConstants(c, pipe_layout, bit.bor(vk.VK_SHADER_STAGE_ALL_GRAPHICS, vk.VK_SHADER_STAGE_COMPUTE_BIT), 0, 256, ffi.new("RasterPC", { p_id = 10, tc_id = 11, td_id = 13, img_id = 3, screen_w = sw.extent.width, screen_h = sw.extent.height, to_id = 12 }))
+		local pc = ffi.new("RasterPC", { p_id = 10, tc_id = 11, td_id = 13, img_id = 3, screen_w = sw.extent.width, screen_h = sw.extent.height, to_id = 12, cam_pos = { M.cam_pos[1], M.cam_pos[2], M.cam_pos[3], 0 } })
+		vk.vkCmdPushConstants(c, pipe_layout, bit.bor(vk.VK_SHADER_STAGE_ALL_GRAPHICS, vk.VK_SHADER_STAGE_COMPUTE_BIT), 0, 256, pc)
 		vk.vkCmdDispatch(c, math.ceil(sw.extent.width / 16), math.ceil(sw.extent.height / 16), 1)
 	end):using(graph.projected, vk.VK_ACCESS_SHADER_READ_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT):using(graph.tile_counts, vk.VK_ACCESS_SHADER_READ_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT):using(graph.tile_offsets, vk.VK_ACCESS_SHADER_READ_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT):using(graph.tile_data, vk.VK_ACCESS_SHADER_READ_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT):using(graph.storage, vk.VK_ACCESS_SHADER_WRITE_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, vk.VK_IMAGE_LAYOUT_GENERAL)
 

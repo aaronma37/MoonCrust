@@ -7,6 +7,10 @@ struct Projected {
     float pad1;
     vec4 cov;
     vec4 color_alpha;
+    vec4 sh_r;
+    vec4 sh_g;
+    vec4 sh_b;
+    vec4 pad2[2];
 };
 
 layout(set = 0, binding = 0) buffer B0 { Projected p[]; } all_projected[];
@@ -24,6 +28,9 @@ layout(push_constant) uniform PushConstants {
     uint screen_w;
     uint screen_h;
     uint to_id;
+    uint pad1; 
+    vec4 cam_pos;
+    uint pad2[52];
 } pc;
 
 layout (local_size_x = 16, local_size_y = 16) in;
@@ -41,13 +48,14 @@ struct PrecalcSplat {
 };
 shared PrecalcSplat chunk_precalc[CHUNK_SIZE];
 
+const float SH_C1 = 0.4886025119029199;
+
 void main() {
     ivec2 pixel_coords = ivec2(gl_GlobalInvocationID.xy);
     uint tiles_x = (pc.screen_w + 15) / 16;
     uint tile_idx = gl_WorkGroupID.y * tiles_x + gl_WorkGroupID.x;
     uint local_id = gl_LocalInvocationIndex;
     
-    // 1. Load indices and depths for sorting
     uint actual_count = all_tile_counts[pc.tc_id].count[tile_idx];
     if (actual_count == 0) {
         if (pixel_coords.x < pc.screen_w && pixel_coords.y < pc.screen_h) {
@@ -64,7 +72,6 @@ void main() {
     }
     sort_n = clamp(sort_n, 2, MAX_SPLATS_PER_TILE);
 
-    // Each thread loads 8 elements (256 * 8 = 2048)
     for (uint i = 0; i < 8; i++) {
         uint idx = local_id + i * 256;
         if (idx < MAX_SPLATS_PER_TILE) {
@@ -80,7 +87,7 @@ void main() {
     
     barrier();
 
-    // 2. Bitonic Sort (Shared Memory)
+    // 2. Bitonic Sort
     for (uint k = 2; k <= sort_n; k <<= 1) {
         for (uint j = k >> 1; j > 0; j >>= 1) {
             for (uint i_base = 0; i_base < sort_n; i_base += 256) {
@@ -112,7 +119,7 @@ void main() {
     vec3 final_color = vec3(0.0);
     float T = 1.0;
 
-    // 3. Render (Pre-calculated Chunked Rendering)
+    // 3. Render
     for (uint base_i = 0; base_i < splat_count; base_i += CHUNK_SIZE) {
         uint current_chunk_size = min(CHUNK_SIZE, splat_count - base_i);
         
@@ -123,7 +130,18 @@ void main() {
             
             chunk_precalc[local_id].pos = (pr.pos * 0.5 + 0.5) * screen_size;
             chunk_precalc[local_id].inv_cov = vec3(pr.cov.z, -pr.cov.y, pr.cov.x) * inv_det * -0.5;
-            chunk_precalc[local_id].color_alpha = pr.color_alpha;
+            
+            // View-dependent SH (Direction in View Space)
+            // Reconstruct view-space direction from NDC and Depth
+            vec3 dir = normalize(vec3(pr.pos, 1.0)); // Rough approximation
+            
+            vec3 color = pr.color_alpha.rgb;
+            // Evaluated polynomial: Y1 terms
+            color.r += SH_C1 * (-dir.y * pr.sh_r.y + dir.z * pr.sh_r.z - dir.x * pr.sh_r.w);
+            color.g += SH_C1 * (-dir.y * pr.sh_g.y + dir.z * pr.sh_g.z - dir.x * pr.sh_g.w);
+            color.b += SH_C1 * (-dir.y * pr.sh_b.y + dir.z * pr.sh_b.z - dir.x * pr.sh_b.w);
+            
+            chunk_precalc[local_id].color_alpha = vec4(max(vec3(0.0), color), pr.color_alpha.a);
         }
         
         barrier();
@@ -131,21 +149,14 @@ void main() {
         for (uint i = 0; i < current_chunk_size; i++) {
             PrecalcSplat s = chunk_precalc[i];
             vec2 d = pixel_pos - s.pos;
-            
-            float power = s.inv_cov.x * d.x * d.x + 
-                          2.0 * s.inv_cov.y * d.x * d.y + 
-                          s.inv_cov.z * d.y * d.y;
-            
+            float power = s.inv_cov.x * d.x * d.x + 2.0 * s.inv_cov.y * d.x * d.y + s.inv_cov.z * d.y * d.y;
             if (power > 0.0 || power < -8.0) continue;
-            
             float alpha = s.color_alpha.a * exp(power);
             if (alpha < 0.0039) continue;
-
             final_color += T * alpha * s.color_alpha.rgb;
             T *= (1.0 - alpha);
             if (T < 0.01) break; 
         }
-        
         if (T < 0.01) break; 
         barrier(); 
     }
