@@ -52,66 +52,62 @@ void atomicAddFloat(ivec2 coords, vec3 color) {
     if (b > 0) imageAtomicAdd(all_images_channels[2], coords, b);
 }
 
-// --- PRIMITIVE LIBRARY ---
+// --- REFINED PRIMITIVES ---
 
-void splatSphere(uint i, uint count, vec3 center, float radius, float thickness, bool volumetric, vec3 color, float opacity, inout vec3 pos, inout float w_radius, inout vec3 b_color, inout float b_opacity) {
+void splatSphere(uint i, uint count, vec3 center, float radius, float softness, vec3 color, float opacity, inout vec3 pos, inout float w_radius, inout vec3 b_color, inout float b_opacity) {
+    // Fibonacci Sphere distribution for even coverage
+    float phi = acos(1.0 - 2.0 * (float(i) + 0.5) / float(count));
+    float theta = 2.399963229728 * float(i); // Golden angle
+
     float u = float(i) / float(count);
-    float v = (float(i % 1024) / 1024.0) * 6.28318;
-    float phi = u * 3.14159;
-    
+    bool is_core = (u < 0.8);
     float r = radius;
-    if (volumetric) {
-        // Cube root for uniform volume distribution
-        r *= pow(get_noise(i + 777), 0.333);
+
+    if (is_core) {
+        // Volumetric Core: clusters towards center
+        r *= pow(get_noise(i + 123), 0.6);
+        w_radius = 0.04 + get_noise(i + 456) * 0.04;
+        b_opacity = opacity;
+    } else {
+        // Soft Aura: slightly outside
+        r *= 0.9 + get_noise(i + 789) * softness;
+        w_radius = 0.06 + get_noise(i + 321) * 0.06;
+        b_opacity = opacity * 0.5;
     }
 
-    pos = center + r * vec3(sin(phi) * cos(v), cos(phi), sin(phi) * sin(v));
-    pos += normalize(pos - center) * gaussian_noise(i) * thickness;
-    
-    // Randomized scale for fullness
-    w_radius = 0.04 + get_noise(i * 3) * 0.08;
-    b_color = color * (0.8 + 0.4 * get_noise(i + 100)); // Slight color jitter
-    b_opacity = opacity;
+    pos = center + r * vec3(sin(phi) * cos(theta), sin(phi) * sin(theta), cos(phi));
+    b_color = color * (0.8 + 0.4 * get_noise(i + 555));
 }
 
-void splatBox(uint i, uint count, vec3 center, vec3 size, float thickness, vec3 color, float opacity, inout vec3 pos, inout float w_radius, inout vec3 b_color, inout float b_opacity) {
-    uint face = i % 6;
-    float v1 = get_noise(i); float v2 = get_noise(i + 512);
-    vec3 half_size = size * 0.5;
-    vec3 p = vec3(0.0); vec3 normal = vec3(0.0);
-    if (face == 0) { p = vec3(half_size.x, mix(-half_size.y, half_size.y, v1), mix(-half_size.z, half_size.z, v2)); normal = vec3(1,0,0); }
-    else if (face == 1) { p = vec3(-half_size.x, mix(-half_size.y, half_size.y, v1), mix(-half_size.z, half_size.z, v2)); normal = vec3(-1,0,0); }
-    else if (face == 2) { p = vec3(mix(-half_size.x, half_size.x, v1), half_size.y, mix(-half_size.z, half_size.z, v2)); normal = vec3(0,1,0); }
-    else if (face == 3) { p = vec3(mix(-half_size.x, half_size.x, v1), -half_size.y, mix(-half_size.z, half_size.z, v2)); normal = vec3(0,-1,0); }
-    else if (face == 4) { p = vec3(mix(-half_size.x, half_size.x, v1), mix(-half_size.y, half_size.y, v2), half_size.z); normal = vec3(0,0,1); }
-    else { p = vec3(mix(-half_size.x, half_size.x, v1), mix(-half_size.y, half_size.y, v2), -half_size.z); normal = vec3(0,0,-1); }
-    pos = center + p + normal * gaussian_noise(i) * thickness;
-    w_radius = 0.05; b_color = color; b_opacity = opacity;
-}
-
-void splatCylinder(uint i, uint count, vec3 base, vec3 top, float radius, float thickness, vec3 color, float opacity, inout vec3 pos, inout float w_radius, inout vec3 b_color, inout float b_opacity) {
+void splatCylinder(uint i, uint count, vec3 base, vec3 top, float radius, vec3 color, float opacity, inout vec3 pos, inout float w_radius, inout vec3 b_color, inout float b_opacity) {
     vec3 dir = top - base; float height = length(dir); vec3 n_dir = normalize(dir);
     vec3 tangent = normalize(abs(n_dir.x) > 0.9 ? vec3(0, 1, 0) : vec3(1, 0, 0));
     tangent = normalize(cross(n_dir, tangent)); vec3 bitangent = cross(n_dir, tangent);
+    
     float u = float(i) / float(count);
-    if (u < 0.8) {
-        float h = (u / 0.8) * height; float angle = get_noise(i) * 6.28318;
-        float r = radius + gaussian_noise(i) * thickness;
-        pos = base + n_dir * h + tangent * r * cos(angle) + bitangent * r * sin(angle);
-    } else {
-        float h = (u < 0.9) ? 0.0 : height; float r_norm = sqrt(get_noise(i)); float r = r_norm * radius;
-        float angle = get_noise(i + 512) * 6.28318;
-        pos = base + n_dir * h + tangent * r * cos(angle) + bitangent * r * sin(angle);
-        pos += n_dir * (u < 0.9 ? -1.0 : 1.0) * gaussian_noise(i + 128) * thickness;
-    }
-    w_radius = 0.05; b_color = color; b_opacity = opacity;
+    float h = get_noise(i) * height;
+    float angle = get_noise(i + 128) * 6.28318;
+    
+    float r = radius * pow(get_noise(i + 256), 0.5); // Volumetric
+    pos = base + n_dir * h + tangent * r * cos(angle) + bitangent * r * sin(angle);
+    
+    w_radius = 0.04 + get_noise(i + 333) * 0.03;
+    b_color = color;
+    b_opacity = opacity;
+}
+
+void splatBox(uint i, uint count, vec3 center, vec3 size, vec3 color, float opacity, inout vec3 pos, inout float w_radius, inout vec3 b_color, inout float b_opacity) {
+    vec3 p = vec3(get_noise(i), get_noise(i+128), get_noise(i+256)) - 0.5;
+    pos = center + p * size;
+    w_radius = 0.05;
+    b_color = color;
+    b_opacity = opacity;
 }
 
 void main() {
     uint global_i = gl_GlobalInvocationID.x;
     if (global_i >= pc.count) return;
 
-    // Batching: 16384 splats per asset
     uint asset_idx = global_i / 16384;
     uint i = global_i % 16384;
     uint count = 16384;
@@ -121,33 +117,32 @@ void main() {
     vec3 base_color = vec3(1.0);
     float opacity = 0.002;
 
-    // Side-by-side offset
     float x_offset = (float(asset_idx) - 1.0) * 5.0;
 
     if (asset_idx == 0) { // TREE
         uint trunk_count = count / 5; uint branch_count = count / 3; uint leaf_count = count - trunk_count - branch_count;
         if (i < trunk_count) {
-            splatCylinder(i, trunk_count, vec3(0, 0, 0), vec3(0, 3, 0), 0.2, 0.05, vec3(0.4, 0.2, 0.1), 0.005, pos, world_radius, base_color, opacity);
+            splatCylinder(i, trunk_count, vec3(0, 0, 0), vec3(0, 3, 0), 0.25, vec3(0.3, 0.15, 0.05), 0.006, pos, world_radius, base_color, opacity);
         } else if (i < trunk_count + branch_count) {
             uint b_i = i - trunk_count; uint b_idx = b_i % 4; uint b_sub = branch_count / 4;
             float angle = float(b_idx) * 1.57; vec3 b_end = vec3(sin(angle) * 1.5, 3.5, cos(angle) * 1.5);
-            splatCylinder(b_i % b_sub, b_sub, vec3(0, 2, 0), b_end, 0.1, 0.02, vec3(0.4, 0.2, 0.1), 0.004, pos, world_radius, base_color, opacity);
+            splatCylinder(b_i % b_sub, b_sub, vec3(0, 2, 0), b_end, 0.12, vec3(0.3, 0.15, 0.05), 0.005, pos, world_radius, base_color, opacity);
         } else {
             uint l_i = i - trunk_count - branch_count; uint l_idx = l_i % 3; uint l_sub = leaf_count / 3;
             vec3 l_centers[3] = vec3[](vec3(0, 4.5, 0), vec3(1.2, 3.8, 0.8), vec3(-1.0, 4.0, -1.2));
-            // Use VOLUMETRIC = TRUE for leaves
-            splatSphere(l_i % l_sub, l_sub, l_centers[l_idx], 1.2, 0.1, true, vec3(0.1, 0.6, 0.2), 0.004, pos, world_radius, base_color, opacity);
+            // Softness = 0.3 for fluffy leaves
+            splatSphere(l_i % l_sub, l_sub, l_centers[l_idx], 1.3, 0.3, vec3(0.1, 0.5, 0.1), 0.005, pos, world_radius, base_color, opacity);
         }
     } else if (asset_idx == 1) { // CHAIR
         uint leg_count = count / 2; uint seat_count = count / 4; uint back_count = count - leg_count - seat_count;
         if (i < leg_count) {
             uint l_idx = i % 4; uint l_sub = leg_count / 4;
             vec3 l_pos = vec3((l_idx < 2 ? 1 : -1) * 0.8, 0, (l_idx % 2 == 0 ? 1 : -1) * 0.8);
-            splatCylinder(i % l_sub, l_sub, l_pos, l_pos + vec3(0, 1.5, 0), 0.1, 0.02, vec3(0.6, 0.4, 0.2), 0.005, pos, world_radius, base_color, opacity);
+            splatCylinder(i % l_sub, l_sub, l_pos, l_pos + vec3(0, 1.5, 0), 0.1, vec3(0.5, 0.3, 0.1), 0.006, pos, world_radius, base_color, opacity);
         } else if (i < leg_count + seat_count) {
-            splatBox(i - leg_count, seat_count, vec3(0, 1.6, 0), vec3(2.0, 0.2, 2.0), 0.05, vec3(0.7, 0.5, 0.3), 0.004, pos, world_radius, base_color, opacity);
+            splatBox(i - leg_count, seat_count, vec3(0, 1.6, 0), vec3(2.0, 0.2, 2.0), vec3(0.6, 0.4, 0.2), 0.005, pos, world_radius, base_color, opacity);
         } else {
-            splatBox(i - leg_count - seat_count, back_count, vec3(0, 3.1, -0.9), vec3(2.0, 3.0, 0.2), 0.05, vec3(0.6, 0.4, 0.2), 0.004, pos, world_radius, base_color, opacity);
+            splatBox(i - leg_count - seat_count, back_count, vec3(0, 3.1, -0.9), vec3(2.0, 3.0, 0.2), vec3(0.5, 0.3, 0.1), 0.005, pos, world_radius, base_color, opacity);
         }
     } else if (asset_idx == 2) { // GHOST
         float u = float(i) / float(count); float v = (float(i % 1024) / 1024.0) * 6.28318; float t = pc.time;
