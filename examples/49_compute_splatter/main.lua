@@ -86,7 +86,7 @@ function M.init()
 	tile_count_buf = mc.buffer(tile_count * 4, "storage")
 	tile_offset_buf = mc.buffer(tile_count * 4, "storage")
 	tile_current_offset_buf = mc.buffer(tile_count * 4, "storage")
-	tile_data_buf = mc.buffer(1024 * 1024 * 4, "storage") -- 1M packed IDs
+	tile_data_buf = mc.buffer(4096 * 1024 * 4, "storage") -- 4M packed IDs
 
 	-- 2. Bindless Setup
 	bindless_set = mc.gpu.get_bindless_set()

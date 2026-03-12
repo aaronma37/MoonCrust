@@ -23,12 +23,13 @@ layout(push_constant) uniform PushConstants {
     uint img_id;
     uint screen_w;
     uint screen_h;
-    uint to_id; // Now matches the order in main.lua
+    uint to_id;
 } pc;
 
 layout (local_size_x = 16, local_size_y = 16) in;
 
-#define MAX_SPLATS_PER_TILE 2048
+// Bumping to 4096. Uses 32KB shared memory (4096 * 8 bytes).
+#define MAX_SPLATS_PER_TILE 4096
 shared uint shared_indices[MAX_SPLATS_PER_TILE];
 shared float shared_depths[MAX_SPLATS_PER_TILE];
 
@@ -37,24 +38,28 @@ void main() {
     uint tile_idx = gl_WorkGroupID.y * tiles_x + gl_WorkGroupID.x;
     uint local_id = gl_LocalInvocationIndex;
     
-    // 1. Load splats for this tile from PACKED buffer
-    uint splat_count = min(MAX_SPLATS_PER_TILE, all_tile_counts[pc.tc_id].count[tile_idx]);
+    // 1. Load splats for this tile
+    uint actual_count = all_tile_counts[pc.tc_id].count[tile_idx];
+    uint splat_count = min(MAX_SPLATS_PER_TILE, actual_count);
     uint base_offset = all_tile_offsets[pc.to_id].offsets[tile_idx];
 
-    // Find next power of two for sorting
     uint sort_n = 1;
     if (splat_count > 0) {
         sort_n = 1 << (findMSB(splat_count - 1) + 1);
     }
     sort_n = clamp(sort_n, 2, MAX_SPLATS_PER_TILE);
 
-    for (uint i = local_id; i < MAX_SPLATS_PER_TILE; i += 256) {
-        if (i < splat_count) {
-            uint splat_idx = all_tile_data[pc.td_id].data[base_offset + i];
-            shared_indices[i] = splat_idx;
-            shared_depths[i] = all_projected[pc.p_id].p[splat_idx].depth;
-        } else {
-            shared_depths[i] = 1e10; // Sorting Closest to Furthest
+    // Each thread loads 16 elements to hit 4096 total
+    for (uint i = 0; i < 16; i++) {
+        uint idx = local_id + i * 256;
+        if (idx < MAX_SPLATS_PER_TILE) {
+            if (idx < splat_count) {
+                uint splat_idx = all_tile_data[pc.td_id].data[base_offset + idx];
+                shared_indices[idx] = splat_idx;
+                shared_depths[idx] = all_projected[pc.p_id].p[splat_idx].depth;
+            } else {
+                shared_depths[idx] = 1e10; 
+            }
         }
     }
     
@@ -63,23 +68,24 @@ void main() {
     // 2. Bitonic Sort
     for (uint k = 2; k <= sort_n; k <<= 1) {
         for (uint j = k >> 1; j > 0; j >>= 1) {
-            uint i = local_id;
-            while (i < sort_n) {
-                uint ixj = i ^ j;
-                if (ixj > i) {
-                    bool ascending = (i & k) == 0;
-                    float d1 = shared_depths[i];
-                    float d2 = shared_depths[ixj];
-                    if ((ascending && d1 > d2) || (!ascending && d1 < d2)) {
-                        float temp_d = shared_depths[i];
-                        shared_depths[i] = shared_depths[ixj];
-                        shared_depths[ixj] = temp_d;
-                        uint temp_idx = shared_indices[i];
-                        shared_indices[i] = shared_indices[ixj];
-                        shared_indices[ixj] = temp_idx;
+            for (uint i_base = 0; i_base < sort_n; i_base += 256) {
+                uint i = i_base + local_id;
+                if (i < sort_n) {
+                    uint ixj = i ^ j;
+                    if (ixj > i) {
+                        bool ascending = (i & k) == 0;
+                        float d1 = shared_depths[i];
+                        float d2 = shared_depths[ixj];
+                        if ((ascending && d1 > d2) || (!ascending && d1 < d2)) {
+                            float temp_d = shared_depths[i];
+                            shared_depths[i] = shared_depths[ixj];
+                            shared_depths[ixj] = temp_d;
+                            uint temp_idx = shared_indices[i];
+                            shared_indices[i] = shared_indices[ixj];
+                            shared_indices[ixj] = temp_idx;
+                        }
                     }
                 }
-                i += 256; 
             }
             barrier();
         }
