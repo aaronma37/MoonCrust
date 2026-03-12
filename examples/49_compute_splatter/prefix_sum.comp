@@ -14,9 +14,11 @@ layout(push_constant) uniform PushConstants {
 
 void main() {
     uint sum = 0;
-    // Robust serial scan for any number of tiles (up to 16k+)
     for (uint i = 0; i < pc.num_tiles; i++) {
         uint val = all_tile_counts[pc.tc_id].counts[i];
+        
+        // DETERMINISTIC FIX: Offsets must match the TRUE counts
+        // so that Tile B's start point is correct regardless of Tile A's contents.
         all_tile_offsets[pc.to_id].offsets[i] = sum;
         sum += val;
     }
