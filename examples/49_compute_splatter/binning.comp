@@ -3,7 +3,8 @@
 
 struct Projected {
     vec2 pos;
-    vec2 pad1;
+    float depth; // Store depth for sorting
+    float pad1;
     vec4 cov;
     vec4 color_alpha;
 };
@@ -30,7 +31,7 @@ layout(push_constant) uniform PushConstants {
 
 layout (local_size_x = 256) in;
 
-// --- HASH-BASED NOISE (Prevents patterns from small noise tables) ---
+// --- HASH-BASED NOISE ---
 float hash(uint x) {
     x = ((x >> 16) ^ x) * 0x45d9f3b;
     x = ((x >> 16) ^ x) * 0x45d9f3b;
@@ -39,7 +40,6 @@ float hash(uint x) {
 }
 
 float get_noise(uint seed) {
-    // Mix the lookup table with a hash to break repetition
     float raw = noise_table[pc.noise_id].data[seed % 1024];
     return fract(raw + hash(seed));
 }
@@ -90,7 +90,6 @@ void main() {
     uint global_i = gl_GlobalInvocationID.x;
     if (global_i >= pc.count) return;
 
-    // Budget fixed to 16k per asset
     uint points_per_asset = 16384;
     uint asset_idx = global_i / points_per_asset;
     uint i = global_i % points_per_asset;
@@ -162,8 +161,9 @@ void main() {
     float cov_val = pixel_radius * pixel_radius;
     
     all_projected[pc.p_id].p[global_i].pos = ndc_pos;
+    all_projected[pc.p_id].p[global_i].depth = z; // Store view-space depth
     all_projected[pc.p_id].p[global_i].cov = vec4(cov_val, 0.0, cov_val, 0.0);
-    all_projected[pc.p_id].p[global_i].color_alpha = vec4(base_color, opacity * 2.5);
+    all_projected[pc.p_id].p[global_i].color_alpha = vec4(base_color, opacity * 10.0);
 
     // 4. BINNING
     vec2 pixel_pos = (ndc_pos * 0.5 + 0.5) * vec2(pc.screen_w, pc.screen_h);
