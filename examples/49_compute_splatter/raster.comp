@@ -1,0 +1,71 @@
+#version 450
+#extension GL_EXT_nonuniform_qualifier : require
+
+struct Projected {
+    vec2 pos;
+    vec2 pad1;
+    vec4 cov;
+    vec4 color_alpha;
+};
+
+layout(set = 0, binding = 0) buffer B0 { Projected p[]; } all_projected[];
+layout(set = 0, binding = 0) buffer B1 { uint count[]; } all_tile_counts[];
+layout(set = 0, binding = 0) buffer B2 { uint data[]; } all_tile_data[];
+
+layout(set = 0, binding = 2, rgba32f) uniform writeonly image2D all_images[];
+
+layout(push_constant) uniform PushConstants {
+    uint p_id;
+    uint tc_id;
+    uint td_id;
+    uint img_id;
+    uint screen_w;
+    uint screen_h;
+} pc;
+
+layout (local_size_x = 16, local_size_y = 16) in;
+
+shared uint shared_indices[4096]; // Match new 4k capacity
+
+void main() {
+    uint tiles_x = (pc.screen_w + 15) / 16;
+    uint tile_idx = gl_WorkGroupID.y * tiles_x + gl_WorkGroupID.x;
+    uint local_id = gl_LocalInvocationIndex;
+    
+    uint splat_count = min(4096, all_tile_counts[pc.tc_id].count[tile_idx]);
+    for (uint i = local_id; i < splat_count; i += 256) {
+        shared_indices[i] = all_tile_data[pc.td_id].data[tile_idx * 4096 + i];
+    }
+    
+    barrier();
+
+    ivec2 pixel_coords = ivec2(gl_GlobalInvocationID.xy);
+    if (pixel_coords.x >= pc.screen_w || pixel_coords.y >= pc.screen_h) return;
+
+    vec2 pixel_pos = vec2(pixel_coords) + 0.5;
+    vec3 final_color = vec3(0.01, 0.01, 0.03); 
+
+    for (uint i = 0; i < splat_count; i++) {
+        uint splat_idx = shared_indices[i];
+        Projected pr = all_projected[pc.p_id].p[splat_idx];
+        
+        vec2 d = pixel_pos - (pr.pos * 0.5 + 0.5) * vec2(pc.screen_w, pc.screen_h);
+        
+        float max_r2 = pr.cov.x * 9.0; 
+        if (dot(d, d) > max_r2) continue;
+
+        float det = pr.cov.x * pr.cov.z - pr.cov.y * pr.cov.y;
+        if (det < 0.0001) continue;
+        float inv_det = 1.0 / det;
+        vec3 inv_cov = vec3(pr.cov.z, -pr.cov.y, pr.cov.x) * inv_det;
+        
+        float power = -0.5 * (inv_cov.x * d.x * d.x + 
+                              2.0 * inv_cov.y * d.x * d.y + 
+                              inv_cov.z * d.y * d.y);
+        
+        if (power > 0.0) continue;
+        final_color += pr.color_alpha.rgb * exp(power);
+    }
+
+    imageStore(all_images[pc.img_id], pixel_coords, vec4(final_color, 1.0));
+}

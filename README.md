@@ -84,6 +84,10 @@ MoonCrust includes a wide range of examples demonstrating everything from basic 
 *   **18_voronoi_sdf_graph**: Real-time generation of 3D Voronoi graphs from Signed Distance Field sites.
 *   **23_sa_tsp_massing**: Solving the Traveling Salesperson Problem (TSP) using parallel Simulated Annealing chains.
 *   **25_voxel_atrium / 28_voxel_world**: Efficient voxel-based world generation and rendering.
+*   **46_gaussian_splatting**: High-performance 3D Gaussian Splat rendering with GPU-based projection and bitonic sorting.
+*   **47_neurosymbolic_gaussian**: Real-time generation of Gaussian Splats using a hybrid approach: symbolic geometry (torus) refined by a neural network (MLP) for position, scale, and color.
+*   **48_neurosymbolic_ghost**: Advanced asset generation using 131k Gaussian Splats to create a wispy, translucent ghost with a waving tail, driven by symbolic movement and neural surface refinement.
+*   **49_compute_splatter**: Pure Compute Software Rasterizer for Gaussian Splats. Uses tile-based binning and additive blending in compute shaders to bypass the traditional graphics pipeline for ultra-high-performance energy effects.
 
 ### ⚙️ Optimization & Solvers
 *   **34_optimal_transport**: Computing the Wasserstein distance and optimal transport plans via Sinkhorn iterations.

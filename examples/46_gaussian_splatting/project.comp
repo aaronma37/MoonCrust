@@ -1,0 +1,106 @@
+#version 450
+#extension GL_EXT_nonuniform_qualifier : require
+
+struct Gaussian {
+    vec3 pos;
+    float opacity;
+    vec3 scale;
+    float pad1;
+    vec4 rot; // quaternion
+    vec3 color;
+    float pad2;
+};
+
+struct Projected {
+    vec2 pos;
+    vec3 cov; // 2D covariance (vec3: x2, xy, y2)
+    vec4 color;
+    float depth;
+};
+
+struct SortEntry {
+    uint key;   // depth (smaller = further for back-to-front)
+    uint value; // index
+};
+
+layout(set = 0, binding = 0) buffer GaussianBuffer { Gaussian gaussians[]; } all_gaussians[];
+layout(set = 0, binding = 0) buffer ProjectedBuffer { Projected projected[]; } all_projected[];
+layout(set = 0, binding = 0) buffer SortBuffer { SortEntry entries[]; } all_sort_buffers[];
+
+layout(push_constant) uniform PushConstants {
+    mat4 view;
+    mat4 proj;
+    float focal_y;
+    float focal_x;
+    uint g_id;
+    uint p_id;
+    uint s_id;
+    uint count;
+} pc;
+
+layout (local_size_x = 256) in;
+
+mat3 quatToMat3(vec4 q) {
+    float r = q.x;
+    float x = q.y;
+    float y = q.z;
+    float z = q.w;
+    return mat3(
+        1.0 - 2.0 * (y * y + z * z), 2.0 * (x * y - r * z), 2.0 * (x * z + r * y),
+        2.0 * (x * y + r * z), 1.0 - 2.0 * (x * x + z * z), 2.0 * (y * z - r * x),
+        2.0 * (x * z - r * y), 2.0 * (y * z + r * x), 1.0 - 2.0 * (x * x + y * y)
+    );
+}
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= pc.count) return;
+
+    Gaussian g = all_gaussians[pc.g_id].gaussians[i];
+    
+    vec4 view_pos = pc.view * vec4(g.pos, 1.0);
+    
+    // Frustum culling (simple)
+    if (view_pos.z > -0.1) {
+        all_sort_buffers[pc.s_id].entries[i].key = 0xFFFFFFFF;
+        return;
+    }
+
+    vec4 clip_pos = pc.proj * view_pos;
+
+    // Compute 3D Covariance
+    mat3 R = quatToMat3(g.rot);
+    mat3 S = mat3(0.0);
+    S[0][0] = g.scale.x;
+    S[1][1] = g.scale.y;
+    S[2][2] = g.scale.z;
+    mat3 M = R * S;
+    mat3 Sigma = M * transpose(M);
+
+    // Compute 2D Covariance
+    float z = view_pos.z; // z is negative
+    mat3 J = mat3(
+        pc.focal_x / z, 0.0, -(pc.focal_x * view_pos.x) / (z * z),
+        0.0, pc.focal_y / z, -(pc.focal_y * view_pos.y) / (z * z),
+        0.0, 0.0, 0.0
+    );
+
+    mat3 W = mat3(pc.view);
+    mat3 T = J * W;
+    mat3 cov2d = T * Sigma * transpose(T);
+
+    // Add low-pass filter (0.3 pixel anti-aliasing)
+    cov2d[0][0] += 0.3;
+    cov2d[1][1] += 0.3;
+
+    // Output
+    all_projected[pc.p_id].projected[i].pos = clip_pos.xy / clip_pos.w;
+    all_projected[pc.p_id].projected[i].cov = vec3(cov2d[0][0], cov2d[0][1], cov2d[1][1]);
+    all_projected[pc.p_id].projected[i].color = vec4(g.color, g.opacity);
+    all_projected[pc.p_id].projected[i].depth = -z;
+
+    // Sorting: back-to-front. Furthest first = smallest key.
+    float depth = -z;
+    all_sort_buffers[pc.s_id].entries[i].key = uint(max(0.0, 10000.0 - depth) * 1000.0);
+    all_sort_buffers[pc.s_id].entries[i].value = i;
+}
