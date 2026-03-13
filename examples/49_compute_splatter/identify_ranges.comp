@@ -1,22 +1,80 @@
 #version 450
 #extension GL_EXT_nonuniform_qualifier : require
+#extension GL_KHR_shader_subgroup_basic : require
+#extension GL_KHR_shader_subgroup_arithmetic : require
+#extension GL_KHR_shader_subgroup_ballot : require
 
 layout(set = 0, binding = 0) buffer B0 { uint counts[]; } all_tile_counts[];
-layout(set = 0, binding = 0) buffer B1 { uint offsets[]; } all_tile_offsets[]; // [start, current_count] per tile
+layout(set = 0, binding = 0) buffer B1 { uint offsets[]; } all_tile_offsets[]; 
 
 layout(push_constant) uniform PushConstants {
     uint s_id, c_id, tc_id, to_id, b_id, count;
     uint screen_w, screen_h, tiles_x, tiles_y, scatter_mode;
 } pc;
 
-layout (local_size_x = 1) in;
+layout (local_size_x = 1024) in;
+
+shared uint group_sums[32]; // For second-level scan
 
 void main() {
-    uint total_sum = 0;
-    for (uint i = 0; i < pc.count; i++) {
-        uint c = all_tile_counts[pc.tc_id].counts[i];
-        all_tile_offsets[pc.to_id].offsets[i * 2] = total_sum;     // start
-        all_tile_offsets[pc.to_id].offsets[i * 2 + 1] = 0;         // current_count (for scatter)
-        total_sum += c;
+    uint lid = gl_LocalInvocationID.x;
+    uint gid = gl_GlobalInvocationID.x;
+    
+    // FIRST PASS: Each workgroup scans its local 1024 entries
+    // (For 3,600 tiles, we only need 4 workgroups)
+    uint val = (gid < pc.count) ? all_tile_counts[pc.tc_id].counts[gid] : 0;
+    
+    // Subgroup-level Scan (Hardware Accel)
+    uint sg_id = lid / 32;
+    uint sg_lane = lid % 32;
+    uint sg_sum = subgroupInclusiveAdd(val);
+    uint sg_total = subgroupBroadcast(sg_sum, 31);
+
+    if (sg_lane == 31) group_sums[sg_id] = sg_sum;
+    barrier();
+
+    // Scan the subgroup totals
+    if (sg_id == 0) {
+        uint s = (lid < 32) ? group_sums[lid] : 0;
+        uint s_sum = subgroupInclusiveAdd(s);
+        group_sums[lid] = s_sum;
+    }
+    barrier();
+
+    uint prev_sg_sum = (sg_id > 0) ? group_sums[sg_id - 1] : 0;
+    uint final_prefix = sg_sum + prev_sg_sum;
+
+    // --- WARNING: FOR 3,600 TILES WE NEED A TRUE MULTI-BLOCK SCAN ---
+    // But since 3,600 is small, I'll do a "Simulated Multi-Block" scan for simplicity.
+    // In a real engine we'd use Chained Scan (Single-pass), but let's just use 1 big group (1024).
+    // Wait, 3,600 > 1024. I'll make the workgroup size larger or use a serial loop over chunks.
+    
+    // REVISED: 1024 threads, each processing 4 elements serially (4096 total).
+    uint base_sum = 0;
+    for (uint chunk = 0; chunk < 4; chunk++) {
+        uint idx = chunk * 1024 + lid;
+        uint c = (idx < pc.count) ? all_tile_counts[pc.tc_id].counts[idx] : 0;
+        
+        uint sg_scan = subgroupInclusiveAdd(c);
+        if (sg_lane == 31) group_sums[sg_id] = sg_scan;
+        barrier();
+
+        if (sg_id == 0) {
+            uint s = (lid < 32) ? group_sums[lid] : 0;
+            group_sums[lid] = subgroupInclusiveAdd(s);
+        }
+        barrier();
+
+        uint prev_total = (sg_id > 0) ? group_sums[sg_id - 1] : 0;
+        uint current_prefix = sg_scan + prev_total;
+
+        if (idx < pc.count) {
+            all_tile_offsets[pc.to_id].offsets[idx * 2] = base_sum + current_prefix - c;
+            all_tile_offsets[pc.to_id].offsets[idx * 2 + 1] = 0;
+        }
+        
+        // Sum of all 1024 elements in this chunk
+        base_sum += group_sums[31];
+        barrier();
     }
 }

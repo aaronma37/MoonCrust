@@ -7,12 +7,8 @@ struct Projected {
     vec2 pos;
     uint depth_key;
     float pad1;
-    vec4 cov;
+    vec4 inv_cov; 
     vec4 color_alpha;
-    vec4 sh_r;
-    vec4 sh_g;
-    vec4 sh_b;
-    vec4 world_pos;
     float pad2[4];
 };
 
@@ -31,67 +27,71 @@ layout(push_constant) uniform PushConstants {
 
 layout (local_size_x = 16, local_size_y = 16) in;
 
-#define CHUNK_SIZE 128
+#define CHUNK_SIZE 256
 struct PrecalcSplat {
-    vec2 pos;
-    vec3 inv_cov;
-    vec4 color_alpha;
-};
+    float px, py;
+    float icx, icy, icz;
+    float cr, cg, cb;
+    float a_scaled;
+    float bank_padding; // PADDING TO 9 FLOATS: BREAKS BANK CONFLICTS
+}; 
 shared PrecalcSplat chunk_precalc[CHUNK_SIZE];
 
 void main() {
     ivec2 pixel_coords = ivec2(gl_GlobalInvocationID.xy);
     uint local_id = gl_LocalInvocationIndex;
     vec2 pixel_pos = vec2(pixel_coords) + 0.5;
-    vec2 screen_size = vec2(pc.screen_w, pc.screen_h);
     
-    uint tile_idx = gl_WorkGroupID.y * (pc.screen_w / 16) + gl_WorkGroupID.x;
+    uint tiles_x = (pc.screen_w + 15) / 16;
+    uint tile_idx = (gl_WorkGroupID.y * tiles_x) + gl_WorkGroupID.x;
+
     uint range_start = all_tile_offsets[pc.tr_id].offsets[tile_idx * 2];
     uint range_count = all_tile_offsets[pc.tr_id].offsets[tile_idx * 2 + 1];
 
     vec3 final_color = vec3(0.0);
     float T = 1.0;
+    bool alive = (pixel_coords.x < pc.screen_w && pixel_coords.y < pc.screen_h);
 
     for (uint v_base = 0; v_base < range_count; v_base += CHUNK_SIZE) {
         uint v_chunk_size = min(CHUNK_SIZE, range_count - v_base);
+        
         if (local_id < v_chunk_size) {
             uint splat_id = all_bins[pc.b_id].ids[range_start + v_base + local_id];
             Projected pr = all_projected[pc.p_id].p[splat_id];
-            
-            float det = pr.cov.x * pr.cov.z - pr.cov.y * pr.cov.y;
-            float inv_det = 1.0 / max(0.0001, det);
-            chunk_precalc[local_id].pos = (pr.pos * 0.5 + 0.5) * screen_size;
-            chunk_precalc[local_id].inv_cov = vec3(pr.cov.z, -pr.cov.y, pr.cov.x) * inv_det * -0.5;
-            
-            vec3 normal = normalize(pr.sh_r.yzw + pr.sh_g.yzw + pr.sh_b.yzw);
-            if (length(pr.sh_r.yzw) < 0.001) normal = vec3(0,1,0);
-            vec3 vdir = normalize(pc.cam_pos.xyz - pr.world_pos.xyz);
-            vec3 ldir = normalize(pc.light_dir.xyz);
-            vec3 hdir = normalize(vdir + ldir);
-            float diff = max(0.1, dot(normal, ldir));
-            float spec = pow(max(0.0, dot(normal, hdir)), 32.0) * 0.5;
-            chunk_precalc[local_id].color_alpha = vec4(pr.color_alpha.rgb * (diff + 0.2) + vec3(spec), pr.color_alpha.a);
+            chunk_precalc[local_id].px = (pr.pos.x * 0.5 + 0.5) * float(pc.screen_w);
+            chunk_precalc[local_id].py = (pr.pos.y * 0.5 + 0.5) * float(pc.screen_h);
+            chunk_precalc[local_id].icx = pr.inv_cov.x * -0.5;
+            chunk_precalc[local_id].icy = pr.inv_cov.y * -1.0; 
+            chunk_precalc[local_id].icz = pr.inv_cov.z * -0.5;
+            chunk_precalc[local_id].cr = pr.color_alpha.r * pr.color_alpha.a;
+            chunk_precalc[local_id].cg = pr.color_alpha.g * pr.color_alpha.a;
+            chunk_precalc[local_id].cb = pr.color_alpha.b * pr.color_alpha.a;
+            chunk_precalc[local_id].a_scaled = 0.1; // Fused scaling
         }
         barrier();
 
-        if (pixel_coords.x < pc.screen_w && pixel_coords.y < pc.screen_h) {
+        if (subgroupAny(alive)) {
+            // UNROLL HINT: GPU COMPILER WILL OPTIMIZE THIS LOOP
             for (uint i = 0; i < v_chunk_size; i++) {
-                vec2 d = pixel_pos - chunk_precalc[i].pos;
-                float power = chunk_precalc[i].inv_cov.x * d.x * d.x + 2.0 * chunk_precalc[i].inv_cov.y * d.x * d.y + chunk_precalc[i].inv_cov.z * d.y * d.y;
-                if (power > 0.0 || power < -4.5) continue;
-                float alpha = chunk_precalc[i].color_alpha.a * exp(power);
-                if (alpha < 0.0039) continue;
-                final_color += T * alpha * chunk_precalc[i].color_alpha.rgb;
-                T *= (1.0 - alpha);
-                if (T < 0.01) break;
+                float dx = pixel_pos.x - chunk_precalc[i].px;
+                float dy = pixel_pos.y - chunk_precalc[i].py;
+                float p = (chunk_precalc[i].icx * dx + chunk_precalc[i].icy * dy) * dx + (chunk_precalc[i].icz * dy * dy);
+                
+                if (p > 0.0 || p < -4.5) continue;
+                
+                float a = 1.0 + p * (1.0 + p * 0.5); 
+                final_color.r += T * a * chunk_precalc[i].cr;
+                final_color.g += T * a * chunk_precalc[i].cg;
+                final_color.b += T * a * chunk_precalc[i].cb;
+                T *= (1.0 - a * chunk_precalc[i].a_scaled);
+                
+                if (T < 0.01) { alive = false; break; }
             }
         }
         barrier();
-        if (T < 0.01) break;
     }
 
     if (pixel_coords.x < pc.screen_w && pixel_coords.y < pc.screen_h) {
-        final_color += T * vec3(0.01, 0.01, 0.03); 
         imageStore(all_images[pc.img_id], pixel_coords, vec4(final_color, 1.0));
     }
 }

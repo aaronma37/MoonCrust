@@ -46,9 +46,9 @@ function M.new(instance, physical_device, device, window, old_swapchain, use_srg
     local modes = ffi.new("VkPresentModeKHR[?]", mode_count[0])
     vk.vkGetPhysicalDeviceSurfacePresentModesKHR(physical_device, self.surface, mode_count, modes)
     
-    local present_mode = vk.VK_PRESENT_MODE_FIFO_KHR
+    local present_mode = vk.VK_PRESENT_MODE_IMMEDIATE_KHR
     for i=0, mode_count[0]-1 do
-        if modes[i] == vk.VK_PRESENT_MODE_MAILBOX_KHR then present_mode = modes[i] break end
+        if modes[i] == vk.VK_PRESENT_MODE_IMMEDIATE_KHR then present_mode = modes[i] break end
     end
 
     local usage = vk.VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT

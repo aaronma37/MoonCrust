@@ -1,9 +1,9 @@
 #version 450
 #extension GL_EXT_nonuniform_qualifier : require
+#extension GL_KHR_shader_subgroup_basic : require
+#extension GL_KHR_shader_subgroup_arithmetic : require
 
-layout (local_size_x = 1) in; 
-
-layout(set = 0, binding = 0) buffer B0 { uint counts[]; } all_histograms[];
+layout(set = 0, binding = 0) buffer B0 { uint histogram[]; } all_histograms[];
 
 layout(push_constant) uniform PushConstants {
     uint buf_id;
@@ -13,11 +13,34 @@ layout(push_constant) uniform PushConstants {
     uint count;
 } pc;
 
+layout (local_size_x = 256) in;
+
+shared uint sg_sums[8]; // 256 / 32 = 8 subgroups
+
 void main() {
-    uint sum = 0;
-    for (uint i = 0; i < 256; i++) {
-        uint val = all_histograms[pc.hist_id].counts[i];
-        all_histograms[pc.hist_id].counts[i] = sum;
-        sum += val;
+    uint lid = gl_LocalInvocationID.x;
+    uint sg_id = lid / 32;
+    uint sg_lane = lid % 32;
+    
+    uint val = all_histograms[pc.hist_id].histogram[lid];
+    
+    // 1. Subgroup scan
+    uint scan = subgroupInclusiveAdd(val);
+    
+    // 2. Share subgroup totals
+    if (sg_lane == 31) sg_sums[sg_id] = scan;
+    barrier();
+    
+    // 3. Scan the subgroup totals in the first subgroup
+    if (sg_id == 0) {
+        uint s = (lid < 8) ? sg_sums[lid] : 0;
+        sg_sums[lid] = subgroupInclusiveAdd(s);
     }
+    barrier();
+    
+    // 4. Combine results
+    uint prev_sg_sum = (sg_id > 0) ? sg_sums[sg_id - 1] : 0;
+    uint final_exclusive_scan = (scan + prev_sg_sum) - val;
+    
+    all_histograms[pc.hist_id].histogram[lid] = final_exclusive_scan;
 }
