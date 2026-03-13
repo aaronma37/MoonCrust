@@ -1,83 +1,22 @@
 #version 450
 #extension GL_EXT_nonuniform_qualifier : require
 
-struct CullData {
-    vec2 pos;
-    float radius;
-    uint pad;
-};
-
-struct ClusterData {
-    float min_x, min_y, max_x, max_y;
-};
-
-struct SortEntry {
-    uint depth_key;
-    uint splat_id;
-};
-
-layout(set = 0, binding = 0) buffer B0 { SortEntry entries[]; } all_sort_bufs[];
-layout(set = 0, binding = 0) buffer B1 { CullData c[]; } all_cull_data[];
-layout(set = 0, binding = 0) buffer B2 { ClusterData cl[]; } all_clusters[];
+layout(set = 0, binding = 0) buffer B0 { uint counts[]; } all_tile_counts[];
+layout(set = 0, binding = 0) buffer B1 { uint offsets[]; } all_tile_offsets[]; // [start, current_count] per tile
 
 layout(push_constant) uniform PushConstants {
-    uint s_id, c_id, cl_id, count;
-    uint screen_w, screen_h;
+    uint s_id, c_id, tc_id, to_id, b_id, count;
+    uint screen_w, screen_h, tiles_x, tiles_y, scatter_mode;
 } pc;
 
-layout (local_size_x = 256) in;
-
-// Global Shared memory
-shared float s_min_x[256];
-shared float s_min_y[256];
-shared float s_max_x[256];
-shared float s_max_y[256];
+layout (local_size_x = 1) in;
 
 void main() {
-    uint cluster_id = gl_WorkGroupID.x;
-    uint local_id = gl_LocalInvocationIndex;
-    
-    uint base_idx = cluster_id * 256;
-    uint global_idx = base_idx + local_id;
-
-    vec4 my_bounds = vec4(1e10, 1e10, -1e10, -1e10);
-
-    if (global_idx < pc.count) {
-        SortEntry entry = all_sort_bufs[pc.s_id].entries[global_idx];
-        if (entry.depth_key != 0xFFFFFFFF) {
-            uint s_id = entry.splat_id;
-            CullData cd = all_cull_data[pc.c_id].c[s_id];
-            
-            vec2 screen_pos = (cd.pos * 0.5 + 0.5) * vec2(pc.screen_w, pc.screen_h);
-            my_bounds = vec4(
-                screen_pos.x - cd.radius,
-                screen_pos.y - cd.radius,
-                screen_pos.x + cd.radius,
-                screen_pos.y + cd.radius
-            );
-        }
-    }
-
-    s_min_x[local_id] = my_bounds.x;
-    s_min_y[local_id] = my_bounds.y;
-    s_max_x[local_id] = my_bounds.z;
-    s_max_y[local_id] = my_bounds.w;
-    barrier();
-
-    for (uint stride = 128; stride > 0; stride >>= 1) {
-        if (local_id < stride) {
-            s_min_x[local_id] = min(s_min_x[local_id], s_min_x[local_id + stride]);
-            s_min_y[local_id] = min(s_min_y[local_id], s_min_y[local_id + stride]);
-            s_max_x[local_id] = max(s_max_x[local_id], s_max_x[local_id + stride]);
-            s_max_y[local_id] = max(s_max_y[local_id], s_max_y[local_id + stride]);
-        }
-        barrier();
-    }
-
-    if (local_id == 0) {
-        all_clusters[pc.cl_id].cl[cluster_id].min_x = s_min_x[0];
-        all_clusters[pc.cl_id].cl[cluster_id].min_y = s_min_y[0];
-        all_clusters[pc.cl_id].cl[cluster_id].max_x = s_max_x[0];
-        all_clusters[pc.cl_id].cl[cluster_id].max_y = s_max_y[0];
+    uint total_sum = 0;
+    for (uint i = 0; i < pc.count; i++) {
+        uint c = all_tile_counts[pc.tc_id].counts[i];
+        all_tile_offsets[pc.to_id].offsets[i * 2] = total_sum;     // start
+        all_tile_offsets[pc.to_id].offsets[i * 2 + 1] = 0;         // current_count (for scatter)
+        total_sum += c;
     }
 }

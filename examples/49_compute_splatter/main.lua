@@ -12,14 +12,17 @@ local bit = require("bit")
 local M = { cam_pos = { 0, 0, 8 }, cam_rot = { 0, 0 }, current_time = 0, last_frame_ticks = 0, fps_frames = 0, fps_timer = 0 }
 
 -- CONFIG
-local GAUSSIAN_COUNT = 16384
-local SORT_COUNT = 65536 
-local CLUSTER_COUNT = 256 -- 65536 / 256
+local GAUSSIAN_COUNT = 32768
+local MAX_SORT_COUNT = 524288 -- Increased for better coverage
+local TILE_SIZE = 16
+local NUM_TILES_X = math.ceil(1280 / TILE_SIZE) -- Fixed for now, will dynamic
+local NUM_TILES_Y = math.ceil(720 / TILE_SIZE)
+local TOTAL_TILES = NUM_TILES_X * NUM_TILES_Y
 
 local device, queue, graphics_family, sw, pipe_layout, pipe_project, pipe_raster, pipe_sort, pipe_cluster
 local bindless_set, cb, frame_fence, image_available
 local storage_img
-local projected_splat_buf, cull_data_buf, sort_buf, sort_buf_alt, cluster_buf, noise_buf, count_buf, histogram_buf
+local projected_splat_buf, cull_data_buf, sort_buf, sort_buf_alt, tile_count_buf, tile_offset_buf, bin_buf, count_buf, histogram_buf
 local graph, sw_res = {}, {}
 
 ffi.cdef([[
@@ -42,9 +45,10 @@ ffi.cdef([[
         uint32_t pad;
     } CullData;
 
-    typedef struct ClusterData {
-        float min_x, min_y, max_x, max_y;
-    } ClusterData;
+    typedef struct TileRange {
+        uint32_t start;
+        uint32_t count;
+    } TileRange;
 
     typedef struct ProjectPC {
         mc_mat4 view;
@@ -61,11 +65,11 @@ ffi.cdef([[
         uint32_t pad[10];
     } ProjectPC;
 
-    typedef struct ClusterPC {
-        uint32_t s_id, c_id, cl_id, count;
-        uint32_t screen_w, screen_h;
-        uint32_t pad[58];
-    } ClusterPC;
+    typedef struct BinningPC {
+        uint32_t s_id, c_id, tc_id, to_id, b_id, count;
+        uint32_t screen_w, screen_h, tiles_x, tiles_y, scatter_mode;
+        uint32_t pad[53];
+    } BinningPC;
 
     typedef struct SortPC {
         uint32_t buf_id;
@@ -77,7 +81,7 @@ ffi.cdef([[
     } SortPC;
 
     typedef struct RasterPC {
-        uint32_t p_id, s_id, c_id, cl_id;
+        uint32_t p_id, s_id, b_id, tr_id;
         uint32_t img_id, screen_w, screen_h, count;
         float cam_pos[4];
         float light_dir[4];
@@ -86,20 +90,28 @@ ffi.cdef([[
 ]])
 
 function M.init()
-	print("Example 49: CLUSTERED BINLESS SPLATTER")
+	print("Example 49: TILE-BASED RADIX SPLATTER")
 	local instance, physical_device = vulkan.get_instance(), vulkan.get_physical_device()
 	device = vulkan.get_device()
 	queue, graphics_family = vulkan.get_queue()
 	sw = swapchain.new(instance, physical_device, device, _G._SDL_WINDOW)
 
+    NUM_TILES_X = math.ceil(sw.extent.width / TILE_SIZE)
+    NUM_TILES_Y = math.ceil(sw.extent.height / TILE_SIZE)
+    TOTAL_TILES = NUM_TILES_X * NUM_TILES_Y
+
 	storage_img = mc.gpu.image(sw.extent.width, sw.extent.height, vk.VK_FORMAT_R32G32B32A32_SFLOAT, "storage_color_attachment")
 	noise_buf = mc.buffer(1024 * 4, "storage")
-	projected_splat_buf = mc.buffer(GAUSSIAN_COUNT * 3 * 128, "storage")
-	cull_data_buf = mc.buffer(SORT_COUNT * 16, "storage")
-	sort_buf = mc.buffer(SORT_COUNT * 8, "storage")
-	sort_buf_alt = mc.buffer(SORT_COUNT * 8, "storage")
-	cluster_buf = mc.buffer(CLUSTER_COUNT * 16, "storage")
-	count_buf = mc.buffer(4 * 4, "storage") -- Atomic counter
+	projected_splat_buf = mc.buffer(GAUSSIAN_COUNT * 3 * 160, "storage")
+	cull_data_buf = mc.buffer(MAX_SORT_COUNT * 16, "storage")
+	sort_buf = mc.buffer(MAX_SORT_COUNT * 8, "storage")
+	sort_buf_alt = mc.buffer(MAX_SORT_COUNT * 8, "storage")
+    
+    tile_count_buf = mc.buffer(TOTAL_TILES * 4, "storage")
+    tile_offset_buf = mc.buffer(TOTAL_TILES * 8, "storage")
+    bin_buf = mc.buffer(MAX_SORT_COUNT * 16, "storage") -- Global bin storage
+
+	count_buf = mc.buffer(16 * 4, "storage") -- Atomic counters
 	histogram_buf = mc.buffer(256 * 4, "storage") -- 256 buckets for Radix
 
 	bindless_set = mc.gpu.get_bindless_set()
@@ -109,7 +121,10 @@ function M.init()
 	update_buf(noise_buf.handle, noise_buf.size, 2)
 	update_buf(projected_splat_buf.handle, projected_splat_buf.size, 10)
 	update_buf(cull_data_buf.handle, cull_data_buf.size, 11)
-	update_buf(cluster_buf.handle, cluster_buf.size, 12)
+	update_buf(tile_count_buf.handle, tile_count_buf.size, 12)
+    update_buf(tile_offset_buf.handle, tile_offset_buf.size, 13)
+    update_buf(bin_buf.handle, bin_buf.size, 14)
+
 	update_buf(sort_buf.handle, sort_buf.size, 15)
 	update_buf(count_buf.handle, count_buf.size, 16)
 	update_buf(sort_buf_alt.handle, sort_buf_alt.size, 17)
@@ -125,26 +140,22 @@ function M.init()
 	pipe_project = load_comp("examples/49_compute_splatter/binning.comp") 
 	pipe_raster = load_comp("examples/49_compute_splatter/raster.comp")
 	pipe_sort = load_comp("examples/49_compute_splatter/global_sort.comp")
-    -- We'll reuse prefix_sum.comp slot for a new cluster.comp
-	pipe_cluster = load_comp("examples/49_compute_splatter/identify_ranges.comp") 
+	pipe_binning = load_comp("examples/49_compute_splatter/binning_tiles.comp") 
+    pipe_identify = load_comp("examples/49_compute_splatter/identify_ranges.comp")
 	pipe_prefix_sum = load_comp("examples/49_compute_splatter/prefix_sum.comp") 
 
 	pipe_radix_hist = load_comp("examples/49_compute_splatter/radix_histogram.comp")
 	pipe_radix_scatter = load_comp("examples/49_compute_splatter/radix_scatter.comp")
-	local pF = ffi.new("VkFence[1]")
-	vk.vkCreateFence(device, ffi.new("VkFenceCreateInfo", { sType = vk.VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, flags = vk.VK_FENCE_CREATE_SIGNALED_BIT }), nil, pF)
-	frame_fence = pF[0]
-	local pS = ffi.new("VkSemaphore[1]")
-	vk.vkCreateSemaphore(device, ffi.new("VkSemaphoreCreateInfo", { sType = vk.VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO }), nil, pS)
-	image_available = pS[0]
-
+	
 	local rg = require("vulkan.graph")
 	graph = rg.new(device)
 	for i = 0, sw.image_count - 1 do sw_res[i] = graph:register_resource("SW_" .. i, rg.TYPE_IMAGE, sw.images[i]) end
 	graph.storage = graph:register_resource("StorageImg", rg.TYPE_IMAGE, storage_img.handle)
 	graph.projected = graph:register_resource("Projected", rg.TYPE_BUFFER, projected_splat_buf.handle)
 	graph.cull = graph:register_resource("CullData", rg.TYPE_BUFFER, cull_data_buf.handle)
-	graph.cluster = graph:register_resource("ClusterData", rg.TYPE_BUFFER, cluster_buf.handle)
+	graph.tile_count = graph:register_resource("TileCount", rg.TYPE_BUFFER, tile_count_buf.handle)
+    graph.tile_offset = graph:register_resource("TileOffset", rg.TYPE_BUFFER, tile_offset_buf.handle)
+    graph.bin = graph:register_resource("BinBuf", rg.TYPE_BUFFER, bin_buf.handle)
 	graph.sort = graph:register_resource("SortBuf", rg.TYPE_BUFFER, sort_buf.handle)
 	graph.sort_alt = graph:register_resource("SortBufAlt", rg.TYPE_BUFFER, sort_buf_alt.handle)
 	graph.count = graph:register_resource("CountBuf", rg.TYPE_BUFFER, count_buf.handle)
@@ -210,11 +221,14 @@ function M.update()
 
 	vk.vkCmdFillBuffer(cb, sort_buf.handle, 0, sort_buf.size, 0xFFFFFFFF) 
 	vk.vkCmdFillBuffer(cb, count_buf.handle, 0, count_buf.size, 0)
-	local b_sync = ffi.new("VkBufferMemoryBarrier[2]", { 
+    vk.vkCmdFillBuffer(cb, tile_count_buf.handle, 0, tile_count_buf.size, 0)
+
+	local b_sync = ffi.new("VkBufferMemoryBarrier[3]", { 
         { sType = vk.VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER, srcAccessMask = vk.VK_ACCESS_TRANSFER_WRITE_BIT, dstAccessMask = vk.VK_ACCESS_SHADER_READ_BIT + vk.VK_ACCESS_SHADER_WRITE_BIT, buffer = sort_buf.handle, size = sort_buf.size },
-        { sType = vk.VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER, srcAccessMask = vk.VK_ACCESS_TRANSFER_WRITE_BIT, dstAccessMask = vk.VK_ACCESS_SHADER_READ_BIT + vk.VK_ACCESS_SHADER_WRITE_BIT, buffer = count_buf.handle, size = count_buf.size }
+        { sType = vk.VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER, srcAccessMask = vk.VK_ACCESS_TRANSFER_WRITE_BIT, dstAccessMask = vk.VK_ACCESS_SHADER_READ_BIT + vk.VK_ACCESS_SHADER_WRITE_BIT, buffer = count_buf.handle, size = count_buf.size },
+        { sType = vk.VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER, srcAccessMask = vk.VK_ACCESS_TRANSFER_WRITE_BIT, dstAccessMask = vk.VK_ACCESS_SHADER_READ_BIT + vk.VK_ACCESS_SHADER_WRITE_BIT, buffer = tile_count_buf.handle, size = tile_count_buf.size }
     })
-	vk.vkCmdPipelineBarrier(cb, vk.VK_PIPELINE_STAGE_TRANSFER_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nil, 2, b_sync, 0, nil)
+	vk.vkCmdPipelineBarrier(cb, vk.VK_PIPELINE_STAGE_TRANSFER_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nil, 3, b_sync, 0, nil)
 
 	graph:reset()
 	
@@ -227,40 +241,28 @@ function M.update()
 	end):using(graph.projected, vk.VK_ACCESS_SHADER_WRITE_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT):using(graph.cull, vk.VK_ACCESS_SHADER_WRITE_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT):using(graph.sort, vk.VK_ACCESS_SHADER_WRITE_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT):using(graph.count, vk.VK_ACCESS_SHADER_WRITE_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT)
 
 	graph:add_pass("GlobalSort", function(c)
-		local pc = ffi.new("SortPC", { buf_id = 15, alt_id = 17, hist_id = 18, count = SORT_COUNT })
+		local pc = ffi.new("SortPC", { buf_id = 15, alt_id = 17, hist_id = 18, count = MAX_SORT_COUNT })
 		for pass = 0, 3 do
-			-- Clear Histogram
 			vk.vkCmdFillBuffer(c, histogram_buf.handle, 0, histogram_buf.size, 0)
 			local h_sync = ffi.new("VkBufferMemoryBarrier[1]", { { sType = vk.VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER, srcAccessMask = vk.VK_ACCESS_TRANSFER_WRITE_BIT, dstAccessMask = vk.VK_ACCESS_SHADER_READ_BIT + vk.VK_ACCESS_SHADER_WRITE_BIT, buffer = histogram_buf.handle, size = histogram_buf.size } })
 			vk.vkCmdPipelineBarrier(c, vk.VK_PIPELINE_STAGE_TRANSFER_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nil, 1, h_sync, 0, nil)
 
-			-- Pass Configuration
 			pc.pass = pass
 			vk.vkCmdBindDescriptorSets(c, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_layout, 0, 1, ffi.new("VkDescriptorSet[1]", { bindless_set }), 0, nil)
 			vk.vkCmdPushConstants(c, pipe_layout, bit.bor(vk.VK_SHADER_STAGE_ALL_GRAPHICS, vk.VK_SHADER_STAGE_COMPUTE_BIT), 0, 256, pc)
 
-			-- 1. Histogram
 			vk.vkCmdBindPipeline(c, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_radix_hist)
-			vk.vkCmdDispatch(c, SORT_COUNT / 256, 1, 1)
+			vk.vkCmdDispatch(c, MAX_SORT_COUNT / 256, 1, 1)
 			local hist_sync = ffi.new("VkBufferMemoryBarrier[1]", { { sType = vk.VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER, srcAccessMask = vk.VK_ACCESS_SHADER_WRITE_BIT, dstAccessMask = vk.VK_ACCESS_SHADER_READ_BIT + vk.VK_ACCESS_SHADER_WRITE_BIT, buffer = histogram_buf.handle, size = histogram_buf.size } })
 			vk.vkCmdPipelineBarrier(c, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nil, 1, hist_sync, 0, nil)
 
-			-- 2. Prefix Sum (Sequential on CPU style for small 256 bucket size, but we'll do it via a quick loop or similar. Actually, we need a shader for correctness in the graph)
-            -- For 256 buckets, a single thread is fine.
-            vk.vkCmdBindPipeline(c, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_cluster) -- We'll reuse pipe_cluster if it has prefix sum logic or just use a dedicated tiny shader
-            -- Wait, let's just use pipe_cluster as a placeholder and fix it or add a new small one.
-            -- Actually, let's just add a proper prefix sum for the histogram.
-            
-            -- FIX: Adding a dedicated prefix sum for the 256 buckets.
             vk.vkCmdBindPipeline(c, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_prefix_sum)
             vk.vkCmdDispatch(c, 1, 1, 1) 
             vk.vkCmdPipelineBarrier(c, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nil, 1, hist_sync, 0, nil)
 
-			-- 3. Scatter
 			vk.vkCmdBindPipeline(c, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_radix_scatter)
-			vk.vkCmdDispatch(c, SORT_COUNT / 256, 1, 1)
+			vk.vkCmdDispatch(c, MAX_SORT_COUNT / 256, 1, 1)
 			
-			-- Swap Buffers
 			pc.buf_id, pc.alt_id = pc.alt_id, pc.buf_id
 			local b_sync = ffi.new("VkBufferMemoryBarrier[2]", { 
 				{ sType = vk.VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER, srcAccessMask = vk.VK_ACCESS_SHADER_WRITE_BIT, dstAccessMask = vk.VK_ACCESS_SHADER_READ_BIT, buffer = sort_buf.handle, size = sort_buf.size },
@@ -270,21 +272,38 @@ function M.update()
 		end
 	end):using(graph.sort, vk.VK_ACCESS_SHADER_WRITE_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT):using(graph.sort_alt, vk.VK_ACCESS_SHADER_WRITE_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT):using(graph.histogram, vk.VK_ACCESS_SHADER_WRITE_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT)
 
-    graph:add_pass("ClusterBuild", function(c)
-		vk.vkCmdBindPipeline(c, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_cluster)
-		vk.vkCmdBindDescriptorSets(c, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_layout, 0, 1, ffi.new("VkDescriptorSet[1]", { bindless_set }), 0, nil)
-		local pc = ffi.new("ClusterPC", { s_id = 15, c_id = 11, cl_id = 12, count = SORT_COUNT, screen_w = sw.extent.width, screen_h = sw.extent.height })
-		vk.vkCmdPushConstants(c, pipe_layout, bit.bor(vk.VK_SHADER_STAGE_ALL_GRAPHICS, vk.VK_SHADER_STAGE_COMPUTE_BIT), 0, 256, pc)
-		vk.vkCmdDispatch(c, CLUSTER_COUNT, 1, 1)
-	end):using(graph.sort, vk.VK_ACCESS_SHADER_READ_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT):using(graph.cull, vk.VK_ACCESS_SHADER_READ_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT):using(graph.cluster, vk.VK_ACCESS_SHADER_WRITE_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT)
+    graph:add_pass("BinningTiles", function(c)
+        vk.vkCmdBindPipeline(c, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_binning)
+        vk.vkCmdBindDescriptorSets(c, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_layout, 0, 1, ffi.new("VkDescriptorSet[1]", { bindless_set }), 0, nil)
+        local pc = ffi.new("BinningPC", { s_id = 15, c_id = 11, tc_id = 12, to_id = 13, b_id = 14, count = MAX_SORT_COUNT, screen_w = sw.extent.width, screen_h = sw.extent.height, tiles_x = NUM_TILES_X, tiles_y = NUM_TILES_Y, scatter_mode = 0 })
+        vk.vkCmdPushConstants(c, pipe_layout, bit.bor(vk.VK_SHADER_STAGE_ALL_GRAPHICS, vk.VK_SHADER_STAGE_COMPUTE_BIT), 0, 256, pc)
+        vk.vkCmdDispatch(c, math.ceil(MAX_SORT_COUNT / 256), 1, 1)
+    end):using(graph.sort, vk.VK_ACCESS_SHADER_READ_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT):using(graph.cull, vk.VK_ACCESS_SHADER_READ_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT):using(graph.tile_count, vk.VK_ACCESS_SHADER_WRITE_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT)
+
+    graph:add_pass("IdentifyRanges", function(c)
+        vk.vkCmdBindPipeline(c, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_identify)
+        vk.vkCmdBindDescriptorSets(c, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_layout, 0, 1, ffi.new("VkDescriptorSet[1]", { bindless_set }), 0, nil)
+        local pc = ffi.new("BinningPC", { tc_id = 12, to_id = 13, count = TOTAL_TILES })
+        vk.vkCmdPushConstants(c, pipe_layout, bit.bor(vk.VK_SHADER_STAGE_ALL_GRAPHICS, vk.VK_SHADER_STAGE_COMPUTE_BIT), 0, 256, pc)
+        vk.vkCmdDispatch(c, 1, 1, 1) 
+    end):using(graph.tile_count, vk.VK_ACCESS_SHADER_READ_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT):using(graph.tile_offset, vk.VK_ACCESS_SHADER_WRITE_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT)
+
+    graph:add_pass("BinningScatter", function(c)
+        vk.vkCmdBindPipeline(c, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_binning)
+        vk.vkCmdBindDescriptorSets(c, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_layout, 0, 1, ffi.new("VkDescriptorSet[1]", { bindless_set }), 0, nil)
+        local pc = ffi.new("BinningPC", { s_id = 15, c_id = 11, tc_id = 12, to_id = 13, b_id = 14, count = MAX_SORT_COUNT, screen_w = sw.extent.width, screen_h = sw.extent.height, tiles_x = NUM_TILES_X, tiles_y = NUM_TILES_Y, scatter_mode = 1 })
+        vk.vkCmdPushConstants(c, pipe_layout, bit.bor(vk.VK_SHADER_STAGE_ALL_GRAPHICS, vk.VK_SHADER_STAGE_COMPUTE_BIT), 0, 256, pc)
+        vk.vkCmdDispatch(c, math.ceil(MAX_SORT_COUNT / 256), 1, 1)
+    end):using(graph.sort, vk.VK_ACCESS_SHADER_READ_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT):using(graph.tile_offset, vk.VK_ACCESS_SHADER_READ_BIT + vk.VK_ACCESS_SHADER_WRITE_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT):using(graph.bin, vk.VK_ACCESS_SHADER_WRITE_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT)
 
 	graph:add_pass("Raster", function(c)
 		vk.vkCmdBindPipeline(c, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_raster)
 		vk.vkCmdBindDescriptorSets(c, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_layout, 0, 1, ffi.new("VkDescriptorSet[1]", { bindless_set }), 0, nil)
-		local pc = ffi.new("RasterPC", { p_id = 10, s_id = 15, c_id = 11, cl_id = 12, img_id = 3, screen_w = sw.extent.width, screen_h = sw.extent.height, count = SORT_COUNT, cam_pos = { M.cam_pos[1], M.cam_pos[2], M.cam_pos[3], 0 }, light_dir = light_dir })
+		local pc = ffi.new("RasterPC", { p_id = 10, s_id = 15, b_id = 14, tr_id = 13, img_id = 3, screen_w = sw.extent.width, screen_h = sw.extent.height, count = MAX_SORT_COUNT, cam_pos = { M.cam_pos[1], M.cam_pos[2], M.cam_pos[3], 0 }, light_dir = light_dir })
 		vk.vkCmdPushConstants(c, pipe_layout, bit.bor(vk.VK_SHADER_STAGE_ALL_GRAPHICS, vk.VK_SHADER_STAGE_COMPUTE_BIT), 0, 256, pc)
-		vk.vkCmdDispatch(c, math.ceil(sw.extent.width / 16), math.ceil(sw.extent.height / 16), 1)
-	end):using(graph.projected, vk.VK_ACCESS_SHADER_READ_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT):using(graph.cull, vk.VK_ACCESS_SHADER_READ_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT):using(graph.cluster, vk.VK_ACCESS_SHADER_READ_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT):using(graph.sort, vk.VK_ACCESS_SHADER_READ_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT):using(graph.storage, vk.VK_ACCESS_SHADER_WRITE_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, vk.VK_IMAGE_LAYOUT_GENERAL)
+		vk.vkCmdDispatch(c, NUM_TILES_X, NUM_TILES_Y, 1)
+	end):using(graph.projected, vk.VK_ACCESS_SHADER_READ_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT):using(graph.tile_offset, vk.VK_ACCESS_SHADER_READ_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT):using(graph.bin, vk.VK_ACCESS_SHADER_READ_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT):using(graph.storage, vk.VK_ACCESS_SHADER_WRITE_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, vk.VK_IMAGE_LAYOUT_GENERAL)
+
 
 	graph:add_pass("Blit", function(c)
 		local region = ffi.new("VkImageBlit[1]")

@@ -16,30 +16,14 @@ struct Projected {
     float pad2[4];
 };
 
-struct SortEntry {
-    uint depth_key;
-    uint splat_id;
-};
-
-struct CullData {
-    vec2 pos;
-    float radius;
-    uint pad;
-};
-
-struct ClusterData {
-    float min_x, min_y, max_x, max_y;
-};
-
 layout(set = 0, binding = 0) buffer B0 { Projected p[]; } all_projected[];
-layout(set = 0, binding = 0) buffer B1 { SortEntry entries[]; } all_sort_bufs[];
-layout(set = 0, binding = 0) buffer B2 { CullData c[]; } all_cull_data[];
-layout(set = 0, binding = 0) buffer B3 { ClusterData cl[]; } all_clusters[];
+layout(set = 0, binding = 0) buffer B1 { uint offsets[]; } all_tile_offsets[];
+layout(set = 0, binding = 0) buffer B2 { uint ids[]; } all_bins[];
 
 layout(set = 0, binding = 2, rgba32f) uniform writeonly image2D all_images[];
 
 layout(push_constant) uniform PushConstants {
-    uint p_id, s_id, c_id, cl_id;
+    uint p_id, s_id, b_id, tr_id;
     uint img_id, screen_w, screen_h, count;
     vec4 cam_pos;
     vec4 light_dir;
@@ -47,15 +31,7 @@ layout(push_constant) uniform PushConstants {
 
 layout (local_size_x = 16, local_size_y = 16) in;
 
-#define CHUNK_SIZE 256
-#define VISIBLE_BUFFER_SIZE 1024
-
-shared uint visible_ids[VISIBLE_BUFFER_SIZE];
-shared uint visible_count;
-shared bool cluster_visible;
-shared uint finished_warps_count;
-shared bool tile_finished_global;
-
+#define CHUNK_SIZE 128
 struct PrecalcSplat {
     vec2 pos;
     vec3 inv_cov;
@@ -63,113 +39,55 @@ struct PrecalcSplat {
 };
 shared PrecalcSplat chunk_precalc[CHUNK_SIZE];
 
-const float SH_C1 = 0.4886025119029199;
-
 void main() {
     ivec2 pixel_coords = ivec2(gl_GlobalInvocationID.xy);
     uint local_id = gl_LocalInvocationIndex;
     vec2 pixel_pos = vec2(pixel_coords) + 0.5;
     vec2 screen_size = vec2(pc.screen_w, pc.screen_h);
     
-    vec2 tile_min = vec2(gl_WorkGroupID.xy * 16);
-    vec2 tile_max = tile_min + 16.0;
+    uint tile_idx = gl_WorkGroupID.y * (pc.screen_w / 16) + gl_WorkGroupID.x;
+    uint range_start = all_tile_offsets[pc.tr_id].offsets[tile_idx * 2];
+    uint range_count = all_tile_offsets[pc.tr_id].offsets[tile_idx * 2 + 1];
 
     vec3 final_color = vec3(0.0);
     float T = 1.0;
 
-    if (local_id == 0) tile_finished_global = false;
-    barrier();
-
-    for (uint cluster_id = 0; cluster_id < (pc.count / CHUNK_SIZE); cluster_id++) {
-        
-        if (tile_finished_global) break;
-
-        if (local_id == 0) {
-            ClusterData cluster = all_clusters[pc.cl_id].cl[cluster_id];
-            cluster_visible = !(tile_min.x > cluster.max_x + 1.0 || tile_max.x < cluster.min_x - 1.0 ||
-                                tile_min.y > cluster.max_y + 1.0 || tile_max.y < cluster.min_y - 1.0);
-        }
-        barrier();
-        if (!cluster_visible) continue;
-
-        if (local_id == 0) visible_count = 0;
-        barrier();
-
-        uint global_idx = cluster_id * CHUNK_SIZE + local_id;
-        bool is_visible = false;
-        uint s_id = 0;
-
-        if (global_idx < pc.count) {
-            SortEntry entry = all_sort_bufs[pc.s_id].entries[global_idx];
-            if (entry.depth_key == 0xFFFFFFFF) {
-                if (local_id == 0) tile_finished_global = true; 
-            } else {
-                s_id = entry.splat_id;
-                CullData cd = all_cull_data[pc.c_id].c[s_id];
-                vec2 p_pos = (cd.pos * 0.5 + 0.5) * screen_size;
-                if (!(p_pos.x + cd.radius < tile_min.x || p_pos.x - cd.radius > tile_max.x ||
-                      p_pos.y + cd.radius < tile_min.y || p_pos.y - cd.radius > tile_max.y)) {
-                    is_visible = true;
-                }
-            }
-        }
-        barrier();
-        if (tile_finished_global) break;
-
-        if (is_visible) {
-            uint slot = atomicAdd(visible_count, 1);
-            if (slot < VISIBLE_BUFFER_SIZE) visible_ids[slot] = s_id;
-        }
-        barrier();
-
-        uint num_to_render = min(visible_count, VISIBLE_BUFFER_SIZE);
-        for (uint v_base = 0; v_base < num_to_render; v_base += CHUNK_SIZE) {
-            uint v_chunk_size = min(CHUNK_SIZE, num_to_render - v_base);
-            if (local_id < v_chunk_size) {
-                uint s_id_shared = visible_ids[v_base + local_id];
-                Projected pr = all_projected[pc.p_id].p[s_id_shared];
-                float det = pr.cov.x * pr.cov.z - pr.cov.y * pr.cov.y;
-                float inv_det = 1.0 / max(0.0001, det);
-                chunk_precalc[local_id].pos = (pr.pos * 0.5 + 0.5) * screen_size;
-                chunk_precalc[local_id].inv_cov = vec3(pr.cov.z, -pr.cov.y, pr.cov.x) * inv_det * -0.5;
-                
-                vec3 normal = normalize(pr.sh_r.yzw + pr.sh_g.yzw + pr.sh_b.yzw);
-                if (length(pr.sh_r.yzw) < 0.001) normal = vec3(0,1,0);
-                vec3 vdir = normalize(pc.cam_pos.xyz - pr.world_pos.xyz);
-                vec3 ldir = normalize(pc.light_dir.xyz);
-                vec3 hdir = normalize(vdir + ldir);
-                float diff = max(0.1, dot(normal, ldir));
-                float spec = pow(max(0.0, dot(normal, hdir)), 32.0) * 0.5;
-                chunk_precalc[local_id].color_alpha = vec4(pr.color_alpha.rgb * (diff + 0.2) + vec3(spec), pr.color_alpha.a);
-            }
-            barrier();
-
-            if (pixel_coords.x < pc.screen_w && pixel_coords.y < pc.screen_h) {
-                for (uint i = 0; i < v_chunk_size; i++) {
-                    vec2 d = pixel_pos - chunk_precalc[i].pos;
-                    float power = chunk_precalc[i].inv_cov.x * d.x * d.x + 2.0 * chunk_precalc[i].inv_cov.y * d.x * d.y + chunk_precalc[i].inv_cov.z * d.y * d.y;
-                    if (power > 0.0 || power < -4.5) continue;
-                    float alpha = chunk_precalc[i].color_alpha.a * exp(power);
-                    if (alpha < 0.0039) continue;
-                    final_color += T * alpha * chunk_precalc[i].color_alpha.rgb;
-                    T *= (1.0 - alpha);
-                    if (T < 0.01) break;
-                }
-            }
+    for (uint v_base = 0; v_base < range_count; v_base += CHUNK_SIZE) {
+        uint v_chunk_size = min(CHUNK_SIZE, range_count - v_base);
+        if (local_id < v_chunk_size) {
+            uint splat_id = all_bins[pc.b_id].ids[range_start + v_base + local_id];
+            Projected pr = all_projected[pc.p_id].p[splat_id];
             
-            if (local_id == 0) finished_warps_count = 0;
-            barrier();
-            bool pixel_done = (T < 0.01) || (pixel_coords.x >= pc.screen_w || pixel_coords.y >= pc.screen_h);
-            if (subgroupAll(pixel_done)) {
-                if (local_id % 32 == 0) atomicAdd(finished_warps_count, 1);
-            }
-            barrier();
-            if (finished_warps_count >= 8) { 
-                if (local_id == 0) tile_finished_global = true;
-            }
-            barrier();
-            if (tile_finished_global) break;
+            float det = pr.cov.x * pr.cov.z - pr.cov.y * pr.cov.y;
+            float inv_det = 1.0 / max(0.0001, det);
+            chunk_precalc[local_id].pos = (pr.pos * 0.5 + 0.5) * screen_size;
+            chunk_precalc[local_id].inv_cov = vec3(pr.cov.z, -pr.cov.y, pr.cov.x) * inv_det * -0.5;
+            
+            vec3 normal = normalize(pr.sh_r.yzw + pr.sh_g.yzw + pr.sh_b.yzw);
+            if (length(pr.sh_r.yzw) < 0.001) normal = vec3(0,1,0);
+            vec3 vdir = normalize(pc.cam_pos.xyz - pr.world_pos.xyz);
+            vec3 ldir = normalize(pc.light_dir.xyz);
+            vec3 hdir = normalize(vdir + ldir);
+            float diff = max(0.1, dot(normal, ldir));
+            float spec = pow(max(0.0, dot(normal, hdir)), 32.0) * 0.5;
+            chunk_precalc[local_id].color_alpha = vec4(pr.color_alpha.rgb * (diff + 0.2) + vec3(spec), pr.color_alpha.a);
         }
+        barrier();
+
+        if (pixel_coords.x < pc.screen_w && pixel_coords.y < pc.screen_h) {
+            for (uint i = 0; i < v_chunk_size; i++) {
+                vec2 d = pixel_pos - chunk_precalc[i].pos;
+                float power = chunk_precalc[i].inv_cov.x * d.x * d.x + 2.0 * chunk_precalc[i].inv_cov.y * d.x * d.y + chunk_precalc[i].inv_cov.z * d.y * d.y;
+                if (power > 0.0 || power < -4.5) continue;
+                float alpha = chunk_precalc[i].color_alpha.a * exp(power);
+                if (alpha < 0.0039) continue;
+                final_color += T * alpha * chunk_precalc[i].color_alpha.rgb;
+                T *= (1.0 - alpha);
+                if (T < 0.01) break;
+            }
+        }
+        barrier();
+        if (T < 0.01) break;
     }
 
     if (pixel_coords.x < pc.screen_w && pixel_coords.y < pc.screen_h) {
