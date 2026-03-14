@@ -27,19 +27,18 @@ layout(push_constant) uniform PushConstants {
 
 layout (local_size_x = 16, local_size_y = 16) in;
 
-#define CHUNK_SIZE 256
+#define CHUNK_SIZE 64
 struct PrecalcSplat {
     float px, py;
     float icx, icy, icz;
     float cr, cg, cb;
     float a_scaled;
-    float bank_padding; // PADDING TO 9 FLOATS: BREAKS BANK CONFLICTS
+    float pad; 
 }; 
 shared PrecalcSplat chunk_precalc[CHUNK_SIZE];
 
 // FAST EXP APPROXIMATION (IEEE-754 TRICK)
 float fast_exp(float x) {
-    x = clamp(x, -10.0, 0.0);
     return uintBitsToFloat(uint(12102203.0 * x + 1065353216.0));
 }
 
@@ -64,11 +63,11 @@ void main() {
         if (local_id < v_chunk_size) {
             uint splat_id = all_bins[pc.b_id].ids[range_start + v_base + local_id];
             Projected pr = all_projected[pc.p_id].p[splat_id];
-            chunk_precalc[local_id].px = (pr.pos.x * 0.5 + 0.5) * float(pc.screen_w);
-            chunk_precalc[local_id].py = (pr.pos.y * 0.5 + 0.5) * float(pc.screen_h);
-            chunk_precalc[local_id].icx = pr.inv_cov.x * -0.5;
-            chunk_precalc[local_id].icy = pr.inv_cov.y * -1.0; 
-            chunk_precalc[local_id].icz = pr.inv_cov.z * -0.5;
+            chunk_precalc[local_id].px = pr.pos.x;
+            chunk_precalc[local_id].py = pr.pos.y;
+            chunk_precalc[local_id].icx = pr.inv_cov.x;
+            chunk_precalc[local_id].icy = pr.inv_cov.y; 
+            chunk_precalc[local_id].icz = pr.inv_cov.z;
             chunk_precalc[local_id].cr = pr.color_alpha.r * pr.color_alpha.a;
             chunk_precalc[local_id].cg = pr.color_alpha.g * pr.color_alpha.a;
             chunk_precalc[local_id].cb = pr.color_alpha.b * pr.color_alpha.a;
@@ -76,7 +75,7 @@ void main() {
         }
         barrier();
 
-        if (subgroupAny(alive)) {
+        if (alive) {
             for (uint i = 0; i < v_chunk_size; i++) {
                 float dx = pixel_pos.x - chunk_precalc[i].px;
                 float dy = pixel_pos.y - chunk_precalc[i].py;
@@ -93,6 +92,10 @@ void main() {
                 if (T < 0.001) { alive = false; break; }
             }
         }
+        
+        // SUBGROUP EARLY EXIT: If all pixels in the subgroup are saturated, skip the rest of the chunks
+        if (subgroupAll(!alive)) break;
+        
         barrier();
     }
 

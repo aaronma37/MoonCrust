@@ -22,8 +22,8 @@ local M = {
     needs_rebuild = true,
     grid_build_ms = 0,
     render_ms = 0,
-    render_scale = 0.75,
-    last_render_scale = 0.75
+    render_scale = 1.0,
+    last_render_scale = 1.0
 }
 
 local device, queue, sw, pipe_layout, pipe_render, pipe_blit
@@ -101,13 +101,9 @@ function M.create_render_target()
     local render_w = math.floor(sw.extent.width * M.render_scale)
     local render_h = math.floor(sw.extent.height * M.render_scale)
     out_img = mc.gpu.image(render_w, render_h, vk.VK_FORMAT_R32G32B32A32_SFLOAT, "storage")
-    
-    -- Write to Binding 2, Index 0
     descriptors.update_image_set(device, bindless_set, 2, vk.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, out_img.view, nil, vk.VK_IMAGE_LAYOUT_GENERAL, 0)
-    
-    -- Sample from Binding 1, Index 1 (Leave Index 0 for ImGui fonts!)
     local blit_sampler = mc.gpu.sampler(vk.VK_FILTER_LINEAR, vk.VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE)
-    descriptors.update_image_set(device, bindless_set, 1, vk.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, out_img.view, blit_sampler, vk.VK_IMAGE_LAYOUT_GENERAL, 1)
+    descriptors.update_image_set(device, bindless_set, 1, vk.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, out_img.view, blit_sampler, vk.VK_IMAGE_LAYOUT_GENERAL, 50)
 end
 
 function M.init()
@@ -204,7 +200,7 @@ function M.update()
     if input.key_down(input.SCANCODE_A) then M.cam_yaw = M.cam_yaw + 0.03 end
     if input.key_down(input.SCANCODE_D) then M.cam_yaw = M.cam_yaw - 0.03 end
 
-    if M.render_scale ~= M.last_render_scale then
+    if math.abs(M.render_scale - M.last_render_scale) > 0.001 then
         vk.vkDeviceWaitIdle(device)
         M.create_render_target()
         M.last_render_scale = M.render_scale
@@ -216,9 +212,10 @@ function M.update()
 
     local render_w, render_h = math.floor(sw.extent.width * M.render_scale), math.floor(sw.extent.height * M.render_scale)
     local pc = ffi.new("RenderPC")
-    pc.cam_px, pc.cam_py, pc.cam_pz = M.cam_pos[1], M.cam_pos[2], M.cam_pos[3]
-    pc.cam_dx, pc.cam_dy, pc.cam_dz = math.sin(M.cam_yaw), 0, math.cos(M.cam_yaw)
-    pc.cam_ux, pc.cam_uy, pc.cam_uz, pc.cam_rx, pc.cam_ry, pc.cam_rz = 0, 1, 0, math.cos(M.cam_yaw), 0, -math.sin(M.cam_yaw)
+    pc.cam_px, pc.cam_py, pc.cam_pz, pc.cam_pw = M.cam_pos[1], M.cam_pos[2], M.cam_pos[3], 1.0
+    pc.cam_dx, pc.cam_dy, pc.cam_dz, pc.cam_dw = math.sin(M.cam_yaw), 0, math.cos(M.cam_yaw), 0.0
+    pc.cam_ux, pc.cam_uy, pc.cam_uz, pc.cam_uw = 0, 1, 0, 0.0
+    pc.cam_rx, pc.cam_ry, pc.cam_rz, pc.cam_rw = math.cos(M.cam_yaw), 0, -math.sin(M.cam_yaw), 0.0
     pc.res_x, pc.res_y, pc.time, pc.num_transforms = render_w, render_h, M.current_time, num_blocks
     pc.tf_id, pc.mat_id, pc.img_id, pc.grid_id, pc.idx_id = 0, 1, 0, 2, 3
     pc.use_shadows, pc.sphere_id, pc.coarse_id, pc.bitmask_id = (M.enable_shadows and 1 or 0), 4, 5, 7
@@ -242,7 +239,7 @@ function M.update()
     vk.vkCmdSetScissor(cb, 0, 1, ffi.new("VkRect2D", { extent=sw.extent }))
     vk.vkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe_blit)
     vk.vkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe_layout, 0, 1, ffi.new("VkDescriptorSet[1]", {bindless_set}), 0, nil)
-    pc.img_id = 1 -- Binding 1, index 1 (Scene)
+    pc.img_id = 50 -- Binding 1, index 50 (Scene)
     vk.vkCmdPushConstants(cb, pipe_layout, 0x7FFFFFFF, 0, ffi.sizeof("RenderPC"), pc)
     vk.vkCmdDraw(cb, 3, 1, 0, 0)
     

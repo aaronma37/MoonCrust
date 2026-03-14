@@ -205,8 +205,8 @@ function M.update()
         local full_barrier = ffi.new("VkMemoryBarrier[1]", {{ sType = vk.VK_STRUCTURE_TYPE_MEMORY_BARRIER, srcAccessMask = vk.VK_ACCESS_SHADER_WRITE_BIT, dstAccessMask = bit.bor(vk.VK_ACCESS_SHADER_READ_BIT, vk.VK_ACCESS_SHADER_WRITE_BIT) }})
         vk.vkCmdPipelineBarrier(cmd.buffer, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, full_barrier, 0, nil, 0, nil)
 
-        -- 2. SORT (1-Pass Radix)
-        sort_pc.buf_id, sort_pc.alt_id, sort_pc.hist_id, sort_pc.pass, sort_pc.count = 15, 17, 18, 0, GAUSSIAN_COUNT * 3
+        -- 2. SORT (1-Pass Radix: Most Significant 8 bits)
+        sort_pc.buf_id, sort_pc.alt_id, sort_pc.hist_id, sort_pc.pass, sort_pc.count = 15, 17, 18, 3, GAUSSIAN_COUNT * 3
         vk.vkCmdBindPipeline(cmd.buffer, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_prefix_sum)
         vk.vkCmdPushConstants(cmd.buffer, pipe_layout, bit.bor(vk.VK_SHADER_STAGE_ALL_GRAPHICS, vk.VK_SHADER_STAGE_COMPUTE_BIT), 0, 256, sort_pc)
         vk.vkCmdDispatch(cmd.buffer, 1, 1, 1)
