@@ -36,6 +36,7 @@ layout(push_constant) uniform PushConstants {
     uint p_id, s_id, c_id, count;
     float time;
     uint noise_id, count_id, hist_id;
+    uint pad_sh[3]; 
     vec4 cam_pos, light_dir, world_offset;
 } pc;
 
@@ -80,7 +81,7 @@ vec3 computeCov2D(vec3 pos_view, vec3 scale, vec4 rot) {
     mat3 R = quatToMat3(rot);
     mat3 S = mat3(scale.x, 0, 0, 0, scale.y, 0, 0, 0, scale.z);
     mat3 Sigma3D = (R * S) * transpose(R * S);
-    float x = pos_view.x, y = pos_view.y, z = pos_view.z;
+    float x = pos_view.x, y = pos_view.y, z = -pos_view.z; // Use positive depth
     mat3 J = mat3(pc.focal/z, 0, -(pc.focal*x)/(z*z), 0, pc.focal/z, -(pc.focal*y)/(z*z), 0, 0, 0);
     mat3 Sigma2D = J * mat3(pc.view) * Sigma3D * transpose(mat3(pc.view)) * transpose(J);
     return vec3(Sigma2D[0][0] + 0.3, Sigma2D[0][1], Sigma2D[1][1] + 0.3);
@@ -101,17 +102,6 @@ vec3 safe_normalize(vec3 v) {
 void main() {
     uint global_i = gl_GlobalInvocationID.x;
     uint lid = gl_LocalInvocationID.x;
-
-    // FUSED CLEARING: The first workgroup zeroes out the shared counters
-    if (gl_WorkGroupID.x == 0) {
-        if (lid == 0) all_counts[pc.count_id].count = 0;
-        if (lid < 256) all_histograms[pc.hist_id].histogram[lid] = 0;
-        // Clear a chunk of tile counts
-        for (uint i = lid; i < 4096; i += 256) {
-            all_tile_counts[12].tile_counts[i] = 0;
-        }
-    }
-    barrier();
 
     if (global_i >= pc.count) return;
 
@@ -184,7 +174,7 @@ void main() {
     all_projected[pc.p_id].p[packed_idx].pos = ndc;
     all_projected[pc.p_id].p[packed_idx].depth_key = floatBitsToUint(-pos_v.z);
     all_projected[pc.p_id].p[packed_idx].inv_cov = vec4(i_cov, 0.0); 
-    all_projected[pc.p_id].p[packed_idx].color_alpha = vec4(lit_color, opacity * 15.0); 
+    all_projected[pc.p_id].p[packed_idx].color_alpha = vec4(lit_color, opacity * 10.0); 
 
     all_sort_bufs[pc.s_id].entries[packed_idx].depth_key = floatBitsToUint(-pos_v.z);
     all_sort_bufs[pc.s_id].entries[packed_idx].splat_id = packed_idx;

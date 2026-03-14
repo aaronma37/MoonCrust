@@ -48,7 +48,7 @@ void main() {
             min_ty = max(0, int((screen_pos.y - r) / 16.0));
             max_ty = min(int(pc.tiles_y) - 1, int((screen_pos.y + r) / 16.0));
             
-            if ((max_tx - min_tx + 1) * (max_ty - min_ty + 1) > 128) active_thread = false;
+            if ((max_tx - min_tx + 1) * (max_ty - min_ty + 1) > 1024) active_thread = false;
         } else {
             active_thread = false;
         }

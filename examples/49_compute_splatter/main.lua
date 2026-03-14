@@ -32,10 +32,11 @@ ffi.cdef([[
         uint32_t p_id, s_id, c_id, count;
         float time;
         uint32_t noise_id, count_id, hist_id;
+        uint32_t pad_sh[3]; // 16-byte alignment for vec4
         float cam_pos[4];
         float light_dir[4];
         float world_offset[4];
-        uint32_t pad[10];
+        uint32_t pad[7];
     } ProjectPC;
 
     typedef struct BinningPC {
@@ -114,6 +115,23 @@ function M.init()
     pipe_identify = load_comp("examples/49_compute_splatter/identify_ranges.comp")
 
 	cb = command.allocate_buffers(device, command.create_pool(device, graphics_family), 1)[1]
+
+    -- INITIAL LAYOUT TRANSITION
+    command.encode(cb, function(cmd)
+        local barrier = ffi.new("VkImageMemoryBarrier[1]", {{
+            sType = vk.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            srcAccessMask = 0,
+            dstAccessMask = vk.VK_ACCESS_SHADER_WRITE_BIT,
+            oldLayout = vk.VK_IMAGE_LAYOUT_UNDEFINED,
+            newLayout = vk.VK_IMAGE_LAYOUT_GENERAL,
+            image = storage_img.handle,
+            subresourceRange = { aspectMask = vk.VK_IMAGE_ASPECT_COLOR_BIT, baseMipLevel = 0, levelCount = 1, baseArrayLayer = 0, layerCount = 1 }
+        }})
+        vk.vkCmdPipelineBarrier(cmd.buffer, vk.VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nil, 0, nil, 1, barrier)
+    end)
+    vk.vkQueueSubmit(queue, 1, ffi.new("VkSubmitInfo", { sType = vk.VK_STRUCTURE_TYPE_SUBMIT_INFO, commandBufferCount = 1, pCommandBuffers = ffi.new("VkCommandBuffer[1]", { cb }) }), nil)
+    vk.vkQueueWaitIdle(queue)
+
 	local pF = ffi.new("VkFence[1]")
 	vk.vkCreateFence(device, ffi.new("VkFenceCreateInfo", { sType = vk.VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, flags = vk.VK_FENCE_CREATE_SIGNALED_BIT }), nil, pF)
 	frame_fence = pF[0]
@@ -164,6 +182,15 @@ function M.update()
 	local light_dir = { math.sin(M.current_time * 1.5), 0.5, math.cos(M.current_time * 1.5), 0 }
 
     command.encode(cb, function(cmd)
+        -- 0. CLEAR COUNTERS & INVALIDATE SORT ENTRIES
+        vk.vkCmdFillBuffer(cmd.buffer, count_buf.handle, 0, count_buf.size, 0)
+        vk.vkCmdFillBuffer(cmd.buffer, tile_count_buf.handle, 0, tile_count_buf.size, 0)
+        vk.vkCmdFillBuffer(cmd.buffer, histogram_buf.handle, 0, histogram_buf.size, 0)
+        vk.vkCmdFillBuffer(cmd.buffer, sort_buf.handle, 0, sort_buf.size, 0xFFFFFFFF)
+        
+        local clear_barrier = ffi.new("VkMemoryBarrier[1]", {{ sType = vk.VK_STRUCTURE_TYPE_MEMORY_BARRIER, srcAccessMask = vk.VK_ACCESS_TRANSFER_WRITE_BIT, dstAccessMask = bit.bor(vk.VK_ACCESS_SHADER_READ_BIT, vk.VK_ACCESS_SHADER_WRITE_BIT) }})
+        vk.vkCmdPipelineBarrier(cmd.buffer, vk.VK_PIPELINE_STAGE_TRANSFER_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, clear_barrier, 0, nil, 0, nil)
+
         -- 1. PROJECT
         project_pc.view, project_pc.proj, project_pc.focal = view, proj, focal
         project_pc.p_id, project_pc.s_id, project_pc.c_id, project_pc.count = 10, 15, 11, GAUSSIAN_COUNT * 3
@@ -175,21 +202,23 @@ function M.update()
         vk.vkCmdPushConstants(cmd.buffer, pipe_layout, bit.bor(vk.VK_SHADER_STAGE_ALL_GRAPHICS, vk.VK_SHADER_STAGE_COMPUTE_BIT), 0, 256, project_pc)
         vk.vkCmdDispatch(cmd.buffer, math.ceil((GAUSSIAN_COUNT * 3) / 256), 1, 1)
 
-        local full_barrier = ffi.new("VkMemoryBarrier[1]", {{ sType = vk.VK_STRUCTURE_TYPE_MEMORY_BARRIER, srcAccessMask = vk.VK_ACCESS_SHADER_WRITE_BIT, dstAccessMask = vk.VK_ACCESS_SHADER_READ_BIT }})
+        local full_barrier = ffi.new("VkMemoryBarrier[1]", {{ sType = vk.VK_STRUCTURE_TYPE_MEMORY_BARRIER, srcAccessMask = vk.VK_ACCESS_SHADER_WRITE_BIT, dstAccessMask = bit.bor(vk.VK_ACCESS_SHADER_READ_BIT, vk.VK_ACCESS_SHADER_WRITE_BIT) }})
         vk.vkCmdPipelineBarrier(cmd.buffer, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, full_barrier, 0, nil, 0, nil)
 
-        -- 2. SORT (1-Pass)
+        -- 2. SORT (1-Pass Radix)
         sort_pc.buf_id, sort_pc.alt_id, sort_pc.hist_id, sort_pc.pass, sort_pc.count = 15, 17, 18, 0, GAUSSIAN_COUNT * 3
-        vk.vkCmdPushConstants(cmd.buffer, pipe_layout, bit.bor(vk.VK_SHADER_STAGE_ALL_GRAPHICS, vk.VK_SHADER_STAGE_COMPUTE_BIT), 0, 256, sort_pc)
         vk.vkCmdBindPipeline(cmd.buffer, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_prefix_sum)
+        vk.vkCmdPushConstants(cmd.buffer, pipe_layout, bit.bor(vk.VK_SHADER_STAGE_ALL_GRAPHICS, vk.VK_SHADER_STAGE_COMPUTE_BIT), 0, 256, sort_pc)
         vk.vkCmdDispatch(cmd.buffer, 1, 1, 1)
         vk.vkCmdPipelineBarrier(cmd.buffer, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, full_barrier, 0, nil, 0, nil)
+        
         vk.vkCmdBindPipeline(cmd.buffer, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_radix_scatter)
+        vk.vkCmdPushConstants(cmd.buffer, pipe_layout, bit.bor(vk.VK_SHADER_STAGE_ALL_GRAPHICS, vk.VK_SHADER_STAGE_COMPUTE_BIT), 0, 256, sort_pc)
         vk.vkCmdDispatch(cmd.buffer, math.ceil(sort_pc.count / 512), 1, 1)
         vk.vkCmdPipelineBarrier(cmd.buffer, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, full_barrier, 0, nil, 0, nil)
 
-        -- 3. BINNING
-        binning_pc.s_id, binning_pc.c_id, binning_pc.tc_id, binning_pc.to_id, binning_pc.b_id = 15, 11, 12, 13, 14
+        -- 3. BINNING (Pre-pass to count tile splats)
+        binning_pc.s_id, binning_pc.c_id, binning_pc.tc_id, binning_pc.to_id, binning_pc.b_id = 17, 11, 12, 13, 14
         binning_pc.count, binning_pc.screen_w, binning_pc.screen_h = GAUSSIAN_COUNT * 3, sw.extent.width, sw.extent.height
         binning_pc.tiles_x, binning_pc.tiles_y, binning_pc.scatter_mode = NUM_TILES_X, NUM_TILES_Y, 0
         vk.vkCmdBindPipeline(cmd.buffer, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_binning)
@@ -197,25 +226,30 @@ function M.update()
         vk.vkCmdDispatch(cmd.buffer, math.ceil(binning_pc.count / 256), 1, 1)
         vk.vkCmdPipelineBarrier(cmd.buffer, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, full_barrier, 0, nil, 0, nil)
 
+        -- 4. RANGE IDENTIFICATION
+        binning_pc.count = TOTAL_TILES 
         vk.vkCmdBindPipeline(cmd.buffer, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_identify)
+        vk.vkCmdPushConstants(cmd.buffer, pipe_layout, bit.bor(vk.VK_SHADER_STAGE_ALL_GRAPHICS, vk.VK_SHADER_STAGE_COMPUTE_BIT), 0, 256, binning_pc)
         vk.vkCmdDispatch(cmd.buffer, 1, 1, 1)
         vk.vkCmdPipelineBarrier(cmd.buffer, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, full_barrier, 0, nil, 0, nil)
 
+        -- 5. BINNING (Scatter-pass to fill tile splat lists)
+        binning_pc.count = GAUSSIAN_COUNT * 3 
         binning_pc.scatter_mode = 1
         vk.vkCmdBindPipeline(cmd.buffer, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_binning)
         vk.vkCmdPushConstants(cmd.buffer, pipe_layout, bit.bor(vk.VK_SHADER_STAGE_ALL_GRAPHICS, vk.VK_SHADER_STAGE_COMPUTE_BIT), 0, 256, binning_pc)
         vk.vkCmdDispatch(cmd.buffer, math.ceil(binning_pc.count / 256), 1, 1)
         vk.vkCmdPipelineBarrier(cmd.buffer, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, full_barrier, 0, nil, 0, nil)
 
-        -- 4. RASTER
-        raster_pc.p_id, raster_pc.s_id, raster_pc.b_id, raster_pc.tr_id, raster_pc.img_id = 10, 15, 14, 13, 3
+        -- 6. RASTER
+        raster_pc.p_id, raster_pc.s_id, raster_pc.b_id, raster_pc.tr_id, raster_pc.img_id = 10, 17, 14, 13, 3
         raster_pc.screen_w, raster_pc.screen_h, raster_pc.count = sw.extent.width, sw.extent.height, GAUSSIAN_COUNT * 3
         raster_pc.cam_pos, raster_pc.light_dir = { M.cam_pos[1], M.cam_pos[2], M.cam_pos[3], 0 }, light_dir
         vk.vkCmdBindPipeline(cmd.buffer, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_raster)
         vk.vkCmdPushConstants(cmd.buffer, pipe_layout, bit.bor(vk.VK_SHADER_STAGE_ALL_GRAPHICS, vk.VK_SHADER_STAGE_COMPUTE_BIT), 0, 256, raster_pc)
         vk.vkCmdDispatch(cmd.buffer, NUM_TILES_X, NUM_TILES_Y, 1)
 
-        -- 5. BLIT (Manual)
+        -- 6. BLIT (Manual)
         local image_barrier = ffi.new("VkImageMemoryBarrier[2]", {
             { sType = vk.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, srcAccessMask = vk.VK_ACCESS_SHADER_WRITE_BIT, dstAccessMask = vk.VK_ACCESS_TRANSFER_READ_BIT, oldLayout = vk.VK_IMAGE_LAYOUT_GENERAL, newLayout = vk.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, image = storage_img.handle, subresourceRange = { aspectMask = vk.VK_IMAGE_ASPECT_COLOR_BIT, baseMipLevel = 0, levelCount = 1, baseArrayLayer = 0, layerCount = 1 } },
             { sType = vk.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, srcAccessMask = 0, dstAccessMask = vk.VK_ACCESS_TRANSFER_WRITE_BIT, oldLayout = vk.VK_IMAGE_LAYOUT_UNDEFINED, newLayout = vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, image = ffi.cast("VkImage", sw.images[idx]), subresourceRange = { aspectMask = vk.VK_IMAGE_ASPECT_COLOR_BIT, baseMipLevel = 0, levelCount = 1, baseArrayLayer = 0, layerCount = 1 } }

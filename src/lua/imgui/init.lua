@@ -42,6 +42,13 @@ M.WindowFlags = {
     NoInputs = 197120, DockNodeHost = 8388608
 }
 
+-- ImGui Slider Flags
+M.SliderFlags = {
+    None = 0, Logarithmic = 32, NoRoundToFormat = 64, NoInput = 128,
+    WrapAround = 256, ClampOnInput = 512, ClampZeroRange = 1024,
+    NoSpeedTweaks = 2048, ColorMarkers = 4096, AlwaysClamp = 1536
+}
+
 -- ImGui Key Enum (Corrected to match imgui.h)
 local ImGuiKey = {
     Tab = 512, LeftArrow = 513, RightArrow = 514, UpArrow = 515, DownArrow = 516,
@@ -249,6 +256,7 @@ M.gui = setmetatable({}, {
         if not S.ffi_lib then S.ffi_lib = ffi_loader() end
         if k:find("ImGuiStyleVar_") == 1 then return M.StyleVar[k:sub(15)] end
         if k:find("ImGuiWindowFlags_") == 1 then return M.WindowFlags[k:sub(18)] end
+        if k:find("ImGuiSliderFlags_") == 1 then return M.SliderFlags[k:sub(18)] end
         return S.ffi_lib[k]
     end
 })

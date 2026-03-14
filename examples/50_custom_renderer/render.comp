@@ -71,7 +71,7 @@ bool trace_shadow(vec3 ro, vec3 rd, float max_t) {
         else if (rd[i] < 0.0) t_max_step[i] = t_min + (cell_p[i] - floor(cell_p[i])) * t_delta[i];
         else t_max_step[i] = 1e30;
     }
-    for (int i = 0; i < 48; ++i) {
+    for (int i = 0; i < 32; ++i) {
         uint bidx = (cell.x/4) + (cell.y/4)*32 + (cell.z/4)*1024;
         uint64_t mask = all_bitmasks[pc.bitmask_id].bitmasks[bidx];
         uint bit_pos = (cell.x%4) + (cell.y%4)*4 + (cell.z%4)*16;
@@ -99,9 +99,10 @@ bool trace_shadow(vec3 ro, vec3 rd, float max_t) {
 void main() {
     uvec2 pixel = gl_GlobalInvocationID.xy;
     if (pixel.x >= uint(pc.res.x) || pixel.y >= uint(pc.res.y)) return;
+
     vec2 uv = (vec2(pixel) / pc.res) * 2.0 - 1.0; uv.x *= pc.res.x / pc.res.y;
     vec3 rd = normalize(pc.cam_dir.xyz + pc.cam_right.xyz * uv.x + pc.cam_up.xyz * uv.y), ro = pc.cam_pos.xyz;
-    float t_min, t_max; vec3 color = vec3(0.01, 0.01, 0.02) + rd.y * 0.02;
+    float t_min, t_max; vec3 color = vec3(0.005, 0.005, 0.01) + rd.y * 0.02;
     if (intersect_aabb(ro, rd, vec3(WORLD_MIN), vec3(WORLD_MAX), t_min, t_max)) {
         t_min = max(t_min, 0.0);
         vec3 cell_p = (ro + rd * (t_min + 0.0001) - WORLD_MIN) / CELL_SIZE;
@@ -116,28 +117,43 @@ void main() {
         float hit_t = 1e30; vec3 hit_n = vec3(0.0); int hit_id = -1;
         uint64_t cached_mask = 0; ivec3 last_brick = ivec3(-1);
 
-        for (int i = 0; i < 256; ++i) {
-            // Coarse skip (16x16x16 blocks of 8x8x8)
+        for (int i = 0; i < 160; ++i) {
             ivec3 coarse_p = cell / 8;
-            if (all_coarse[pc.coarse_id].occupied[coarse_p.x + coarse_p.y * 16 + coarse_p.z * 256] != 0) {
-                ivec3 brick_p = cell / 4;
-                if (brick_p != last_brick) {
-                    cached_mask = all_bitmasks[pc.bitmask_id].bitmasks[brick_p.x + brick_p.y * 32 + brick_p.z * 1024];
-                    last_brick = brick_p;
+            if (all_coarse[pc.coarse_id].occupied[coarse_p.x + coarse_p.y * 16 + coarse_p.z * 256] == 0) {
+                 // Single-Step Coarse Jump: Calculate distance to exit coarse cell
+                 vec3 coarse_exit = (vec3(coarse_p + max(ivec3(0), ivec3(step))) * 8.0 * CELL_SIZE + WORLD_MIN);
+                 vec3 t_to_exit = (coarse_exit - ro) / rd;
+                 float t_jump = min(t_to_exit.x, min(t_to_exit.y, t_to_exit.z));
+                 
+                 float next_t = t_jump + 0.001;
+                 vec3 next_p = (ro + rd * next_t - WORLD_MIN) / CELL_SIZE;
+                 cell = clamp(ivec3(floor(next_p)), ivec3(0), ivec3(127));
+                 for(int k=0; k<3; ++k) {
+                    if (rd[k] > 0.0) t_max_step[k] = (floor(next_p[k]) + 1.0 - next_p[k]) * t_delta[k] + next_t;
+                    else if (rd[k] < 0.0) t_max_step[k] = (next_p[k] - floor(next_p[k])) * t_delta[k] + next_t;
+                    else t_max_step[k] = 1e30;
+                 }
+                 continue;
+            }
+
+            ivec3 brick_p = cell / 4;
+            if (brick_p != last_brick) {
+                cached_mask = all_bitmasks[pc.bitmask_id].bitmasks[brick_p.x + brick_p.y * 32 + brick_p.z * 1024];
+                last_brick = brick_p;
+            }
+            uint bit_pos = (cell.x%4) + (cell.y%4)*4 + (cell.z%4)*16;
+            if ((cached_mask & (uint64_t(1) << bit_pos)) != 0) {
+                uvec2 cell_data = all_grids[pc.grid_id].cells[cell.x + cell.y*128 + cell.z*16384];
+                for (uint j = 0; j < min(cell_data.y, 16); ++j) {
+                    uint id = all_indices[pc.idx_id].ids[cell_data.x + j];
+                    float t; vec3 n; if (intersect_obb(ro, rd, id, t, n)) { if (t < hit_t) { hit_t = t; hit_n = n; hit_id = int(id); } }
                 }
-                uint bit_pos = (cell.x%4) + (cell.y%4)*4 + (cell.z%4)*16;
-                if ((cached_mask & (uint64_t(1) << bit_pos)) != 0) {
-                    uvec2 cell_data = all_grids[pc.grid_id].cells[cell.x + cell.y*128 + cell.z*16384];
-                    for (uint j = 0; j < min(cell_data.y, 16); ++j) {
-                        uint id = all_indices[pc.idx_id].ids[cell_data.x + j];
-                        float t; vec3 n; if (intersect_obb(ro, rd, id, t, n)) { if (t < hit_t) { hit_t = t; hit_n = n; hit_id = int(id); } }
-                    }
-                    if (hit_id != -1) { 
-                        float nt = min(t_max_step.x, min(t_max_step.y, t_max_step.z));
-                        if (hit_t <= nt + 0.001) break; 
-                    }
+                if (hit_id != -1) { 
+                    float nt = min(t_max_step.x, min(t_max_step.y, t_max_step.z));
+                    if (hit_t <= nt + 0.001) break; 
                 }
             }
+            
             if (t_max_step.x < t_max_step.y) {
                 if (t_max_step.x < t_max_step.z) { cell.x += int(step.x); if (cell.x < 0 || cell.x >= 128) break; t_max_step.x += t_delta.x; }
                 else { cell.z += int(step.z); if (cell.z < 0 || cell.z >= 128) break; t_max_step.z += t_delta.z; }

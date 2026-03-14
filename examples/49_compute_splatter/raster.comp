@@ -37,6 +37,12 @@ struct PrecalcSplat {
 }; 
 shared PrecalcSplat chunk_precalc[CHUNK_SIZE];
 
+// FAST EXP APPROXIMATION (IEEE-754 TRICK)
+float fast_exp(float x) {
+    x = clamp(x, -10.0, 0.0);
+    return uintBitsToFloat(uint(12102203.0 * x + 1065353216.0));
+}
+
 void main() {
     ivec2 pixel_coords = ivec2(gl_GlobalInvocationID.xy);
     uint local_id = gl_LocalInvocationIndex;
@@ -66,32 +72,32 @@ void main() {
             chunk_precalc[local_id].cr = pr.color_alpha.r * pr.color_alpha.a;
             chunk_precalc[local_id].cg = pr.color_alpha.g * pr.color_alpha.a;
             chunk_precalc[local_id].cb = pr.color_alpha.b * pr.color_alpha.a;
-            chunk_precalc[local_id].a_scaled = pr.color_alpha.a; // Use actual alpha
+            chunk_precalc[local_id].a_scaled = pr.color_alpha.a;
         }
         barrier();
 
         if (subgroupAny(alive)) {
-            // UNROLL HINT: GPU COMPILER WILL OPTIMIZE THIS LOOP
             for (uint i = 0; i < v_chunk_size; i++) {
                 float dx = pixel_pos.x - chunk_precalc[i].px;
                 float dy = pixel_pos.y - chunk_precalc[i].py;
                 float p = (chunk_precalc[i].icx * dx + chunk_precalc[i].icy * dy) * dx + (chunk_precalc[i].icz * dy * dy);
                 
-                if (p > 0.0 || p < -4.5) continue;
+                if (p > 0.0 || p < -6.0) continue; 
                 
-                float a = 1.0 + p * (1.0 + p * 0.5); 
+                float a = fast_exp(p); 
                 final_color.r += T * a * chunk_precalc[i].cr;
                 final_color.g += T * a * chunk_precalc[i].cg;
                 final_color.b += T * a * chunk_precalc[i].cb;
-                T *= (1.0 - a * chunk_precalc[i].a_scaled);
+                T *= max(0.0, 1.0 - a * chunk_precalc[i].a_scaled);
                 
-                if (T < 0.01) { alive = false; break; }
+                if (T < 0.001) { alive = false; break; }
             }
         }
         barrier();
     }
 
     if (pixel_coords.x < pc.screen_w && pixel_coords.y < pc.screen_h) {
+        if (any(isnan(final_color))) final_color = vec3(0.0);
         imageStore(all_images[pc.img_id], pixel_coords, vec4(final_color, 1.0));
     }
 }

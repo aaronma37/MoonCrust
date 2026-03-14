@@ -21,7 +21,9 @@ local M = {
     last_perf_counter = 0,
     needs_rebuild = true,
     grid_build_ms = 0,
-    render_ms = 0
+    render_ms = 0,
+    render_scale = 0.75,
+    last_render_scale = 0.75
 }
 
 local device, queue, sw, pipe_layout, pipe_render, pipe_blit
@@ -57,18 +59,13 @@ ffi.cdef[[
 
 function M.rebuild_grid(cb)
     vk.vkCmdWriteTimestamp(cb, vk.VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, query_pool, 0)
-    print("[GPU] Rebuilding Spatial Hash Grid with Bitmasks...")
-    -- 1. Hash Pass
     local h_pc = ffi.new("HashPC", { sphere_id = 4, entry_id = 6, num_blocks = num_blocks })
     vk.vkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_hash)
     vk.vkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_layout, 0, 1, ffi.new("VkDescriptorSet[1]", {bindless_set}), 0, nil)
     vk.vkCmdPushConstants(cb, pipe_layout, 0x7FFFFFFF, 0, ffi.sizeof("HashPC"), h_pc)
     vk.vkCmdDispatch(cb, num_blocks / 256, 1, 1)
-
     local bar_hash = ffi.new("VkBufferMemoryBarrier[1]", {{ sType=vk.VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER, srcAccessMask=vk.VK_ACCESS_SHADER_WRITE_BIT, dstAccessMask=bit.bor(vk.VK_ACCESS_SHADER_READ_BIT, vk.VK_ACCESS_SHADER_WRITE_BIT), buffer=sort_buf.handle, offset=0, size=sort_buf.size }})
     vk.vkCmdPipelineBarrier(cb, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nil, 1, bar_hash, 0, nil)
-
-    -- 2. Sort Pass
     vk.vkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_sort)
     local s_pc = ffi.new("SortPC", { entry_id = 6 })
     local k = 2
@@ -83,26 +80,34 @@ function M.rebuild_grid(cb)
         end
         k = k * 2
     end
-
-    -- 3. Build Grid Pass
     local b_pc = ffi.new("BuildPC", { entry_id = 6, grid_id = 2, coarse_id = 5, idx_id = 3, bitmask_id = 7, num_blocks = num_blocks, pass = 0 })
     vk.vkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_build_grid)
     vk.vkCmdPushConstants(cb, pipe_layout, 0x7FFFFFFF, 0, ffi.sizeof("BuildPC"), b_pc)
     vk.vkCmdDispatch(cb, math.ceil((grid_res^3) / 256), 1, 1) 
-
     local bar_grid = ffi.new("VkBufferMemoryBarrier[3]", {
         { sType=vk.VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER, srcAccessMask=vk.VK_ACCESS_SHADER_WRITE_BIT, dstAccessMask=bit.bor(vk.VK_ACCESS_SHADER_READ_BIT, vk.VK_ACCESS_SHADER_WRITE_BIT), buffer=grid_buf.handle, offset=0, size=grid_buf.size },
         { sType=vk.VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER, srcAccessMask=vk.VK_ACCESS_SHADER_WRITE_BIT, dstAccessMask=bit.bor(vk.VK_ACCESS_SHADER_READ_BIT, vk.VK_ACCESS_SHADER_WRITE_BIT), buffer=coarse_buf.handle, offset=0, size=coarse_buf.size },
         { sType=vk.VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER, srcAccessMask=vk.VK_ACCESS_SHADER_WRITE_BIT, dstAccessMask=bit.bor(vk.VK_ACCESS_SHADER_READ_BIT, vk.VK_ACCESS_SHADER_WRITE_BIT), buffer=bitmask_buf.handle, offset=0, size=bitmask_buf.size }
     })
     vk.vkCmdPipelineBarrier(cb, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nil, 3, bar_grid, 0, nil)
-
     b_pc.pass = 1
     vk.vkCmdPushConstants(cb, pipe_layout, 0x7FFFFFFF, 0, ffi.sizeof("BuildPC"), b_pc)
     vk.vkCmdDispatch(cb, num_blocks / 256, 1, 1) 
     vk.vkCmdPipelineBarrier(cb, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nil, 3, bar_grid, 0, nil)
     vk.vkCmdWriteTimestamp(cb, vk.VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, query_pool, 1)
-    print("[GPU] Rebuild Complete.")
+end
+
+function M.create_render_target()
+    local render_w = math.floor(sw.extent.width * M.render_scale)
+    local render_h = math.floor(sw.extent.height * M.render_scale)
+    out_img = mc.gpu.image(render_w, render_h, vk.VK_FORMAT_R32G32B32A32_SFLOAT, "storage")
+    
+    -- Write to Binding 2, Index 0
+    descriptors.update_image_set(device, bindless_set, 2, vk.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, out_img.view, nil, vk.VK_IMAGE_LAYOUT_GENERAL, 0)
+    
+    -- Sample from Binding 1, Index 1 (Leave Index 0 for ImGui fonts!)
+    local blit_sampler = mc.gpu.sampler(vk.VK_FILTER_LINEAR, vk.VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE)
+    descriptors.update_image_set(device, bindless_set, 1, vk.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, out_img.view, blit_sampler, vk.VK_IMAGE_LAYOUT_GENERAL, 1)
 end
 
 function M.init()
@@ -111,19 +116,11 @@ function M.init()
     device = vulkan.get_device(); local q, family = vulkan.get_queue(); queue = q
     sw = swapchain.new(instance, physical_device, device, _G._SDL_WINDOW)
     imgui.init(); M.last_perf_counter = tonumber(sdl.SDL_GetPerformanceCounter())
-
     local props = ffi.new("VkPhysicalDeviceProperties")
     vk.vkGetPhysicalDeviceProperties(physical_device, props)
     timestamp_period = props.limits.timestampPeriod
-
-    local q_pool_info = ffi.new("VkQueryPoolCreateInfo", {
-        sType = vk.VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
-        queryType = vk.VK_QUERY_TYPE_TIMESTAMP,
-        queryCount = 4
-    })
-    local qp = ffi.new("VkQueryPool[1]")
-    vk.vkCreateQueryPool(device, q_pool_info, nil, qp)
-    query_pool = qp[0]
+    local q_pool_info = ffi.new("VkQueryPoolCreateInfo", { sType = vk.VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO, queryType = vk.VK_QUERY_TYPE_TIMESTAMP, queryCount = 4 })
+    local qp = ffi.new("VkQueryPool[1]"); vk.vkCreateQueryPool(device, q_pool_info, nil, qp); query_pool = qp[0]
 
     tf_buf = mc.buffer(num_blocks * ffi.sizeof("Transform"), "storage", nil, false)
     mat_buf = mc.buffer(num_blocks * ffi.sizeof("Material"), "storage", nil, false)
@@ -132,8 +129,7 @@ function M.init()
     sort_buf = mc.buffer(num_blocks * 8, "storage", nil, false) 
     grid_buf = mc.buffer(grid_res * grid_res * grid_res * 8, "storage", nil, false) 
     coarse_buf = mc.buffer(coarse_res * coarse_res * coarse_res * 4, "storage", nil, false) 
-    bitmask_buf = mc.buffer((grid_res/4)^3 * 8, "storage", nil, false) -- 16x16x16 uint64_t
-    out_img = mc.gpu.image(sw.extent.width, sw.extent.height, vk.VK_FORMAT_R32G32B32A32_SFLOAT, "storage")
+    bitmask_buf = mc.buffer((grid_res/4)^3 * 8, "storage", nil, false) 
 
     local host_tf, host_mat, host_sphere = ffi.new("Transform[?]", num_blocks), ffi.new("Material[?]", num_blocks), ffi.new("Sphere[?]", num_blocks)
     math.randomseed(42)
@@ -154,7 +150,6 @@ function M.init()
     bindless_set = mc.gpu.get_bindless_set(); local bl_layout = mc.gpu.get_bindless_layout()
     descriptors.update_buffer_set(device, bindless_set, 0, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, tf_buf.handle, 0, tf_buf.size, 0)
     descriptors.update_buffer_set(device, bindless_set, 0, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, mat_buf.handle, 0, mat_buf.size, 1)
-    descriptors.update_storage_image_set(device, bindless_set, 2, vk.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, out_img.view, vk.VK_IMAGE_LAYOUT_GENERAL, 0)
     descriptors.update_buffer_set(device, bindless_set, 0, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, grid_buf.handle, 0, grid_buf.size, 2)
     descriptors.update_buffer_set(device, bindless_set, 0, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, idx_buf.handle, 0, idx_buf.size, 3)
     descriptors.update_buffer_set(device, bindless_set, 0, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, sphere_buf.handle, 0, sphere_buf.size, 4)
@@ -162,18 +157,26 @@ function M.init()
     descriptors.update_buffer_set(device, bindless_set, 0, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, sort_buf.handle, 0, sort_buf.size, 6)
     descriptors.update_buffer_set(device, bindless_set, 0, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, bitmask_buf.handle, 0, bitmask_buf.size, 7)
 
+    M.create_render_target()
+
     pipe_layout = pipeline.create_layout(device, {bl_layout}, ffi.new("VkPushConstantRange[1]", {{ stageFlags = 0x7FFFFFFF, offset = 0, size = 128 }}))
     local function load_comp(path) return pipeline.create_compute_pipeline(device, pipe_layout, shader.create_module(device, shader.compile_glsl(io.open(path):read("*all"), vk.VK_SHADER_STAGE_COMPUTE_BIT))) end
     pipe_render, pipe_hash, pipe_sort, pipe_build_grid = load_comp("examples/50_custom_renderer/render.comp"), load_comp("examples/50_custom_renderer/hash.comp"), load_comp("examples/50_custom_renderer/sort.comp"), load_comp("examples/50_custom_renderer/build_grid.comp")
     
     local v_mod = shader.create_module(device, shader.compile_glsl([[#version 450
-        void main() { vec2 pos[3] = vec2[](vec2(-1,-1), vec2(3,-1), vec2(-1,3)); gl_Position = vec4(pos[gl_VertexIndex], 0, 1); }]], vk.VK_SHADER_STAGE_VERTEX_BIT))
+        layout(location = 0) out vec2 outUV;
+        void main() { 
+            vec2 pos[3] = vec2[](vec2(-1,-1), vec2(3,-1), vec2(-1,3)); 
+            gl_Position = vec4(pos[gl_VertexIndex], 0, 1); 
+            outUV = pos[gl_VertexIndex] * 0.5 + 0.5;
+        }]], vk.VK_SHADER_STAGE_VERTEX_BIT))
     local f_mod = shader.create_module(device, shader.compile_glsl([[#version 450
         #extension GL_EXT_nonuniform_qualifier : require
+        layout(location = 0) in vec2 inUV;
         layout(location = 0) out vec4 outColor;
-        layout(set = 0, binding = 2, rgba32f) uniform readonly image2D tex[];
+        layout(set = 0, binding = 1) uniform sampler2D tex_samplers[];
         layout(push_constant) uniform PC { float pad[22]; uint img_id; } pc;
-        void main() { outColor = imageLoad(tex[nonuniformEXT(pc.img_id)], ivec2(gl_FragCoord.xy)); }]], vk.VK_SHADER_STAGE_FRAGMENT_BIT))
+        void main() { outColor = texture(tex_samplers[nonuniformEXT(pc.img_id)], inUV); }]], vk.VK_SHADER_STAGE_FRAGMENT_BIT))
     pipe_blit = pipeline.create_graphics_pipeline(device, pipe_layout, v_mod, f_mod, { topology = vk.VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST })
 
     local pool = command.create_pool(device, family)
@@ -184,7 +187,6 @@ end
 
 function M.update()
     vk.vkWaitForFences(device, 1, ffi.new("VkFence[1]", {frame_fence}), vk.VK_TRUE, 0xFFFFFFFFFFFFFFFFULL)
-    
     local results = ffi.new("uint64_t[4]")
     local res = vk.vkGetQueryPoolResults(device, query_pool, 0, 4, ffi.sizeof("uint64_t") * 4, results, ffi.sizeof("uint64_t"), vk.VK_QUERY_RESULT_64_BIT)
     if res == vk.VK_SUCCESS then
@@ -192,38 +194,32 @@ function M.update()
         M.render_ms = tonumber(results[3] - results[2]) * timestamp_period / 1e6
     end
     vk.vkResetQueryPool(device, query_pool, 0, 4)
-
     vk.vkResetFences(device, 1, ffi.new("VkFence[1]", {frame_fence}))
     local idx = sw:acquire_next_image(image_available)
     if idx == nil then return end
     input.tick(); M.current_time = M.current_time + 0.016
-    
     local speed = 0.2
     if input.key_down(input.SCANCODE_W) then M.cam_pos[1] = M.cam_pos[1] + math.sin(M.cam_yaw) * speed; M.cam_pos[3] = M.cam_pos[3] + math.cos(M.cam_yaw) * speed end
     if input.key_down(input.SCANCODE_S) then M.cam_pos[1] = M.cam_pos[1] - math.sin(M.cam_yaw) * speed; M.cam_pos[3] = M.cam_pos[3] - math.cos(M.cam_yaw) * speed end
     if input.key_down(input.SCANCODE_A) then M.cam_yaw = M.cam_yaw + 0.03 end
     if input.key_down(input.SCANCODE_D) then M.cam_yaw = M.cam_yaw - 0.03 end
 
-    vk.vkResetCommandBuffer(cb, 0); vk.vkBeginCommandBuffer(cb, ffi.new("VkCommandBufferBeginInfo", { sType = vk.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO }))
-    
-    if M.needs_rebuild then
-        M.rebuild_grid(cb)
-        M.needs_rebuild = false
-    else
-        -- Write dummy timestamps if not rebuilding to keep query indices consistent, 
-        -- though we'll only use render results in that case.
-        vk.vkCmdWriteTimestamp(cb, vk.VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, query_pool, 0)
-        vk.vkCmdWriteTimestamp(cb, vk.VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, query_pool, 1)
+    if M.render_scale ~= M.last_render_scale then
+        vk.vkDeviceWaitIdle(device)
+        M.create_render_target()
+        M.last_render_scale = M.render_scale
     end
 
+    vk.vkResetCommandBuffer(cb, 0); vk.vkBeginCommandBuffer(cb, ffi.new("VkCommandBufferBeginInfo", { sType = vk.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO }))
+    if M.needs_rebuild then M.rebuild_grid(cb); M.needs_rebuild = false
+    else vk.vkCmdWriteTimestamp(cb, vk.VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, query_pool, 0); vk.vkCmdWriteTimestamp(cb, vk.VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, query_pool, 1) end
+
+    local render_w, render_h = math.floor(sw.extent.width * M.render_scale), math.floor(sw.extent.height * M.render_scale)
     local pc = ffi.new("RenderPC")
     pc.cam_px, pc.cam_py, pc.cam_pz = M.cam_pos[1], M.cam_pos[2], M.cam_pos[3]
     pc.cam_dx, pc.cam_dy, pc.cam_dz = math.sin(M.cam_yaw), 0, math.cos(M.cam_yaw)
-    pc.cam_ux, pc.cam_uy, pc.cam_uz = 0, 1, 0
-    pc.cam_rx, pc.cam_ry, pc.cam_rz = math.cos(M.cam_yaw), 0, -math.sin(M.cam_yaw)
-    pc.res_x, pc.res_y = sw.extent.width, sw.extent.height
-    pc.time = M.current_time
-    pc.num_transforms = num_blocks
+    pc.cam_ux, pc.cam_uy, pc.cam_uz, pc.cam_rx, pc.cam_ry, pc.cam_rz = 0, 1, 0, math.cos(M.cam_yaw), 0, -math.sin(M.cam_yaw)
+    pc.res_x, pc.res_y, pc.time, pc.num_transforms = render_w, render_h, M.current_time, num_blocks
     pc.tf_id, pc.mat_id, pc.img_id, pc.grid_id, pc.idx_id = 0, 1, 0, 2, 3
     pc.use_shadows, pc.sphere_id, pc.coarse_id, pc.bitmask_id = (M.enable_shadows and 1 or 0), 4, 5, 7
 
@@ -231,12 +227,11 @@ function M.update()
     vk.vkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_render)
     vk.vkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_layout, 0, 1, ffi.new("VkDescriptorSet[1]", {bindless_set}), 0, nil)
     vk.vkCmdPushConstants(cb, pipe_layout, 0x7FFFFFFF, 0, ffi.sizeof("RenderPC"), pc)
-    vk.vkCmdDispatch(cb, math.ceil(sw.extent.width / 8), math.ceil(sw.extent.height / 8), 1)
+    vk.vkCmdDispatch(cb, math.ceil(render_w / 8), math.ceil(render_h / 8), 1)
     vk.vkCmdWriteTimestamp(cb, vk.VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, query_pool, 3)
 
     local img_barrier = ffi.new("VkImageMemoryBarrier[1]", {{ sType = vk.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, srcAccessMask = vk.VK_ACCESS_SHADER_WRITE_BIT, dstAccessMask = vk.VK_ACCESS_SHADER_READ_BIT, oldLayout = vk.VK_IMAGE_LAYOUT_GENERAL, newLayout = vk.VK_IMAGE_LAYOUT_GENERAL, image = out_img.handle, subresourceRange = { aspectMask = vk.VK_IMAGE_ASPECT_COLOR_BIT, levelCount = 1, layerCount = 1 } }})
     vk.vkCmdPipelineBarrier(cb, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, vk.VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nil, 0, nil, 1, img_barrier)
-
     local bar = ffi.new("VkImageMemoryBarrier[1]", {{ sType=vk.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, oldLayout=vk.VK_IMAGE_LAYOUT_UNDEFINED, newLayout=vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, image=ffi.cast("VkImage", sw.images[idx]), subresourceRange={aspectMask=vk.VK_IMAGE_ASPECT_COLOR_BIT, levelCount=1, layerCount=1}, dstAccessMask=vk.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT }})
     vk.vkCmdPipelineBarrier(cb, vk.VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, vk.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, nil, 0, nil, 1, bar)
     
@@ -247,15 +242,15 @@ function M.update()
     vk.vkCmdSetScissor(cb, 0, 1, ffi.new("VkRect2D", { extent=sw.extent }))
     vk.vkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe_blit)
     vk.vkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe_layout, 0, 1, ffi.new("VkDescriptorSet[1]", {bindless_set}), 0, nil)
+    pc.img_id = 1 -- Binding 1, index 1 (Scene)
     vk.vkCmdPushConstants(cb, pipe_layout, 0x7FFFFFFF, 0, ffi.sizeof("RenderPC"), pc)
     vk.vkCmdDraw(cb, 3, 1, 0, 0)
     
     imgui.new_frame()
     imgui.gui.igSetNextWindowPos(ffi.new("ImVec2_c", 10, 10), imgui.gui.ImGuiCond_Always, ffi.new("ImVec2_c", 0, 0))
     imgui.gui.igBegin("Settings", nil, imgui.gui.ImGuiWindowFlags_AlwaysAutoResize)
-    imgui.gui.igText(string.format("FPS: %.1f", M.fps))
-    imgui.gui.igText(string.format("Grid Build: %.3f ms", M.grid_build_ms))
-    imgui.gui.igText(string.format("Render: %.3f ms", M.render_ms))
+    imgui.gui.igText(string.format("FPS: %.1f", M.fps)); imgui.gui.igText(string.format("Grid Build: %.3f ms", M.grid_build_ms)); imgui.gui.igText(string.format("Render: %.3f ms", M.render_ms))
+    local p_scale = ffi.new("float[1]", M.render_scale); if imgui.gui.igSliderFloat("Render Scale", p_scale, 0.1, 1.0, "%.2f", 0) then M.render_scale = p_scale[0] end
     local p_shadows = ffi.new("bool[1]", M.enable_shadows); if imgui.gui.igCheckbox("Enable Shadows", p_shadows) then M.enable_shadows = p_shadows[0] end
     if imgui.gui.igButton("Force Rebuild Grid", ffi.new("ImVec2_c", 0, 0)) then M.needs_rebuild = true end
     imgui.gui.igEnd(); imgui.render(cb); vk.vkCmdEndRendering(cb)
@@ -264,7 +259,6 @@ function M.update()
     vk.vkCmdPipelineBarrier(cb, vk.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, vk.VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nil, 0, nil, 1, bar); vk.vkEndCommandBuffer(cb)
     vk.vkQueueSubmit(queue, 1, ffi.new("VkSubmitInfo", { sType=vk.VK_STRUCTURE_TYPE_SUBMIT_INFO, waitSemaphoreCount=1, pWaitSemaphores = ffi.new("VkSemaphore[1]", {image_available}), pWaitDstStageMask = ffi.new("VkPipelineStageFlags[1]", {vk.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT}), commandBufferCount=1, pCommandBuffers = ffi.new("VkCommandBuffer[1]", {cb}), signalSemaphoreCount = 1, pSignalSemaphores = ffi.new("VkSemaphore[1]", {sw.semaphores[idx]}) }), frame_fence)
     sw:present(queue, idx, sw.semaphores[idx])
-
     local now, freq = tonumber(sdl.SDL_GetPerformanceCounter()), tonumber(sdl.SDL_GetPerformanceFrequency())
     local dt = (now - M.last_perf_counter) / freq; M.last_perf_counter = now
     table.insert(M.frame_times, dt); if #M.frame_times > 60 then table.remove(M.frame_times, 1) end

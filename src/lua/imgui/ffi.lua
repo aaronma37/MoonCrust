@@ -66,6 +66,19 @@ ffi.cdef[[
     } ImGuiChildFlags_;
 
     typedef enum {
+        ImGuiSliderFlags_None = 0,
+        ImGuiSliderFlags_Logarithmic = 32,
+        ImGuiSliderFlags_NoRoundToFormat = 64,
+        ImGuiSliderFlags_NoInput = 128,
+        ImGuiSliderFlags_WrapAround = 256,
+        ImGuiSliderFlags_ClampOnInput = 512,
+        ImGuiSliderFlags_ClampZeroRange = 1024,
+        ImGuiSliderFlags_NoSpeedTweaks = 2048,
+        ImGuiSliderFlags_ColorMarkers = 4096,
+        ImGuiSliderFlags_AlwaysClamp = 1536,
+    } ImGuiSliderFlags_;
+
+    typedef enum {
         ImGuiCond_None = 0,
         ImGuiCond_Always = 1,
         ImGuiCond_Once = 2,
@@ -644,6 +657,7 @@ ffi.cdef[[
     // Widgets (Continued)
     bool igInputInt(const char* label, int* v, int step, int step_fast, int flags);
     bool igInputFloat(const char* label, float* v, float step, float step_fast, const char* format, int flags);
+    bool igSliderFloat(const char* label, float* v, float v_min, float v_max, const char* format, int flags);
 
     // Logs / Scrolling
     void igSetScrollHereY(float center_y_ratio);
