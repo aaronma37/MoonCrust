@@ -21,8 +21,8 @@ layout(push_constant) uniform PC {
 } pc;
 
 const float WORLD_MIN = -20.0;
-const float GRID_RES = 64.0;
-const float CELL_SIZE = 40.0 / 64.0;
+const float GRID_RES = 128.0;
+const float CELL_SIZE = 40.0 / 128.0;
 
 layout (local_size_x = 256) in;
 
@@ -33,9 +33,9 @@ void main() {
     vec3 p = all_spheres[pc.sphere_id].spheres[id].data.xyz;
     
     ivec3 cell = ivec3(floor((p - WORLD_MIN) / CELL_SIZE));
-    cell = clamp(cell, ivec3(0), ivec3(63));
+    cell = clamp(cell, ivec3(0), ivec3(127));
     
-    uint key = uint(cell.x + cell.y * 64 + cell.z * 64 * 64);
+    uint key = uint(cell.x + cell.y * 128 + cell.z * 128 * 128);
     
     all_entries[pc.entry_id].entries[id].key = key;
     all_entries[pc.entry_id].entries[id].value = id;

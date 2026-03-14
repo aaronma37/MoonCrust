@@ -31,9 +31,10 @@ void main() {
     uint id = gl_GlobalInvocationID.x;
 
     if (pc.pass == 0) {
-        if (id < 64*64*64) all_grids[pc.grid_id].cells[id] = uvec2(0, 0);
-        if (id < 8*8*8) all_coarse[pc.coarse_id].occupied[id] = 0;
-        if (id < 16*16*16) all_bitmasks[pc.bitmask_id].bitmasks[id] = 0;
+        // Clear all structures. 128^3 grid, 16^3 coarse, 32^3 bitmasks
+        if (id < 128*128*128) all_grids[pc.grid_id].cells[id] = uvec2(0, 0);
+        if (id < 16*16*16) all_coarse[pc.coarse_id].occupied[id] = 0;
+        if (id < 32*32*32) all_bitmasks[pc.bitmask_id].bitmasks[id] = 0;
         return;
     }
 
@@ -52,18 +53,20 @@ void main() {
         uint start = all_grids[pc.grid_id].cells[key].x;
         all_grids[pc.grid_id].cells[key].y = id - start + 1; 
         
-        uint cz = (key / (64 * 64)) / 8;
-        uint cy = ((key / 64) % 64) / 8;
-        uint cx = (key % 64) / 8;
-        all_coarse[pc.coarse_id].occupied[cx + cy * 8 + cz * 8 * 8] = 1;
+        // Coarse cell (16x16x16 blocks of 8x8x8)
+        uint cz = (key / (128 * 128)) / 8;
+        uint cy = ((key / 128) % 128) / 8;
+        uint cx = (key % 128) / 8;
+        all_coarse[pc.coarse_id].occupied[cx + cy * 16 + cz * 16 * 16] = 1;
 
-        uint bz = (key / (64 * 64)) / 4;
-        uint by = ((key / 64) % 64) / 4;
-        uint bx = (key % 64) / 4;
-        uint bidx = bx + by * 16 + bz * 16 * 16;
+        // Bitmask brick (32x32x32 blocks of 4x4x4)
+        uint bz = (key / (128 * 128)) / 4;
+        uint by = ((key / 128) % 128) / 4;
+        uint bx = (key % 128) / 4;
+        uint bidx = bx + by * 32 + bz * 32 * 32;
 
-        uint lz = (key / (64 * 64)) % 4;
-        uint ly = (key / 64) % 4;
+        uint lz = (key / (128 * 128)) % 4;
+        uint ly = (key / 128) % 4;
         uint lx = key % 4;
         uint bit_pos = lx + ly * 4 + lz * 16;
         
