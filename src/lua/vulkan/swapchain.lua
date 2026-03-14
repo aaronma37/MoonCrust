@@ -51,12 +51,14 @@ function M.new(instance, physical_device, device, window, old_swapchain, use_srg
         if modes[i] == vk.VK_PRESENT_MODE_IMMEDIATE_KHR then present_mode = modes[i] break end
     end
 
-    local usage = vk.VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT
-    if bit.band(caps.supportedUsageFlags, vk.VK_IMAGE_USAGE_TRANSFER_DST_BIT) ~= 0 then
-        usage = bit.bor(usage, vk.VK_IMAGE_USAGE_TRANSFER_DST_BIT)
-    else
-        print("Warning: TRANSFER_DST_BIT not supported on swapchain surface. Blit may fail.")
-    end
+    local usage = bit.bor(vk.VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, vk.VK_IMAGE_USAGE_TRANSFER_DST_BIT)
+    print("DEBUG: Creating swapchain with usage: " .. tostring(usage))
+    -- local usage = vk.VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT
+    -- if bit.band(caps.supportedUsageFlags, vk.VK_IMAGE_USAGE_TRANSFER_DST_BIT) ~= 0 then
+    --     usage = bit.bor(usage, vk.VK_IMAGE_USAGE_TRANSFER_DST_BIT)
+    -- else
+    --     print("Warning: TRANSFER_DST_BIT not supported on swapchain surface. Blit may fail.")
+    -- end
 
     local createInfo = ffi.new("VkSwapchainCreateInfoKHR", {
         sType = vk.VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,

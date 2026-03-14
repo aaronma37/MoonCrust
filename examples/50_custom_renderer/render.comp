@@ -1,0 +1,207 @@
+#version 450
+#extension GL_EXT_nonuniform_qualifier : require
+#extension GL_EXT_scalar_block_layout : require
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+struct Transform {
+    mat4 inv_m;
+    float sphere_radius;
+    float pad[3];
+};
+
+struct Material {
+    vec4 base_color;
+    float roughness;
+    float metallic;
+    float emissive;
+    uint type;
+};
+
+layout(set = 0, binding = 0, scalar) buffer TransformSoA { Transform tfs[]; } all_tfs[];
+layout(set = 0, binding = 0, scalar) buffer MaterialSoA { Material mats[]; } all_mats[];
+layout(set = 0, binding = 0, scalar) buffer HashGrid { uvec2 cells[]; } all_grids[];
+layout(set = 0, binding = 0, scalar) buffer HashIndices { uint ids[]; } all_indices[];
+layout(set = 0, binding = 2, rgba32f) uniform writeonly image2D all_images[];
+
+layout(push_constant) uniform PushConstants {
+    vec4 cam_pos;
+    vec4 cam_dir;
+    vec4 cam_up;
+    vec4 cam_right;
+    vec2 res;
+    float time;
+    uint num_transforms;
+    uint tf_id, mat_id, img_id, grid_id, idx_id;
+} pc;
+
+const float WORLD_MIN = -20.0;
+const float WORLD_MAX = 20.0;
+const float GRID_RES = 32.0;
+const float CELL_SIZE = 40.0 / 32.0;
+
+bool intersect_aabb(vec3 ro, vec3 rd, vec3 box_min, vec3 box_max, out float t_near, out float t_far) {
+    vec3 inv_rd = 1.0 / rd;
+    vec3 t0 = (box_min - ro) * inv_rd;
+    vec3 t1 = (box_max - ro) * inv_rd;
+    vec3 tmin = min(t0, t1);
+    vec3 tmax = max(t0, t1);
+    t_near = max(tmin.x, max(tmin.y, tmin.z));
+    t_far = min(tmax.x, min(tmax.y, tmax.z));
+    return t_near <= t_far && t_far >= 0.0;
+}
+
+bool intersect_obb(vec3 ro, vec3 rd, uint id, out float t, out vec3 normal) {
+    Transform tf = all_tfs[nonuniformEXT(pc.tf_id)].tfs[id];
+    vec3 l_ro = (tf.inv_m * vec4(ro, 1.0)).xyz;
+    vec3 l_rd = (tf.inv_m * vec4(rd, 0.0)).xyz;
+    float l_rd_len = length(l_rd);
+    vec3 l_rd_norm = l_rd / l_rd_len;
+
+    vec3 inv_rd = 1.0 / l_rd_norm;
+    vec3 t0 = (vec3(-0.5) - l_ro) * inv_rd;
+    vec3 t1 = (vec3(0.5) - l_ro) * inv_rd;
+    vec3 tmin = min(t0, t1);
+    vec3 tmax = max(t0, t1);
+    float tn = max(tmin.x, max(tmin.y, tmin.z));
+    float tf_f = min(tmax.x, min(tmax.y, tmax.z));
+
+    if (tn <= tf_f && tf_f >= 0.0) {
+        t = tn / l_rd_len;
+        if (tn == tmin.x) normal = vec3(-sign(l_rd_norm.x), 0.0, 0.0);
+        else if (tn == tmin.y) normal = vec3(0.0, -sign(l_rd_norm.y), 0.0);
+        else normal = vec3(0.0, 0.0, -sign(l_rd_norm.z));
+        
+        // Transform normal back to world space
+        // Note: inv_m is World->Local. Normal transformation uses transpose of Local->World.
+        // inv_m^-1 is Local->World. (inv_m^-1)^T = inv_m^T.
+        mat3 normal_m = mat3(tf.inv_m);
+        normal = normalize(normal * normal_m); // Correct for row-major vs column-major
+        return true;
+    }
+    return false;
+}
+
+bool trace_shadow(vec3 ro, vec3 rd, int exclude_id) {
+    float t_min, t_max;
+    if (!intersect_aabb(ro, rd, vec3(WORLD_MIN), vec3(WORLD_MAX), t_min, t_max)) return false;
+
+    t_min = max(t_min, 0.0);
+    vec3 p = ro + rd * t_min;
+    vec3 cell_p = (p - WORLD_MIN) / CELL_SIZE;
+    ivec3 cell = clamp(ivec3(floor(cell_p)), ivec3(0), ivec3(31));
+    vec3 step = sign(rd);
+    vec3 t_delta = abs(CELL_SIZE / rd);
+    vec3 t_max_step;
+    for(int i=0; i<3; ++i) {
+        if (rd[i] > 0.0) t_max_step[i] = t_min + (floor(cell_p[i] + 1.0) - cell_p[i]) * t_delta[i];
+        else if (rd[i] < 0.0) t_max_step[i] = t_min + (cell_p[i] - floor(cell_p[i])) * t_delta[i];
+        else t_max_step[i] = 1e30;
+    }
+
+    for (int i = 0; i < 32; ++i) {
+        uint gidx = cell.x + cell.y * 32 + cell.z * 32 * 32;
+        uvec2 cell_data = all_grids[nonuniformEXT(pc.grid_id)].cells[gidx];
+        for (uint j = 0; j < cell_data.y; ++j) {
+            uint id = all_indices[nonuniformEXT(pc.idx_id)].ids[cell_data.x + j];
+            if (int(id) == exclude_id) continue;
+            float t; vec3 n;
+            if (intersect_obb(ro, rd, id, t, n)) return true;
+        }
+        if (t_max_step.x < t_max_step.y) {
+            if (t_max_step.x < t_max_step.z) {
+                cell.x += int(step.x); if (cell.x < 0 || cell.x >= 32) break;
+                t_max_step.x += t_delta.x;
+            } else {
+                cell.z += int(step.z); if (cell.z < 0 || cell.z >= 32) break;
+                t_max_step.z += t_delta.z;
+            }
+        } else {
+            if (t_max_step.y < t_max_step.z) {
+                cell.y += int(step.y); if (cell.y < 0 || cell.y >= 32) break;
+                t_max_step.y += t_delta.y;
+            } else {
+                cell.z += int(step.z); if (cell.z < 0 || cell.z >= 32) break;
+                t_max_step.z += t_delta.z;
+            }
+        }
+    }
+    return false;
+}
+
+void main() {
+    uvec2 pixel = gl_GlobalInvocationID.xy;
+    if (pixel.x >= uint(pc.res.x) || pixel.y >= uint(pc.res.y)) return;
+
+    vec2 uv = (vec2(pixel) / pc.res) * 2.0 - 1.0;
+    uv.x *= pc.res.x / pc.res.y;
+    vec3 rd = normalize(pc.cam_dir.xyz + pc.cam_right.xyz * uv.x + pc.cam_up.xyz * uv.y);
+    vec3 ro = pc.cam_pos.xyz;
+
+    float t_min, t_max;
+    vec3 color = vec3(0.02, 0.02, 0.05) + rd * 0.02;
+
+    if (intersect_aabb(ro, rd, vec3(WORLD_MIN), vec3(WORLD_MAX), t_min, t_max)) {
+        t_min = max(t_min, 0.0);
+        vec3 p = ro + rd * t_min;
+        vec3 cell_p = (p - WORLD_MIN) / CELL_SIZE;
+        ivec3 cell = clamp(ivec3(floor(cell_p)), ivec3(0), ivec3(31));
+        vec3 step = sign(rd);
+        vec3 t_delta = abs(CELL_SIZE / rd);
+        vec3 t_max_step;
+        for(int i=0; i<3; ++i) {
+            if (rd[i] > 0.0) t_max_step[i] = t_min + (floor(cell_p[i] + 1.0) - cell_p[i]) * t_delta[i];
+            else if (rd[i] < 0.0) t_max_step[i] = t_min + (cell_p[i] - floor(cell_p[i])) * t_delta[i];
+            else t_max_step[i] = 1e30;
+        }
+
+        float hit_t = 1e30;
+        vec3 hit_n = vec3(0.0);
+        int hit_id = -1;
+
+        for (int i = 0; i < 64; ++i) {
+            uint gidx = cell.x + cell.y * 32 + cell.z * 32 * 32;
+            uvec2 cell_data = all_grids[nonuniformEXT(pc.grid_id)].cells[gidx];
+            for (uint j = 0; j < cell_data.y; ++j) {
+                uint id = all_indices[nonuniformEXT(pc.idx_id)].ids[cell_data.x + j];
+                float t; vec3 n;
+                if (intersect_obb(ro, rd, id, t, n)) {
+                    if (t < hit_t) { hit_t = t; hit_n = n; hit_id = int(id); }
+                }
+            }
+            if (hit_id != -1) {
+                float next_t = min(t_max_step.x, min(t_max_step.y, t_max_step.z));
+                if (hit_t <= next_t + 0.01) break;
+            }
+            if (t_max_step.x < t_max_step.y) {
+                if (t_max_step.x < t_max_step.z) {
+                    cell.x += int(step.x); if (cell.x < 0 || cell.x >= 32) break;
+                    t_max_step.x += t_delta.x;
+                } else {
+                    cell.z += int(step.z); if (cell.z < 0 || cell.z >= 32) break;
+                    t_max_step.z += t_delta.z;
+                }
+            } else {
+                if (t_max_step.y < t_max_step.z) {
+                    cell.y += int(step.y); if (cell.y < 0 || cell.y >= 32) break;
+                    t_max_step.y += t_delta.y;
+                } else {
+                    cell.z += int(step.z); if (cell.z < 0 || cell.z >= 32) break;
+                    t_max_step.z += t_delta.z;
+                }
+            }
+        }
+
+        if (hit_id != -1) {
+            Material mat = all_mats[nonuniformEXT(pc.mat_id)].mats[hit_id];
+            vec3 L = normalize(vec3(1.0, 1.0, 1.0));
+            float diff = max(dot(hit_n, L), 0.0);
+            color = mat.base_color.rgb * (diff * 0.8 + 0.2);
+            if (mat.emissive > 0.0) color += mat.base_color.rgb * mat.emissive;
+            vec3 shadow_ro = ro + rd * hit_t + hit_n * 0.001;
+            if (trace_shadow(shadow_ro, L, hit_id)) color *= 0.5;
+        }
+    }
+
+    imageStore(all_images[nonuniformEXT(pc.img_id)], ivec2(pixel), vec4(color, 1.0));
+}
