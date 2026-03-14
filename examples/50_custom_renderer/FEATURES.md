@@ -1,79 +1,73 @@
 # 🚀 Example 50: Super-Optimized Hierarchical OBB Renderer
 
-This example demonstrates an industrial-grade compute-based ray tracer capable of rendering hundreds of thousands of Oriented Bounding Boxes (OBBs) at high frame rates using the MoonCrust GPU kernel.
+This example demonstrates an industrial-grade compute-based ray tracer capable of rendering **1,048,576 (2^20)** Oriented Bounding Boxes (OBBs) at high frame rates using the MoonCrust GPU kernel.
 
 ## 🏗️ Architectural Features
 
-### 1. Two-Level Spatial Acceleration (Hierarchical Grid)
-- **Coarse Level**: An 8x8x8 macro-grid used for "empty space skipping." Rays jump through large empty volumes in a single step.
-- **Fine Level**: A 64x64x64 micro-grid for localized object gathering.
-- **Conservative Hashing**: Objects are registered in every cell their bounding sphere touches, ensuring no artifacts during camera movement.
+### 1. GPU-Side Spatial Hashing (Milestone: 1 Million Blocks)
+- **Zero-CPU Building**: The entire spatial hierarchy is constructed on the GPU using a multi-pass compute pipeline.
+- **Pass 1: Binning**: Objects are binned into cell keys based on their spatial position.
+- **Pass 2: Bitonic Sort**: A high-performance parallel sort groups all objects by their cell index contiguously in memory.
+- **Pass 3: Grid Build**: A final pass calculates cell offsets and counts, making the grid ready for ray tracing.
 
-### 2. Digital Differential Analyzer (DDA) Traversal
+### 2. Hierarchical Spatial Acceleration
+- **Macro Level**: An 8x8x8 coarse occupancy grid for high-level empty space skipping.
+- **Micro Level**: A 64x64x64 fine grid for localized object gathering.
+- **Micro-Occupancy Bitmasks**: A third level of acceleration using **64-bit bitmasks** for 4x4x4 "bricks." This allows rays to skip 64 empty cells in a single cycle without touching global memory.
+
+### 3. Digital Differential Analyzer (DDA) Traversal
 - Replaced tiled gathering with per-ray DDA.
-- Rays step through the grid cell-by-cell with **Early Exit** logic (stopping at the first hit).
+- Rays step through the hierarchy cell-by-cell with **Early Exit** logic (stopping at the first hit).
 - Significantly reduces the number of intersection tests compared to brute-force or coarse-tile methods.
 
-### 3. Bindless SoA (Structure of Arrays)
+### 4. Bindless SoA (Structure of Arrays)
 - Direct push-constant indexing into massive GPU buffers.
-- Separated data into specialized buffers (`Transform`, `Material`, `Sphere`, `Grid`, `Indices`) to maximize cache efficiency and memory alignment.
+- Separated data into specialized buffers (`Transform`, `Material`, `Sphere`, `Grid`, `Indices`, `Bitmask`) to maximize cache efficiency and memory alignment.
 
 ## ⚡ Performance Optimizations
 
 ### 1. Sphere-Precheck (16x Faster Skip)
 - Before fetching a heavy 64-byte transformation matrix, the shader performs a fast ray-sphere intersection using a lightweight 16-byte `Sphere` buffer.
-- Minimizes global memory bandwidth and latency by skipping matrix math for 99% of potential candidates.
+- Minimizes global memory bandwidth and latency by skipping matrix math for 99.9% of potential candidates.
 
-### 2. World-to-Local Matrix Inversion
-- Transformation matrices are pre-inverted on the CPU.
-- Ray-OBB intersection is reduced to a simple Ray-AABB test in local space via a single matrix-vector multiplication.
+### 2. Bitmask-Guided Skipping
+- Rays perform a bitwise `AND` against a 64-bit occupancy mask for every "brick" they enter.
+- If the bit is zero, the ray skips the grid fetch and all object tests for that cell, dramatically reducing memory controller pressure.
 
 ### 3. Intelligent Shadow Throttling
 - **Backface Culling**: Shadow rays are skipped for surfaces facing away from the light.
-- **Aggressive Traversal**: Shadow DDA is capped at 24 steps and 8-16 objects per cell to prevent performance "hotspots" in dense clusters.
+- **Aggressive Traversal**: Shadow DDA is capped at 32 steps and 8 objects per cell to prevent performance "hotspots" in dense clusters.
 - **Early Exit**: Shadow rays return immediately upon the first occlusion hit.
 
 ## 🛠️ Technical Rendering Stack (The Pipeline)
 
-### Pass 1: Primary Ray & Lighting (Compute)
-- **Compute Shader**: `render.comp` (Local Size: 16x16)
-- **Target**: Internal Storage Image (`RGBA32F`, `1280x720`)
-- **Operations**:
-    - DDA traversal through Hierarchical Grid.
-    - Sphere pre-check + OBB intersection.
-    - Diffuse + Emissive shading.
-    - Secondary shadow ray DDA pass.
-- **Sync**: `VkImageMemoryBarrier` transitions image from `UNDEFINED` to `GENERAL` (initially) and ensures `SHADER_WRITE` visibility.
+### Pass 1: Hierarchy Rebuild (Optional/Compute)
+- **Shaders**: `hash.comp`, `sort.comp`, `build_grid.comp`.
+- **Logic**: Triggered only when geometry changes (`needs_rebuild`).
+- **Result**: A fully sorted `idx_buf` and updated `grid_buf` + `bitmask_buf`.
 
-### Pass 2: Blit & UI (Graphics)
-- **Graphics Pipeline**: Full-screen triangle (Vertex shader generated index-based).
-- **Fragment Shader**: Sample from Pass 1's Storage Image and output to Swapchain.
-- **Target**: Current Swapchain Image (`BGRA8_UNORM` / `RGBA8_SRGB`).
-- **Sync**: `VkImageMemoryBarrier` transitions Pass 1 image from `GENERAL` to `GENERAL` (ensuring `COMPUTE_SHADER` writes are visible to `FRAGMENT_SHADER` reads).
+### Pass 2: Primary Ray & Lighting (Compute)
+- **Compute Shader**: `render.comp` (Local Size: 16x16).
+- **Operations**: Hierarchical DDA, Bitmask skipping, Sphere pre-check, OBB intersection, and Shadows.
 
-### Pass 3: Debug Overlay (ImGui)
-- **Renderer**: `imgui.render(cb)`
-- **Integration**: Injected directly into the command buffer before Pass 2's `EndRendering` call.
-- **State**: Wall-clock FPS measurement using `SDL_GetPerformanceCounter`.
+### Pass 3: Blit & UI (Graphics)
+- **Graphics Pipeline**: Full-screen triangle blit to swapchain.
+- **Renderer**: `imgui.render(cb)` for debug settings.
 
-## 📦 Data Structures
+## 📦 Data Structures (1M Block Scale)
 
-| Buffer | Element Size | Purpose |
+| Buffer | Size (1M Blocks) | Purpose |
 | :--- | :--- | :--- |
-| `tf_buf` | 64 bytes | World-to-Local `mat4` for every block. |
-| `mat_buf` | 32 bytes | Color, roughness, metallic, emissive data. |
-| `sphere_buf` | 16 bytes | `vec3 center`, `float radius` for fast skipping. |
-| `grid_buf` | 8 bytes | `u32 offset`, `u32 count` for every cell. |
-| `idx_buf` | 4 bytes | Global object index stored per grid cell. |
-| `coarse_buf`| 4 bytes | Occupancy bit (0 or 1) for 8x8x8 macro-cells. |
+| `tf_buf` | 64.0 MB | World-to-Local `mat4` transformation matrices. |
+| `sphere_buf` | 16.0 MB | `vec3 center`, `float radius` for fast skipping. |
+| `sort_buf` | 8.0 MB | Intermediate `{u32 key, u32 val}` pairs for sorting. |
+| `idx_buf` | 4.0 MB | Sorted global object indices. |
+| `grid_buf` | 2.0 MB | `u32 offset`, `u32 count` for 64x64x64 cells. |
+| `bitmask_buf`| 32 KB | 64-bit micro-occupancy masks (16x16x16 bricks). |
 
 ## 🛠️ Interactive Controls
 - **WASD**: Camera movement.
 - **ImGui Settings**: 
-  - Real-time FPS counter (Wall-clock).
-  - Live block count reporting (100,000 blocks).
+  - Real-time Wall-Clock FPS counter.
   - **Shadow Toggle**: Dynamically enable/disable the shadow pass.
-
-## 📈 Scalability
-- Current Milestone: **100,000 blocks**.
-- Targeted toward **1,000,000 blocks** using the foundation of hierarchical grids and GPU-side acceleration building.
+  - **Force Rebuild**: Manually trigger a GPU spatial hash rebuild.
