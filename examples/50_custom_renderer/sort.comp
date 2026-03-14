@@ -1,0 +1,41 @@
+#version 450
+#extension GL_EXT_nonuniform_qualifier : require
+#extension GL_EXT_scalar_block_layout : require
+
+struct Entry {
+    uint key;
+    uint value;
+};
+
+layout(set = 0, binding = 0, scalar) buffer SortBuffer { Entry entries[]; } all_entries[];
+
+layout(push_constant) uniform PC {
+    uint entry_id;
+    uint j;
+    uint k;
+} pc;
+
+layout (local_size_x = 256) in;
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    uint j = pc.j;
+    uint k = pc.k;
+    
+    uint ixj = i ^ j;
+    if (ixj > i) {
+        if ((i & k) == 0) {
+            if (all_entries[pc.entry_id].entries[i].key > all_entries[pc.entry_id].entries[ixj].key) {
+                Entry temp = all_entries[pc.entry_id].entries[i];
+                all_entries[pc.entry_id].entries[i] = all_entries[pc.entry_id].entries[ixj];
+                all_entries[pc.entry_id].entries[ixj] = temp;
+            }
+        } else {
+            if (all_entries[pc.entry_id].entries[i].key < all_entries[pc.entry_id].entries[ixj].key) {
+                Entry temp = all_entries[pc.entry_id].entries[i];
+                all_entries[pc.entry_id].entries[i] = all_entries[pc.entry_id].entries[ixj];
+                all_entries[pc.entry_id].entries[ixj] = temp;
+            }
+        }
+    }
+}

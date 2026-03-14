@@ -22,9 +22,10 @@ local M = {
 }
 
 local device, queue, sw, pipe_layout, pipe_render, pipe_blit
+local pipe_hash, pipe_sort, pipe_build_grid
 local bindless_set, cb, frame_fence, image_available
-local tf_buf, mat_buf, grid_buf, coarse_buf, idx_buf, sphere_buf, out_img
-local num_blocks = 100000 
+local tf_buf, mat_buf, grid_buf, coarse_buf, idx_buf, sphere_buf, sort_buf, out_img
+local num_blocks = 1048576 -- 2^20 for Bitonic Sort
 local grid_res = 64
 local coarse_res = 8
 local world_min, world_max = -20, 20
@@ -56,10 +57,23 @@ ffi.cdef[[
         uint32_t tf_id, mat_id, img_id, grid_id, idx_id;
         uint32_t use_shadows, sphere_id, coarse_id;
     } RenderPC;
+
+    typedef struct HashPC {
+        uint32_t sphere_id, entry_id, num_blocks, pad;
+    } HashPC;
+
+    typedef struct SortPC {
+        uint32_t entry_id, j, k, pad;
+    } SortPC;
+
+    typedef struct BuildPC {
+        uint32_t entry_id, grid_id, coarse_id, idx_id;
+        uint32_t num_blocks, pass, pad[2];
+    } BuildPC;
 ]]
 
 function M.init()
-    print("Example 50: Two-Level Hierarchical Renderer (100k blocks)")
+    print("Example 50: GPU Spatial Hash Renderer (1M blocks)")
     
     local instance, physical_device = vulkan.get_instance(), vulkan.get_physical_device()
     device = vulkan.get_device(); local q, family = vulkan.get_queue(); queue = q
@@ -69,53 +83,26 @@ function M.init()
     M.last_perf_counter = tonumber(sdl.SDL_GetPerformanceCounter())
 
     -- 1. Create Buffers
-    tf_buf = mc.buffer(num_blocks * ffi.sizeof("Transform"), "storage", nil, true)
-    mat_buf = mc.buffer(num_blocks * ffi.sizeof("Material"), "storage", nil, true)
-    sphere_buf = mc.buffer(num_blocks * ffi.sizeof("Sphere"), "storage", nil, true)
+    tf_buf = mc.buffer(num_blocks * ffi.sizeof("Transform"), "storage", nil, false) -- Device only
+    mat_buf = mc.buffer(num_blocks * ffi.sizeof("Material"), "storage", nil, false)
+    sphere_buf = mc.buffer(num_blocks * ffi.sizeof("Sphere"), "storage", nil, false)
     
-    idx_buf = mc.buffer(num_blocks * 32 * 4, "storage", nil, true) 
-    grid_buf = mc.buffer(grid_res * grid_res * grid_res * 8, "storage", nil, true) 
-    coarse_buf = mc.buffer(coarse_res * coarse_res * coarse_res * 4, "storage", nil, true) 
+    idx_buf = mc.buffer(num_blocks * 4, "storage", nil, false) 
+    sort_buf = mc.buffer(num_blocks * 8, "storage", nil, false) -- {u32 key, u32 val}
+    grid_buf = mc.buffer(grid_res * grid_res * grid_res * 8, "storage", nil, false) 
+    coarse_buf = mc.buffer(coarse_res * coarse_res * coarse_res * 4, "storage", nil, false) 
 
     out_img = mc.gpu.image(sw.extent.width, sw.extent.height, vk.VK_FORMAT_R32G32B32A32_SFLOAT, "storage")
 
-    -- Initial layout transition
-    do
-        local pool = command.create_pool(device, family)
-        local t_cb = command.allocate_buffers(device, pool, 1)[1]
-        vk.vkBeginCommandBuffer(t_cb, ffi.new("VkCommandBufferBeginInfo", { sType = vk.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, flags = vk.VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT }))
-        local bar = ffi.new("VkImageMemoryBarrier[1]", {{
-            sType = vk.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-            oldLayout = vk.VK_IMAGE_LAYOUT_UNDEFINED,
-            newLayout = vk.VK_IMAGE_LAYOUT_GENERAL,
-            image = out_img.handle,
-            subresourceRange = { aspectMask = vk.VK_IMAGE_ASPECT_COLOR_BIT, levelCount = 1, layerCount = 1 },
-            srcAccessMask = 0,
-            dstAccessMask = vk.VK_ACCESS_SHADER_WRITE_BIT
-        }})
-        vk.vkCmdPipelineBarrier(t_cb, vk.VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nil, 0, nil, 1, bar)
-        vk.vkEndCommandBuffer(t_cb)
-        vk.vkQueueSubmit(queue, 1, ffi.new("VkSubmitInfo", { sType = vk.VK_STRUCTURE_TYPE_SUBMIT_INFO, commandBufferCount = 1, pCommandBuffers = ffi.new("VkCommandBuffer[1]", {t_cb}) }), nil)
-        vk.vkQueueWaitIdle(queue)
-        vk.vkDestroyCommandPool(device, pool, nil)
-    end
-
-    -- 2. Populate Initial Data
-    local tf_ptr = ffi.cast("Transform*", tf_buf.allocation.ptr)
-    local mat_ptr = ffi.cast("Material*", mat_buf.allocation.ptr)
-    local sphere_ptr = ffi.cast("Sphere*", sphere_buf.allocation.ptr)
-    local coarse_ptr = ffi.cast("uint32_t*", coarse_buf.allocation.ptr)
+    -- 2. Populate Data (using staging because we switched to Device-only for speed)
+    local host_tf = ffi.new("Transform[?]", num_blocks)
+    local host_mat = ffi.new("Material[?]", num_blocks)
+    local host_sphere = ffi.new("Sphere[?]", num_blocks)
     
     math.randomseed(42)
-    local cell_counts = {}
-    for i=0, grid_res^3-1 do cell_counts[i] = 0 end
-    for i=0, coarse_res^3-1 do coarse_ptr[i] = 0 end
-
-    local blocks = {}
-
     for i=0, num_blocks-1 do
         local px, py, pz = (math.random()-0.5)*38, (math.random()-0.5)*38, (math.random()-0.5)*38
-        local sx, sy, sz = 0.2 + math.random()*0.3, 0.2 + math.random()*0.3, 0.2 + math.random()*0.3
+        local sx, sy, sz = 0.1 + math.random()*0.1, 0.1 + math.random()*0.1, 0.1 + math.random()*0.1
         local ry = math.random() * math.pi * 2
         
         local m = math_util.mat4_translate(px, py, pz)
@@ -124,72 +111,20 @@ function M.init()
         m = math_util.mat4_multiply(m, m_scale)
         
         local inv_m = math_util.mat4_inverse(m)
-        for j=0,15 do tf_ptr[i].inv_m[j] = inv_m.m[j] end
-        
+        for j=0,15 do host_tf[i].inv_m[j] = inv_m.m[j] end
         local r = math.sqrt(sx*sx + sy*sy + sz*sz) * 0.5
-        sphere_ptr[i].x, sphere_ptr[i].y, sphere_ptr[i].z, sphere_ptr[i].r = px, py, pz, r
+        host_sphere[i].x, host_sphere[i].y, host_sphere[i].z, host_sphere[i].r = px, py, pz, r
         
-        mat_ptr[i].r, mat_ptr[i].g, mat_ptr[i].b, mat_ptr[i].a = math.random(), math.random(), math.random(), 1
-        mat_ptr[i].roughness = math.random()
-        mat_ptr[i].metallic = math.random()
-        mat_ptr[i].emissive = (math.random() > 0.995) and 5.0 or 0.0
-        mat_ptr[i].type = 1
-        
-        local min_gx = math.max(0, math.floor((px - r - world_min) / cell_size))
-        local max_gx = math.min(grid_res-1, math.floor((px + r - world_min) / cell_size))
-        local min_gy = math.max(0, math.floor((py - r - world_min) / cell_size))
-        local max_gy = math.min(grid_res-1, math.floor((py + r - world_min) / cell_size))
-        local min_gz = math.max(0, math.floor((pz - r - world_min) / cell_size))
-        local max_gz = math.min(grid_res-1, math.floor((pz + r - world_min) / cell_size))
-
-        blocks[i] = {min_gx, max_gx, min_gy, max_gy, min_gz, max_gz}
-
-        for gx = min_gx, max_gx do
-            local cx = math.floor(gx / (grid_res / coarse_res))
-            for gy = min_gy, max_gy do
-                local cy = math.floor(gy / (grid_res / coarse_res))
-                for gz = min_gz, max_gz do
-                    local cz = math.floor(gz / (grid_res / coarse_res))
-                    local gidx = gx + gy*grid_res + gz*grid_res*grid_res
-                    cell_counts[gidx] = cell_counts[gidx] + 1
-                    
-                    local cidx = cx + cy*coarse_res + cz*coarse_res*coarse_res
-                    coarse_ptr[cidx] = 1 -- Mark as occupied
-                end
-            end
-        end
+        host_mat[i].r, host_mat[i].g, host_mat[i].b, host_mat[i].a = math.random(), math.random(), math.random(), 1
+        host_mat[i].roughness = math.random()
+        host_mat[i].metallic = math.random()
+        host_mat[i].emissive = (math.random() > 0.999) and 5.0 or 0.0
+        host_mat[i].type = 1
     end
 
-    local grid_ptr = ffi.cast("uint32_t*", grid_buf.allocation.ptr)
-    local idx_ptr = ffi.cast("uint32_t*", idx_buf.allocation.ptr)
-    local current_offset = 0
-    local cell_offsets = {}
-    for i=0, grid_res^3-1 do
-        grid_ptr[i*2] = current_offset
-        grid_ptr[i*2+1] = 0 
-        cell_offsets[i] = current_offset
-        current_offset = current_offset + cell_counts[i]
-    end
-
-    if current_offset > idx_buf.size / 4 then
-        print("WARNING: idx_buf too small! Needed " .. current_offset .. " but have " .. idx_buf.size/4)
-    end
-
-    for i=0, num_blocks-1 do
-        local b = blocks[i]
-        for gx = b[1], b[2] do
-            for gy = b[3], b[4] do
-                for gz = b[5], b[6] do
-                    local gidx = gx + gy*grid_res + gz*grid_res*grid_res
-                    local pos = cell_offsets[gidx] + grid_ptr[gidx*2+1]
-                    if pos < idx_buf.size / 4 then
-                        idx_ptr[pos] = i
-                        grid_ptr[gidx*2+1] = grid_ptr[gidx*2+1] + 1
-                    end
-                end
-            end
-        end
-    end
+    tf_buf:upload(host_tf)
+    mat_buf:upload(host_mat)
+    sphere_buf:upload(host_sphere)
 
     -- 3. Bindless & Descriptors
     bindless_set = mc.gpu.get_bindless_set(); local bl_layout = mc.gpu.get_bindless_layout()
@@ -200,13 +135,21 @@ function M.init()
     descriptors.update_buffer_set(device, bindless_set, 0, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, idx_buf.handle, 0, idx_buf.size, 3)
     descriptors.update_buffer_set(device, bindless_set, 0, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, sphere_buf.handle, 0, sphere_buf.size, 4)
     descriptors.update_buffer_set(device, bindless_set, 0, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, coarse_buf.handle, 0, coarse_buf.size, 5)
+    descriptors.update_buffer_set(device, bindless_set, 0, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, sort_buf.handle, 0, sort_buf.size, 6)
 
     -- 4. Pipelines
-    local pc_range = ffi.new("VkPushConstantRange[1]", {{ stageFlags = 0x7FFFFFFF, offset = 0, size = ffi.sizeof("RenderPC") }})
+    local pc_range = ffi.new("VkPushConstantRange[1]", {{ stageFlags = 0x7FFFFFFF, offset = 0, size = 128 }})
     pipe_layout = pipeline.create_layout(device, {bl_layout}, pc_range)
 
-    local render_src = io.open("examples/50_custom_renderer/render.comp"):read("*all")
-    pipe_render = pipeline.create_compute_pipeline(device, pipe_layout, shader.create_module(device, shader.compile_glsl(render_src, vk.VK_SHADER_STAGE_COMPUTE_BIT)))
+    local function load_comp(path)
+        local src = io.open(path):read("*all")
+        return pipeline.create_compute_pipeline(device, pipe_layout, shader.create_module(device, shader.compile_glsl(src, vk.VK_SHADER_STAGE_COMPUTE_BIT)))
+    end
+
+    pipe_render = load_comp("examples/50_custom_renderer/render.comp")
+    pipe_hash = load_comp("examples/50_custom_renderer/hash.comp")
+    pipe_sort = load_comp("examples/50_custom_renderer/sort.comp")
+    pipe_build_grid = load_comp("examples/50_custom_renderer/build_grid.comp")
     
     local v_mod = shader.create_module(device, shader.compile_glsl([[
         #version 450
@@ -221,15 +164,8 @@ function M.init()
         layout(location = 0) out vec4 outColor;
         layout(set = 0, binding = 2, rgba32f) uniform readonly image2D tex[];
         layout(push_constant) uniform PC { 
-            vec4 cam_pos;
-            vec4 cam_dir;
-            vec4 cam_up;
-            vec4 cam_right;
-            vec2 res;
-            float time;
-            uint num_transforms;
-            uint tf_id, mat_id, img_id, grid_id, idx_id;
-            uint use_shadows, sphere_id, coarse_id;
+            float pad[22];
+            uint img_id;
         } pc;
         void main() {
             outColor = imageLoad(tex[nonuniformEXT(pc.img_id)], ivec2(gl_FragCoord.xy));
@@ -270,6 +206,52 @@ function M.update()
 
     vk.vkResetCommandBuffer(cb, 0); vk.vkBeginCommandBuffer(cb, ffi.new("VkCommandBufferBeginInfo", { sType = vk.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO }))
     
+    -- GPU SPATIAL HASH BUILDING
+    -- 1. Hash Pass
+    local h_pc = ffi.new("HashPC", { sphere_id = 4, entry_id = 6, num_blocks = num_blocks })
+    vk.vkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_hash)
+    vk.vkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_layout, 0, 1, ffi.new("VkDescriptorSet[1]", {bindless_set}), 0, nil)
+    vk.vkCmdPushConstants(cb, pipe_layout, 0x7FFFFFFF, 0, ffi.sizeof("HashPC"), h_pc)
+    vk.vkCmdDispatch(cb, num_blocks / 256, 1, 1)
+
+    local bar_hash = ffi.new("VkBufferMemoryBarrier[1]", {{ sType=vk.VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER, srcAccessMask=vk.VK_ACCESS_SHADER_WRITE_BIT, dstAccessMask=bit.bor(vk.VK_ACCESS_SHADER_READ_BIT, vk.VK_ACCESS_SHADER_WRITE_BIT), buffer=sort_buf.handle, offset=0, size=sort_buf.size }})
+    vk.vkCmdPipelineBarrier(cb, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nil, 1, bar_hash, 0, nil)
+
+    -- 2. Sort Pass (Bitonic)
+    vk.vkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_sort)
+    local s_pc = ffi.new("SortPC", { entry_id = 6 })
+    local k = 2
+    while k <= num_blocks do
+        local j = k / 2
+        while j >= 1 do
+            s_pc.j, s_pc.k = j, k
+            vk.vkCmdPushConstants(cb, pipe_layout, 0x7FFFFFFF, 0, ffi.sizeof("SortPC"), s_pc)
+            vk.vkCmdDispatch(cb, num_blocks / 256, 1, 1)
+            vk.vkCmdPipelineBarrier(cb, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nil, 1, bar_hash, 0, nil)
+            j = j / 2
+        end
+        k = k * 2
+    end
+
+    -- 3. Build Grid Pass
+    local b_pc = ffi.new("BuildPC", { entry_id = 6, grid_id = 2, coarse_id = 5, idx_id = 3, num_blocks = num_blocks, pass = 0 })
+    vk.vkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_build_grid)
+    vk.vkCmdPushConstants(cb, pipe_layout, 0x7FFFFFFF, 0, ffi.sizeof("BuildPC"), b_pc)
+    vk.vkCmdDispatch(cb, math.ceil((grid_res^3) / 256), 1, 1) -- Clear pass
+
+    local bar_grid = ffi.new("VkBufferMemoryBarrier[2]", {
+        { sType=vk.VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER, srcAccessMask=vk.VK_ACCESS_SHADER_WRITE_BIT, dstAccessMask=bit.bor(vk.VK_ACCESS_SHADER_READ_BIT, vk.VK_ACCESS_SHADER_WRITE_BIT), buffer=grid_buf.handle, offset=0, size=grid_buf.size },
+        { sType=vk.VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER, srcAccessMask=vk.VK_ACCESS_SHADER_WRITE_BIT, dstAccessMask=bit.bor(vk.VK_ACCESS_SHADER_READ_BIT, vk.VK_ACCESS_SHADER_WRITE_BIT), buffer=coarse_buf.handle, offset=0, size=coarse_buf.size }
+    })
+    vk.vkCmdPipelineBarrier(cb, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nil, 2, bar_grid, 0, nil)
+
+    b_pc.pass = 1
+    vk.vkCmdPushConstants(cb, pipe_layout, 0x7FFFFFFF, 0, ffi.sizeof("BuildPC"), b_pc)
+    vk.vkCmdDispatch(cb, num_blocks / 256, 1, 1) -- Build pass
+
+    vk.vkCmdPipelineBarrier(cb, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nil, 2, bar_grid, 0, nil)
+
+    -- RENDER PASS
     local pc = ffi.new("RenderPC")
     pc.cam_px, pc.cam_py, pc.cam_pz = M.cam_pos[1], M.cam_pos[2], M.cam_pos[3]
     pc.cam_dx, pc.cam_dy, pc.cam_dz = dir[1], dir[2], dir[3]
@@ -282,7 +264,6 @@ function M.update()
     pc.use_shadows, pc.sphere_id, pc.coarse_id = (M.enable_shadows and 1 or 0), 4, 5
 
     vk.vkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_render)
-    vk.vkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_layout, 0, 1, ffi.new("VkDescriptorSet[1]", {bindless_set}), 0, nil)
     vk.vkCmdPushConstants(cb, pipe_layout, 0x7FFFFFFF, 0, ffi.sizeof("RenderPC"), pc)
     vk.vkCmdDispatch(cb, math.ceil(sw.extent.width / 16), math.ceil(sw.extent.height / 16), 1)
 
@@ -333,7 +314,6 @@ function M.update()
     local freq = tonumber(sdl.SDL_GetPerformanceFrequency())
     local dt = (now - M.last_perf_counter) / freq
     M.last_perf_counter = now
-    
     table.insert(M.frame_times, dt)
     if #M.frame_times > 60 then table.remove(M.frame_times, 1) end
     local sum = 0

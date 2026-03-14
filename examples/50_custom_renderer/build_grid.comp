@@ -1,0 +1,66 @@
+#version 450
+#extension GL_EXT_nonuniform_qualifier : require
+#extension GL_EXT_scalar_block_layout : require
+
+struct Entry {
+    uint key;
+    uint value;
+};
+
+layout(set = 0, binding = 0, scalar) buffer SortBuffer { Entry entries[]; } all_entries[];
+layout(set = 0, binding = 0, scalar) buffer HashGrid { uvec2 cells[]; } all_grids[];
+layout(set = 0, binding = 0, scalar) buffer CoarseGrid { uint occupied[]; } all_coarse[];
+layout(set = 0, binding = 0, scalar) buffer HashIndices { uint ids[]; } all_indices[];
+
+layout(push_constant) uniform PC {
+    uint entry_id;
+    uint grid_id;
+    uint coarse_id;
+    uint idx_id;
+    uint num_blocks;
+    uint pass; // 0 = clear, 1 = build
+} pc;
+
+layout (local_size_x = 256) in;
+
+void main() {
+    uint id = gl_GlobalInvocationID.x;
+
+    if (pc.pass == 0) {
+        // Clear Pass (Running over grid resolution)
+        if (id < 64*64*64) {
+            all_grids[pc.grid_id].cells[id] = uvec2(0, 0);
+        }
+        if (id < 8*8*8) {
+            all_coarse[pc.coarse_id].occupied[id] = 0;
+        }
+        return;
+    }
+
+    // Build Pass (Running over num_blocks)
+    if (id >= pc.num_blocks) return;
+
+    // Load ID into indices buffer (for ray tracing)
+    all_indices[pc.idx_id].ids[id] = all_entries[pc.entry_id].entries[id].value;
+
+    uint key = all_entries[pc.entry_id].entries[id].key;
+    
+    // Find boundaries
+    bool is_start = (id == 0) || (key != all_entries[pc.entry_id].entries[id-1].key);
+    bool is_end = (id == pc.num_blocks - 1) || (key != all_entries[pc.entry_id].entries[id+1].key);
+
+    if (is_start) {
+        all_grids[pc.grid_id].cells[key].x = id; // Offset
+    }
+    if (is_end) {
+        uint start = all_grids[pc.grid_id].cells[key].x;
+        all_grids[pc.grid_id].cells[key].y = id - start + 1; // Count
+        
+        // Mark coarse grid
+        uint cz = (key / (64 * 64)) / 8;
+        uint cy = ((key / 64) % 64) / 8;
+        uint cx = (key % 64) / 8;
+        uint cidx = cx + cy * 8 + cz * 8 * 8;
+        all_coarse[pc.coarse_id].occupied[cidx] = 1;
+    }
+}

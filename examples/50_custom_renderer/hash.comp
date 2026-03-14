@@ -1,0 +1,42 @@
+#version 450
+#extension GL_EXT_nonuniform_qualifier : require
+#extension GL_EXT_scalar_block_layout : require
+
+struct Sphere {
+    vec4 data; // x, y, z, r
+};
+
+struct Entry {
+    uint key;   // Cell Index
+    uint value; // Block ID
+};
+
+layout(set = 0, binding = 0, scalar) buffer SphereSoA { Sphere spheres[]; } all_spheres[];
+layout(set = 0, binding = 0, scalar) buffer SortBuffer { Entry entries[]; } all_entries[];
+
+layout(push_constant) uniform PC {
+    uint sphere_id;
+    uint entry_id;
+    uint num_blocks;
+} pc;
+
+const float WORLD_MIN = -20.0;
+const float GRID_RES = 64.0;
+const float CELL_SIZE = 40.0 / 64.0;
+
+layout (local_size_x = 256) in;
+
+void main() {
+    uint id = gl_GlobalInvocationID.x;
+    if (id >= pc.num_blocks) return;
+
+    vec3 p = all_spheres[pc.sphere_id].spheres[id].data.xyz;
+    
+    ivec3 cell = ivec3(floor((p - WORLD_MIN) / CELL_SIZE));
+    cell = clamp(cell, ivec3(0), ivec3(63));
+    
+    uint key = uint(cell.x + cell.y * 64 + cell.z * 64 * 64);
+    
+    all_entries[pc.entry_id].entries[id].key = key;
+    all_entries[pc.entry_id].entries[id].value = id;
+}
