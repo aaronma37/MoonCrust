@@ -87,7 +87,7 @@ function M.init()
 	sort_buf_alt = mc.buffer(MAX_SORT_COUNT * 8, "storage")
     tile_count_buf = mc.buffer(TOTAL_TILES * 4, "storage")
     tile_offset_buf = mc.buffer(TOTAL_TILES * 8, "storage")
-    bin_buf = mc.buffer(MAX_SORT_COUNT * 64, "storage") 
+    bin_buf = mc.buffer(MAX_SORT_COUNT * 128, "storage") -- Increased to 128 splats per sort entry
 	count_buf = mc.buffer(16 * 4, "storage") 
 	histogram_buf = mc.buffer(256 * 4, "storage") 
 
@@ -111,6 +111,7 @@ function M.init()
 	pipe_raster = load_comp("examples/49_compute_splatter/raster.comp")
 	pipe_prefix_sum = load_comp("examples/49_compute_splatter/prefix_sum.comp") 
 	pipe_radix_scatter = load_comp("examples/49_compute_splatter/radix_scatter.comp")
+    pipe_radix_hist = load_comp("examples/49_compute_splatter/radix_histogram.comp")
 	pipe_binning = load_comp("examples/49_compute_splatter/binning_tiles.comp") 
     pipe_identify = load_comp("examples/49_compute_splatter/identify_ranges.comp")
 
@@ -205,8 +206,8 @@ function M.update()
         local full_barrier = ffi.new("VkMemoryBarrier[1]", {{ sType = vk.VK_STRUCTURE_TYPE_MEMORY_BARRIER, srcAccessMask = vk.VK_ACCESS_SHADER_WRITE_BIT, dstAccessMask = bit.bor(vk.VK_ACCESS_SHADER_READ_BIT, vk.VK_ACCESS_SHADER_WRITE_BIT) }})
         vk.vkCmdPipelineBarrier(cmd.buffer, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, full_barrier, 0, nil, 0, nil)
 
-        -- 2. SORT (1-Pass Radix: Most Significant 8 bits)
-        sort_pc.buf_id, sort_pc.alt_id, sort_pc.hist_id, sort_pc.pass, sort_pc.count = 15, 17, 18, 3, GAUSSIAN_COUNT * 3
+        -- 2. SORT (Pass 0: Bits 0-7)
+        sort_pc.buf_id, sort_pc.alt_id, sort_pc.hist_id, sort_pc.pass, sort_pc.count = 15, 17, 18, 0, GAUSSIAN_COUNT * 3
         vk.vkCmdBindPipeline(cmd.buffer, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_prefix_sum)
         vk.vkCmdPushConstants(cmd.buffer, pipe_layout, bit.bor(vk.VK_SHADER_STAGE_ALL_GRAPHICS, vk.VK_SHADER_STAGE_COMPUTE_BIT), 0, 256, sort_pc)
         vk.vkCmdDispatch(cmd.buffer, 1, 1, 1)
@@ -217,8 +218,28 @@ function M.update()
         vk.vkCmdDispatch(cmd.buffer, math.ceil(sort_pc.count / 512), 1, 1)
         vk.vkCmdPipelineBarrier(cmd.buffer, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, full_barrier, 0, nil, 0, nil)
 
-        -- 3. BINNING (Pre-pass to count tile splats)
-        binning_pc.s_id, binning_pc.c_id, binning_pc.tc_id, binning_pc.to_id, binning_pc.b_id = 17, 11, 12, 13, 14
+        -- 2.5 SORT (Pass 1: Bits 8-15)
+        vk.vkCmdFillBuffer(cmd.buffer, histogram_buf.handle, 0, histogram_buf.size, 0)
+        vk.vkCmdPipelineBarrier(cmd.buffer, vk.VK_PIPELINE_STAGE_TRANSFER_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, clear_barrier, 0, nil, 0, nil)
+        
+        sort_pc.buf_id, sort_pc.alt_id, sort_pc.pass = 17, 15, 1
+        vk.vkCmdBindPipeline(cmd.buffer, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_radix_hist)
+        vk.vkCmdPushConstants(cmd.buffer, pipe_layout, bit.bor(vk.VK_SHADER_STAGE_ALL_GRAPHICS, vk.VK_SHADER_STAGE_COMPUTE_BIT), 0, 256, sort_pc)
+        vk.vkCmdDispatch(cmd.buffer, math.ceil(sort_pc.count / 512), 1, 1)
+        vk.vkCmdPipelineBarrier(cmd.buffer, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, full_barrier, 0, nil, 0, nil)
+
+        vk.vkCmdBindPipeline(cmd.buffer, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_prefix_sum)
+        vk.vkCmdPushConstants(cmd.buffer, pipe_layout, bit.bor(vk.VK_SHADER_STAGE_ALL_GRAPHICS, vk.VK_SHADER_STAGE_COMPUTE_BIT), 0, 256, sort_pc)
+        vk.vkCmdDispatch(cmd.buffer, 1, 1, 1)
+        vk.vkCmdPipelineBarrier(cmd.buffer, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, full_barrier, 0, nil, 0, nil)
+        
+        vk.vkCmdBindPipeline(cmd.buffer, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_radix_scatter)
+        vk.vkCmdPushConstants(cmd.buffer, pipe_layout, bit.bor(vk.VK_SHADER_STAGE_ALL_GRAPHICS, vk.VK_SHADER_STAGE_COMPUTE_BIT), 0, 256, sort_pc)
+        vk.vkCmdDispatch(cmd.buffer, math.ceil(sort_pc.count / 512), 1, 1)
+        vk.vkCmdPipelineBarrier(cmd.buffer, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, full_barrier, 0, nil, 0, nil)
+
+        -- 3. BINNING (Use slot 15 as the finally sorted buffer)
+        binning_pc.s_id, binning_pc.c_id, binning_pc.tc_id, binning_pc.to_id, binning_pc.b_id = 15, 11, 12, 13, 14
         binning_pc.count, binning_pc.screen_w, binning_pc.screen_h = GAUSSIAN_COUNT * 3, sw.extent.width, sw.extent.height
         binning_pc.tiles_x, binning_pc.tiles_y, binning_pc.scatter_mode = NUM_TILES_X, NUM_TILES_Y, 0
         vk.vkCmdBindPipeline(cmd.buffer, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_binning)
@@ -242,7 +263,7 @@ function M.update()
         vk.vkCmdPipelineBarrier(cmd.buffer, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, full_barrier, 0, nil, 0, nil)
 
         -- 6. RASTER
-        raster_pc.p_id, raster_pc.s_id, raster_pc.b_id, raster_pc.tr_id, raster_pc.img_id = 10, 17, 14, 13, 3
+        raster_pc.p_id, raster_pc.s_id, raster_pc.b_id, raster_pc.tr_id, raster_pc.img_id = 10, 15, 14, 13, 3
         raster_pc.screen_w, raster_pc.screen_h, raster_pc.count = sw.extent.width, sw.extent.height, GAUSSIAN_COUNT * 3
         raster_pc.cam_pos, raster_pc.light_dir = { M.cam_pos[1], M.cam_pos[2], M.cam_pos[3], 0 }, light_dir
         vk.vkCmdBindPipeline(cmd.buffer, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_raster)

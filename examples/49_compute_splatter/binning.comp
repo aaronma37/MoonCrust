@@ -176,18 +176,19 @@ void main() {
     all_projected[pc.p_id].p[packed_idx].inv_cov = vec4(i_cov.x * -0.5, i_cov.y * -1.0, i_cov.z * -0.5, 0.0); 
     all_projected[pc.p_id].p[packed_idx].color_alpha = vec4(lit_color, opacity * 10.0); 
 
-    // Linearize depth for perfectly stable 1-pass sorting (0.0 to 50.0 meters)
+    // Linearize depth for perfectly stable 2-pass sorting (0.0 to 51.2 meters)
     float depth = -pos_v.z;
-    uint linearized_depth = uint(clamp(depth * 5.0, 0.0, 255.0));
-    all_sort_bufs[pc.s_id].entries[packed_idx].depth_key = (linearized_depth << 24); // Store in Pass 3 byte
+    uint linearized_depth = uint(clamp(depth * 5.0, 0.0, 65535.0));
+    all_sort_bufs[pc.s_id].entries[packed_idx].depth_key = linearized_depth; 
     all_sort_bufs[pc.s_id].entries[packed_idx].splat_id = packed_idx;
 
-    uint bucket = (floatBitsToUint(-pos_v.z) >> 0) & 0xFF;
+    // Fix: First-pass histogram (Pass 0, Bits 0-7)
+    uint bucket = (linearized_depth >> 0) & 0xFF;
     atomicAdd(all_histograms[pc.hist_id].histogram[bucket], 1);
 
     float mid = 0.5 * (cov2d.x + cov2d.z);
-    det = cov2d.x * cov2d.z - cov2d.y * cov2d.y;
-    float lambda1 = mid + sqrt(max(0.1, mid * mid - det));
+    float det_cull = cov2d.x * cov2d.z - cov2d.y * cov2d.y;
+    float lambda1 = mid + sqrt(max(0.1, mid * mid - det_cull));
     all_cull_data[pc.c_id].c[packed_idx].pos = ndc;
     all_cull_data[pc.c_id].c[packed_idx].radius = ceil(3.5 * sqrt(max(0.1, lambda1)));
 }

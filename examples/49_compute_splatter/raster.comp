@@ -84,9 +84,10 @@ void main() {
                 if (p > 0.0 || p < -6.0) continue; 
                 
                 float a = fast_exp(p); 
-                final_color.r += T * a * chunk_precalc[i].cr;
-                final_color.g += T * a * chunk_precalc[i].cg;
-                final_color.b += T * a * chunk_precalc[i].cb;
+                float weight = T * a;
+                final_color.r += weight * chunk_precalc[i].cr;
+                final_color.g += weight * chunk_precalc[i].cg;
+                final_color.b += weight * chunk_precalc[i].cb;
                 T *= max(0.0, 1.0 - a * chunk_precalc[i].a_scaled);
                 
                 if (T < 0.001) { alive = false; break; }

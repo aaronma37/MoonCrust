@@ -43,25 +43,23 @@ void main() {
             CullData cd = all_cull_data[pc.c_id].c[s_id];
             vec2 screen_pos = (cd.pos * 0.5 + 0.5) * vec2(pc.screen_w, pc.screen_h);
             float r = cd.radius;
-            
             min_tx = max(0, int((screen_pos.x - r) / 16.0));
             max_tx = min(int(pc.tiles_x) - 1, int((screen_pos.x + r) / 16.0));
             min_ty = max(0, int((screen_pos.y - r) / 16.0));
             max_ty = min(int(pc.tiles_y) - 1, int((screen_pos.y + r) / 16.0));
-            
+
             if ((max_tx - min_tx + 1) * (max_ty - min_ty + 1) > 256) active_thread = false;
-        } else {
+            } else {
             active_thread = false;
-        }
-    }
+            }
+            }
 
-    if (!subgroupAny(active_thread)) return;
+            if (!subgroupAny(active_thread)) return;
 
-    // Corrected Subgroup Binning: Still simple but thread-safe
-    for (int ty = min_ty; ty <= max_ty; ty++) {
-        if (!active_thread) break; 
-        for (int tx = min_tx; tx <= max_tx; tx++) {
-            uint tile_idx = uint(ty) * pc.tiles_x + uint(tx);
+            for (int ty = min_ty; ty <= max_ty; ty++) {
+            uint row_idx = uint(ty) * pc.tiles_x;
+            for (int tx = min_tx; tx <= max_tx; tx++) {
+            uint tile_idx = row_idx + uint(tx);
             if (pc.scatter_mode == 0) {
                 atomicAdd(all_tile_counts[pc.tc_id].counts[tile_idx], 1);
             } else {
@@ -69,6 +67,6 @@ void main() {
                 uint local_off = atomicAdd(all_tile_offsets[pc.to_id].offsets[tile_idx * 2 + 1], 1);
                 all_bins[pc.b_id].ids[start_idx + local_off] = s_id;
             }
-        }
-    }
-}
+            }
+            }
+            }
