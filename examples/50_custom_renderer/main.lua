@@ -8,6 +8,7 @@ local command = require("vulkan.command")
 local input = require("mc.input")
 local math_util = require("mc.math")
 local imgui = require("imgui")
+local sdl = require("vulkan.sdl")
 
 local M = { 
     cam_pos = {0, 5, -10},
@@ -15,12 +16,14 @@ local M = {
     cam_pitch = 0,
     current_time = 0,
     fps = 0,
-    frame_times = {}
+    frame_times = {},
+    enable_shadows = true,
+    last_perf_counter = 0
 }
 
 local device, queue, sw, pipe_layout, pipe_render, pipe_blit
 local bindless_set, cb, frame_fence, image_available
-local tf_buf, mat_buf, grid_buf, idx_buf, out_img
+local tf_buf, mat_buf, grid_buf, idx_buf, sphere_buf, out_img
 local num_blocks = 10000 
 local grid_res = 32
 local world_min, world_max = -20, 20
@@ -29,8 +32,6 @@ local cell_size = (world_max - world_min) / grid_res
 ffi.cdef[[
     typedef struct Transform {
         float inv_m[16]; 
-        float sphere_radius;
-        float pad[3];
     } Transform;
 
     typedef struct Material {
@@ -38,6 +39,10 @@ ffi.cdef[[
         float roughness, metallic, emissive;
         uint32_t type;
     } Material;
+
+    typedef struct Sphere {
+        float x, y, z, r;
+    } Sphere;
 
     typedef struct RenderPC {
         float cam_px, cam_py, cam_pz, cam_pw;
@@ -48,21 +53,24 @@ ffi.cdef[[
         float time;
         uint32_t num_transforms;
         uint32_t tf_id, mat_id, img_id, grid_id, idx_id;
+        uint32_t use_shadows, sphere_id;
     } RenderPC;
 ]]
 
 function M.init()
-    print("Example 50: Optimized DDA Renderer")
+    print("Example 50: Super-Optimized DDA Renderer")
     
     local instance, physical_device = vulkan.get_instance(), vulkan.get_physical_device()
     device = vulkan.get_device(); local q, family = vulkan.get_queue(); queue = q
     sw = swapchain.new(instance, physical_device, device, _G._SDL_WINDOW)
 
     imgui.init()
+    M.last_perf_counter = tonumber(sdl.SDL_GetPerformanceCounter())
 
     -- 1. Create Buffers
     tf_buf = mc.buffer(num_blocks * ffi.sizeof("Transform"), "storage", nil, true)
     mat_buf = mc.buffer(num_blocks * ffi.sizeof("Material"), "storage", nil, true)
+    sphere_buf = mc.buffer(num_blocks * ffi.sizeof("Sphere"), "storage", nil, true)
     
     idx_buf = mc.buffer(num_blocks * 32, "storage", nil, true) 
     grid_buf = mc.buffer(grid_res * grid_res * grid_res * 8, "storage", nil, true) 
@@ -93,6 +101,7 @@ function M.init()
     -- 2. Populate Initial Data
     local tf_ptr = ffi.cast("Transform*", tf_buf.allocation.ptr)
     local mat_ptr = ffi.cast("Material*", mat_buf.allocation.ptr)
+    local sphere_ptr = ffi.cast("Sphere*", sphere_buf.allocation.ptr)
     
     math.randomseed(42)
     local cell_counts = {}
@@ -114,7 +123,7 @@ function M.init()
         for j=0,15 do tf_ptr[i].inv_m[j] = inv_m.m[j] end
         
         local r = math.sqrt(sx*sx + sy*sy + sz*sz) * 0.5
-        tf_ptr[i].sphere_radius = r
+        sphere_ptr[i].x, sphere_ptr[i].y, sphere_ptr[i].z, sphere_ptr[i].r = px, py, pz, r
         
         mat_ptr[i].r, mat_ptr[i].g, mat_ptr[i].b, mat_ptr[i].a = math.random(), math.random(), math.random(), 1
         mat_ptr[i].roughness = math.random()
@@ -173,6 +182,7 @@ function M.init()
     descriptors.update_storage_image_set(device, bindless_set, 2, vk.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, out_img.view, vk.VK_IMAGE_LAYOUT_GENERAL, 0)
     descriptors.update_buffer_set(device, bindless_set, 0, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, grid_buf.handle, 0, grid_buf.size, 2)
     descriptors.update_buffer_set(device, bindless_set, 0, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, idx_buf.handle, 0, idx_buf.size, 3)
+    descriptors.update_buffer_set(device, bindless_set, 0, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, sphere_buf.handle, 0, sphere_buf.size, 4)
 
     -- 4. Pipelines
     local pc_range = ffi.new("VkPushConstantRange[1]", {{ stageFlags = 0x7FFFFFFF, offset = 0, size = ffi.sizeof("RenderPC") }})
@@ -202,6 +212,7 @@ function M.init()
             float time;
             uint num_transforms;
             uint tf_id, mat_id, img_id, grid_id, idx_id;
+            uint use_shadows, sphere_id;
         } pc;
         void main() {
             outColor = imageLoad(tex[nonuniformEXT(pc.img_id)], ivec2(gl_FragCoord.xy));
@@ -217,7 +228,6 @@ function M.init()
 end
 
 function M.update()
-    local start_time = os.clock()
     vk.vkWaitForFences(device, 1, ffi.new("VkFence[1]", {frame_fence}), vk.VK_TRUE, 0xFFFFFFFFFFFFFFFFULL)
     vk.vkResetFences(device, 1, ffi.new("VkFence[1]", {frame_fence}))
     local idx = sw:acquire_next_image(image_available)
@@ -252,6 +262,7 @@ function M.update()
     pc.time = M.current_time
     pc.num_transforms = num_blocks
     pc.tf_id, pc.mat_id, pc.img_id, pc.grid_id, pc.idx_id = 0, 1, 0, 2, 3
+    pc.use_shadows, pc.sphere_id = (M.enable_shadows and 1 or 0), 4
 
     vk.vkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_render)
     vk.vkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_layout, 0, 1, ffi.new("VkDescriptorSet[1]", {bindless_set}), 0, nil)
@@ -284,8 +295,12 @@ function M.update()
     
     imgui.new_frame()
     imgui.gui.igSetNextWindowPos(ffi.new("ImVec2_c", 10, 10), imgui.gui.ImGuiCond_Always, ffi.new("ImVec2_c", 0, 0))
-    imgui.gui.igBegin("Performance", nil, bit.bor(imgui.gui.ImGuiWindowFlags_AlwaysAutoResize, imgui.gui.ImGuiWindowFlags_NoDecoration, imgui.gui.ImGuiWindowFlags_NoInputs))
+    imgui.gui.igBegin("Settings", nil, imgui.gui.ImGuiWindowFlags_AlwaysAutoResize)
     imgui.gui.igText(string.format("FPS: %.1f", M.fps))
+    local p_shadows = ffi.new("bool[1]", M.enable_shadows)
+    if imgui.gui.igCheckbox("Enable Shadows", p_shadows) then
+        M.enable_shadows = p_shadows[0]
+    end
     imgui.gui.igEnd()
     imgui.render(cb)
 
@@ -296,8 +311,11 @@ function M.update()
     vk.vkQueueSubmit(queue, 1, ffi.new("VkSubmitInfo", { sType=vk.VK_STRUCTURE_TYPE_SUBMIT_INFO, waitSemaphoreCount=1, pWaitSemaphores = ffi.new("VkSemaphore[1]", {image_available}), pWaitDstStageMask = ffi.new("VkPipelineStageFlags[1]", {vk.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT}), commandBufferCount=1, pCommandBuffers = ffi.new("VkCommandBuffer[1]", {cb}), signalSemaphoreCount = 1, pSignalSemaphores = ffi.new("VkSemaphore[1]", {sw.semaphores[idx]}) }), frame_fence)
     sw:present(queue, idx, sw.semaphores[idx])
 
-    local end_time = os.clock()
-    local dt = end_time - start_time
+    local now = tonumber(sdl.SDL_GetPerformanceCounter())
+    local freq = tonumber(sdl.SDL_GetPerformanceFrequency())
+    local dt = (now - M.last_perf_counter) / freq
+    M.last_perf_counter = now
+    
     table.insert(M.frame_times, dt)
     if #M.frame_times > 60 then table.remove(M.frame_times, 1) end
     local sum = 0

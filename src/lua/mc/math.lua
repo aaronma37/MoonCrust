@@ -58,9 +58,9 @@ function M.mat4_look_at(eye, center, up, out)
     u[2] = s[0]*f[1] - s[1]*f[0]
     
     local m = out or ffi.new("mc_mat4")
-    m.m[0] = s[0]; m.m[1] = u[0]; m.m[2] = -f[0]; m.m[3] = 0
-    m.m[4] = s[1]; m.m[5] = u[1]; m.m[6] = -f[1]; m.m[7] = 0
-    m.m[8] = s[2]; m.m[9] = u[2]; m.m[10] = -f[2]; m.m[11] = 0
+    m.m[0] = s[0]; m.m[1] = s[1]; m.m[2] = s[2]; m.m[3] = 0
+    m.m[4] = u[0]; m.m[5] = u[1]; m.m[6] = u[2]; m.m[7] = 0
+    m.m[8] = -f[0]; m.m[9] = -f[1]; m.m[10] = -f[2]; m.m[11] = 0
     m.m[12] = -(s[0]*eye[1] + s[1]*eye[2] + s[2]*eye[3])
     m.m[13] = -(u[0]*eye[1] + u[1]*eye[2] + u[2]*eye[3])
     m.m[14] = (f[0]*eye[1] + f[1]*eye[2] + f[2]*eye[3])
