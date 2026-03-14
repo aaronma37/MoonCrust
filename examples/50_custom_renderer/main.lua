@@ -23,9 +23,10 @@ local M = {
 
 local device, queue, sw, pipe_layout, pipe_render, pipe_blit
 local bindless_set, cb, frame_fence, image_available
-local tf_buf, mat_buf, grid_buf, idx_buf, sphere_buf, out_img
-local num_blocks = 10000 
-local grid_res = 32
+local tf_buf, mat_buf, grid_buf, coarse_buf, idx_buf, sphere_buf, out_img
+local num_blocks = 100000 
+local grid_res = 64
+local coarse_res = 8
 local world_min, world_max = -20, 20
 local cell_size = (world_max - world_min) / grid_res
 
@@ -53,12 +54,12 @@ ffi.cdef[[
         float time;
         uint32_t num_transforms;
         uint32_t tf_id, mat_id, img_id, grid_id, idx_id;
-        uint32_t use_shadows, sphere_id;
+        uint32_t use_shadows, sphere_id, coarse_id;
     } RenderPC;
 ]]
 
 function M.init()
-    print("Example 50: Super-Optimized DDA Renderer")
+    print("Example 50: Two-Level Hierarchical Renderer (100k blocks)")
     
     local instance, physical_device = vulkan.get_instance(), vulkan.get_physical_device()
     device = vulkan.get_device(); local q, family = vulkan.get_queue(); queue = q
@@ -72,8 +73,9 @@ function M.init()
     mat_buf = mc.buffer(num_blocks * ffi.sizeof("Material"), "storage", nil, true)
     sphere_buf = mc.buffer(num_blocks * ffi.sizeof("Sphere"), "storage", nil, true)
     
-    idx_buf = mc.buffer(num_blocks * 32, "storage", nil, true) 
+    idx_buf = mc.buffer(num_blocks * 32 * 4, "storage", nil, true) 
     grid_buf = mc.buffer(grid_res * grid_res * grid_res * 8, "storage", nil, true) 
+    coarse_buf = mc.buffer(coarse_res * coarse_res * coarse_res * 4, "storage", nil, true) 
 
     out_img = mc.gpu.image(sw.extent.width, sw.extent.height, vk.VK_FORMAT_R32G32B32A32_SFLOAT, "storage")
 
@@ -102,16 +104,18 @@ function M.init()
     local tf_ptr = ffi.cast("Transform*", tf_buf.allocation.ptr)
     local mat_ptr = ffi.cast("Material*", mat_buf.allocation.ptr)
     local sphere_ptr = ffi.cast("Sphere*", sphere_buf.allocation.ptr)
+    local coarse_ptr = ffi.cast("uint32_t*", coarse_buf.allocation.ptr)
     
     math.randomseed(42)
     local cell_counts = {}
     for i=0, grid_res^3-1 do cell_counts[i] = 0 end
+    for i=0, coarse_res^3-1 do coarse_ptr[i] = 0 end
 
     local blocks = {}
 
     for i=0, num_blocks-1 do
         local px, py, pz = (math.random()-0.5)*38, (math.random()-0.5)*38, (math.random()-0.5)*38
-        local sx, sy, sz = 0.5 + math.random()*0.5, 0.5 + math.random()*0.5, 0.5 + math.random()*0.5
+        local sx, sy, sz = 0.2 + math.random()*0.3, 0.2 + math.random()*0.3, 0.2 + math.random()*0.3
         local ry = math.random() * math.pi * 2
         
         local m = math_util.mat4_translate(px, py, pz)
@@ -128,7 +132,7 @@ function M.init()
         mat_ptr[i].r, mat_ptr[i].g, mat_ptr[i].b, mat_ptr[i].a = math.random(), math.random(), math.random(), 1
         mat_ptr[i].roughness = math.random()
         mat_ptr[i].metallic = math.random()
-        mat_ptr[i].emissive = (math.random() > 0.98) and 5.0 or 0.0
+        mat_ptr[i].emissive = (math.random() > 0.995) and 5.0 or 0.0
         mat_ptr[i].type = 1
         
         local min_gx = math.max(0, math.floor((px - r - world_min) / cell_size))
@@ -141,10 +145,16 @@ function M.init()
         blocks[i] = {min_gx, max_gx, min_gy, max_gy, min_gz, max_gz}
 
         for gx = min_gx, max_gx do
+            local cx = math.floor(gx / (grid_res / coarse_res))
             for gy = min_gy, max_gy do
+                local cy = math.floor(gy / (grid_res / coarse_res))
                 for gz = min_gz, max_gz do
+                    local cz = math.floor(gz / (grid_res / coarse_res))
                     local gidx = gx + gy*grid_res + gz*grid_res*grid_res
                     cell_counts[gidx] = cell_counts[gidx] + 1
+                    
+                    local cidx = cx + cy*coarse_res + cz*coarse_res*coarse_res
+                    coarse_ptr[cidx] = 1 -- Mark as occupied
                 end
             end
         end
@@ -161,6 +171,10 @@ function M.init()
         current_offset = current_offset + cell_counts[i]
     end
 
+    if current_offset > idx_buf.size / 4 then
+        print("WARNING: idx_buf too small! Needed " .. current_offset .. " but have " .. idx_buf.size/4)
+    end
+
     for i=0, num_blocks-1 do
         local b = blocks[i]
         for gx = b[1], b[2] do
@@ -168,8 +182,10 @@ function M.init()
                 for gz = b[5], b[6] do
                     local gidx = gx + gy*grid_res + gz*grid_res*grid_res
                     local pos = cell_offsets[gidx] + grid_ptr[gidx*2+1]
-                    idx_ptr[pos] = i
-                    grid_ptr[gidx*2+1] = grid_ptr[gidx*2+1] + 1
+                    if pos < idx_buf.size / 4 then
+                        idx_ptr[pos] = i
+                        grid_ptr[gidx*2+1] = grid_ptr[gidx*2+1] + 1
+                    end
                 end
             end
         end
@@ -183,6 +199,7 @@ function M.init()
     descriptors.update_buffer_set(device, bindless_set, 0, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, grid_buf.handle, 0, grid_buf.size, 2)
     descriptors.update_buffer_set(device, bindless_set, 0, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, idx_buf.handle, 0, idx_buf.size, 3)
     descriptors.update_buffer_set(device, bindless_set, 0, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, sphere_buf.handle, 0, sphere_buf.size, 4)
+    descriptors.update_buffer_set(device, bindless_set, 0, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, coarse_buf.handle, 0, coarse_buf.size, 5)
 
     -- 4. Pipelines
     local pc_range = ffi.new("VkPushConstantRange[1]", {{ stageFlags = 0x7FFFFFFF, offset = 0, size = ffi.sizeof("RenderPC") }})
@@ -212,7 +229,7 @@ function M.init()
             float time;
             uint num_transforms;
             uint tf_id, mat_id, img_id, grid_id, idx_id;
-            uint use_shadows, sphere_id;
+            uint use_shadows, sphere_id, coarse_id;
         } pc;
         void main() {
             outColor = imageLoad(tex[nonuniformEXT(pc.img_id)], ivec2(gl_FragCoord.xy));
@@ -262,7 +279,7 @@ function M.update()
     pc.time = M.current_time
     pc.num_transforms = num_blocks
     pc.tf_id, pc.mat_id, pc.img_id, pc.grid_id, pc.idx_id = 0, 1, 0, 2, 3
-    pc.use_shadows, pc.sphere_id = (M.enable_shadows and 1 or 0), 4
+    pc.use_shadows, pc.sphere_id, pc.coarse_id = (M.enable_shadows and 1 or 0), 4, 5
 
     vk.vkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_render)
     vk.vkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_layout, 0, 1, ffi.new("VkDescriptorSet[1]", {bindless_set}), 0, nil)
@@ -297,6 +314,7 @@ function M.update()
     imgui.gui.igSetNextWindowPos(ffi.new("ImVec2_c", 10, 10), imgui.gui.ImGuiCond_Always, ffi.new("ImVec2_c", 0, 0))
     imgui.gui.igBegin("Settings", nil, imgui.gui.ImGuiWindowFlags_AlwaysAutoResize)
     imgui.gui.igText(string.format("FPS: %.1f", M.fps))
+    imgui.gui.igText(string.format("Blocks: %d", num_blocks))
     local p_shadows = ffi.new("bool[1]", M.enable_shadows)
     if imgui.gui.igCheckbox("Enable Shadows", p_shadows) then
         M.enable_shadows = p_shadows[0]
