@@ -38,7 +38,7 @@ local world_min, world_max = -20, 20
 local cell_size = (world_max - world_min) / grid_res
 
 ffi.cdef[[
-    typedef struct Transform { float inv_m[16]; } Transform;
+    typedef struct Transform { float px, py, pz, sx; float qx, qy, qz, qw; } Transform;
     typedef struct Material { float r, g, b, a; float roughness, metallic, emissive; uint32_t type; } Material;
     typedef struct Sphere { float x, y, z, r; } Sphere;
     typedef struct RenderPC {
@@ -141,12 +141,9 @@ function M.init()
     math.randomseed(42)
     for i=0, num_blocks-1 do
         local px, py, pz = (math.random()-0.5)*38, (math.random()-0.5)*38, (math.random()-0.5)*38
-        local sx, sy, sz = 0.1, 0.1, 0.1
-        local m = math_util.mat4_multiply(math_util.mat4_translate(px, py, pz), math_util.mat4_rotate_y(math.random() * 6.28))
-        local m_scale = math_util.mat4_identity(); m_scale.m[0], m_scale.m[5], m_scale.m[10] = sx, sy, sz
-        m = math_util.mat4_multiply(m, m_scale)
-        local inv_m = math_util.mat4_inverse(m)
-        for j=0,15 do host_tf[i].inv_m[j] = inv_m.m[j] end
+        local sx = 0.1
+        host_tf[i].px, host_tf[i].py, host_tf[i].pz, host_tf[i].sx = px, py, pz, sx
+        host_tf[i].qx, host_tf[i].qy, host_tf[i].qz, host_tf[i].qw = 0, 0, 0, 1
         host_sphere[i].x, host_sphere[i].y, host_sphere[i].z, host_sphere[i].r = px, py, pz, 0.1
         host_mat[i].r, host_mat[i].g, host_mat[i].b, host_mat[i].a = math.random(), math.random(), math.random(), 1
         host_mat[i].emissive = (math.random() > 0.999) and 5.0 or 0.0
