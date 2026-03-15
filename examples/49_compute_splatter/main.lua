@@ -9,10 +9,15 @@ local command = require("vulkan.command")
 local input = require("mc.input")
 local bit = require("bit")
 
-local M = { cam_pos = { 0, 0, 8 }, cam_rot = { 0, 0 }, current_time = 0, last_frame_ticks = 0, fps_frames = 0, fps_timer = 0 }
+local M = { 
+    cam_target = { 0, 1, 0 }, 
+    cam_dist = 18, 
+    cam_rot = { 0, 0.4 }, -- Longitude, Latitude
+    current_time = 0, last_frame_ticks = 0, fps_frames = 0, fps_timer = 0 
+}
 
 -- CONFIG
-local GAUSSIAN_COUNT = 32768
+local GAUSSIAN_COUNT = 131072
 local MAX_SORT_COUNT = 131072 
 local TILE_SIZE = 16
 local NUM_TILES_X = 1280 / TILE_SIZE
@@ -161,26 +166,32 @@ function M.update()
 	local idx = sw:acquire_next_image(image_available)
 	if idx == nil then return end
 
-	input.tick()
 	M.current_time = M.current_time + dt
 	local dx, dy = input.mouse_delta()
-	if input.mouse_down(3) then
-		M.cam_rot[1] = M.cam_rot[1] - dx * 0.005
-		M.cam_rot[2] = math.max(-math.pi / 2, math.min(math.pi / 2, M.cam_rot[2] - dy * 0.005))
+	if input.mouse_down(1) then
+		M.cam_rot[1] = M.cam_rot[1] - dx * 0.01
+		M.cam_rot[2] = math.max(-1.5, math.min(1.5, M.cam_rot[2] + dy * 0.01))
 	end
-	local fwd = { math.sin(M.cam_rot[1]) * math.cos(M.cam_rot[2]), math.sin(M.cam_rot[2]), -math.cos(M.cam_rot[1]) * math.cos(M.cam_rot[2]) }
-	local right = { math.cos(M.cam_rot[1]), 0, math.sin(M.cam_rot[1]) }
-	local speed = (input.key_down(input.SCANCODE_LSHIFT) and 15.0 or 5.0) * dt
-	if input.key_down(input.SCANCODE_W) then M.cam_pos[1], M.cam_pos[2], M.cam_pos[3] = M.cam_pos[1] + fwd[1] * speed, M.cam_pos[2] + fwd[2] * speed, M.cam_pos[3] + fwd[3] * speed end
-	if input.key_down(input.SCANCODE_S) then M.cam_pos[1], M.cam_pos[2], M.cam_pos[3] = M.cam_pos[1] - fwd[1] * speed, M.cam_pos[2] - fwd[2] * speed, M.cam_pos[3] - fwd[3] * speed end
-	if input.key_down(input.SCANCODE_A) then M.cam_pos[1], M.cam_pos[2], M.cam_pos[3] = M.cam_pos[1] - right[1] * speed, M.cam_pos[2] - right[2] * speed, M.cam_pos[3] - right[3] * speed end
-	if input.key_down(input.SCANCODE_D) then M.cam_pos[1], M.cam_pos[2], M.cam_pos[3] = M.cam_pos[1] + right[1] * speed, M.cam_pos[2] + right[2] * speed, M.cam_pos[3] + right[3] * speed end
+    if input.key_down(input.SCANCODE_Z) then
+        print(string.format("DEBUG | Cam Rot: %.2f, %.2f | Dist: %.2f", M.cam_rot[1], M.cam_rot[2], M.cam_dist))
+    end
+    local wheel = _G._MOUSE_WHEEL or 0
+    if wheel ~= 0 then 
+        M.cam_dist = math.max(1.0, M.cam_dist - wheel * M.cam_dist * 0.1)
+        _G._MOUSE_WHEEL = 0
+    end
 
-	local view = mc.math.mat4_look_at(M.cam_pos, { M.cam_pos[1] + fwd[1], M.cam_pos[2] + fwd[2], M.cam_pos[3] + fwd[3] }, { 0, 1, 0 })
+    local cam_pos = {
+        M.cam_target[1] + M.cam_dist * math.sin(M.cam_rot[1]) * math.cos(M.cam_rot[2]),
+        M.cam_target[2] + M.cam_dist * math.sin(M.cam_rot[2]),
+        M.cam_target[3] + M.cam_dist * math.cos(M.cam_rot[1]) * math.cos(M.cam_rot[2])
+    }
+
+	local view = mc.math.mat4_look_at(cam_pos, M.cam_target, { 0, 1, 0 })
 	local aspect = sw.extent.width / sw.extent.height
 	local proj = mc.math.mat4_perspective(mc.math.rad(70), aspect, 0.1, 100.0)
 	local focal = sw.extent.height / (2.0 * math.tan(mc.math.rad(70) * 0.5))
-	local light_dir = { math.sin(M.current_time * 1.5), 0.5, math.cos(M.current_time * 1.5), 0 }
+	local light_dir = { 0.5, 1.0, 0.5, 0 }
 
     command.encode(cb, function(cmd)
         -- 0. CLEAR COUNTERS & INVALIDATE SORT ENTRIES
@@ -194,20 +205,20 @@ function M.update()
 
         -- 1. PROJECT
         project_pc.view, project_pc.proj, project_pc.focal = view, proj, focal
-        project_pc.p_id, project_pc.s_id, project_pc.c_id, project_pc.count = 10, 15, 11, GAUSSIAN_COUNT * 3
+        project_pc.p_id, project_pc.s_id, project_pc.c_id, project_pc.count = 10, 15, 11, GAUSSIAN_COUNT
         project_pc.time, project_pc.noise_id, project_pc.count_id, project_pc.hist_id = M.current_time, 2, 16, 18
-        project_pc.cam_pos, project_pc.light_dir, project_pc.world_offset = { M.cam_pos[1], M.cam_pos[2], M.cam_pos[3], 0 }, light_dir, { 0, 0, 0, 0 }
+        project_pc.cam_pos, project_pc.light_dir, project_pc.world_offset = { cam_pos[1], cam_pos[2], cam_pos[3], 0 }, light_dir, { 0, 0, 0, 0 }
         
         vk.vkCmdBindPipeline(cmd.buffer, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_project)
         vk.vkCmdBindDescriptorSets(cmd.buffer, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_layout, 0, 1, ffi.new("VkDescriptorSet[1]", { bindless_set }), 0, nil)
         vk.vkCmdPushConstants(cmd.buffer, pipe_layout, bit.bor(vk.VK_SHADER_STAGE_ALL_GRAPHICS, vk.VK_SHADER_STAGE_COMPUTE_BIT), 0, 256, project_pc)
-        vk.vkCmdDispatch(cmd.buffer, math.ceil((GAUSSIAN_COUNT * 3) / 256), 1, 1)
+        vk.vkCmdDispatch(cmd.buffer, math.ceil(GAUSSIAN_COUNT / 256), 1, 1)
 
         local full_barrier = ffi.new("VkMemoryBarrier[1]", {{ sType = vk.VK_STRUCTURE_TYPE_MEMORY_BARRIER, srcAccessMask = vk.VK_ACCESS_SHADER_WRITE_BIT, dstAccessMask = bit.bor(vk.VK_ACCESS_SHADER_READ_BIT, vk.VK_ACCESS_SHADER_WRITE_BIT) }})
         vk.vkCmdPipelineBarrier(cmd.buffer, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, full_barrier, 0, nil, 0, nil)
 
         -- 2. SORT (Pass 0: Bits 0-7)
-        sort_pc.buf_id, sort_pc.alt_id, sort_pc.hist_id, sort_pc.pass, sort_pc.count = 15, 17, 18, 0, GAUSSIAN_COUNT * 3
+        sort_pc.buf_id, sort_pc.alt_id, sort_pc.hist_id, sort_pc.pass, sort_pc.count = 15, 17, 18, 0, GAUSSIAN_COUNT
         vk.vkCmdBindPipeline(cmd.buffer, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_prefix_sum)
         vk.vkCmdPushConstants(cmd.buffer, pipe_layout, bit.bor(vk.VK_SHADER_STAGE_ALL_GRAPHICS, vk.VK_SHADER_STAGE_COMPUTE_BIT), 0, 256, sort_pc)
         vk.vkCmdDispatch(cmd.buffer, 1, 1, 1)
@@ -240,7 +251,7 @@ function M.update()
 
         -- 3. BINNING (Use slot 15 as the finally sorted buffer)
         binning_pc.s_id, binning_pc.c_id, binning_pc.tc_id, binning_pc.to_id, binning_pc.b_id = 15, 11, 12, 13, 14
-        binning_pc.count, binning_pc.screen_w, binning_pc.screen_h = GAUSSIAN_COUNT * 3, sw.extent.width, sw.extent.height
+        binning_pc.count, binning_pc.screen_w, binning_pc.screen_h = GAUSSIAN_COUNT, sw.extent.width, sw.extent.height
         binning_pc.tiles_x, binning_pc.tiles_y, binning_pc.scatter_mode = NUM_TILES_X, NUM_TILES_Y, 0
         vk.vkCmdBindPipeline(cmd.buffer, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_binning)
         vk.vkCmdPushConstants(cmd.buffer, pipe_layout, bit.bor(vk.VK_SHADER_STAGE_ALL_GRAPHICS, vk.VK_SHADER_STAGE_COMPUTE_BIT), 0, 256, binning_pc)
@@ -255,7 +266,7 @@ function M.update()
         vk.vkCmdPipelineBarrier(cmd.buffer, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, full_barrier, 0, nil, 0, nil)
 
         -- 5. BINNING (Scatter-pass to fill tile splat lists)
-        binning_pc.count = GAUSSIAN_COUNT * 3 
+        binning_pc.count = GAUSSIAN_COUNT 
         binning_pc.scatter_mode = 1
         vk.vkCmdBindPipeline(cmd.buffer, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_binning)
         vk.vkCmdPushConstants(cmd.buffer, pipe_layout, bit.bor(vk.VK_SHADER_STAGE_ALL_GRAPHICS, vk.VK_SHADER_STAGE_COMPUTE_BIT), 0, 256, binning_pc)
@@ -264,8 +275,8 @@ function M.update()
 
         -- 6. RASTER
         raster_pc.p_id, raster_pc.s_id, raster_pc.b_id, raster_pc.tr_id, raster_pc.img_id = 10, 15, 14, 13, 3
-        raster_pc.screen_w, raster_pc.screen_h, raster_pc.count = sw.extent.width, sw.extent.height, GAUSSIAN_COUNT * 3
-        raster_pc.cam_pos, raster_pc.light_dir = { M.cam_pos[1], M.cam_pos[2], M.cam_pos[3], 0 }, light_dir
+        raster_pc.screen_w, raster_pc.screen_h, raster_pc.count = sw.extent.width, sw.extent.height, GAUSSIAN_COUNT
+        raster_pc.cam_pos, raster_pc.light_dir = { cam_pos[1], cam_pos[2], cam_pos[3], 0 }, light_dir
         vk.vkCmdBindPipeline(cmd.buffer, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_raster)
         vk.vkCmdPushConstants(cmd.buffer, pipe_layout, bit.bor(vk.VK_SHADER_STAGE_ALL_GRAPHICS, vk.VK_SHADER_STAGE_COMPUTE_BIT), 0, 256, raster_pc)
         vk.vkCmdDispatch(cmd.buffer, NUM_TILES_X, NUM_TILES_Y, 1)
