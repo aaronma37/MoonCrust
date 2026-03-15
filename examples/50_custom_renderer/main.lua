@@ -26,10 +26,10 @@ local M = {
     last_render_scale = 1.0
 }
 
-local device, queue, sw, pipe_layout, pipe_render, pipe_blit
+local device, queue, sw, pipe_layout, pipe_render, pipe_blit, pipe_fsr
 local pipe_hash, pipe_sort, pipe_build_grid
 local bindless_set, cb, frame_fence, image_available
-local tf_buf, mat_buf, grid_buf, coarse_buf, bitmask_buf, idx_buf, sphere_buf, sort_buf, out_img
+local tf_buf, mat_buf, grid_buf, coarse_buf, bitmask_buf, idx_buf, sphere_buf, sort_buf, out_img, upscale_img
 local query_pool, timestamp_period
 local num_blocks = 1048576 
 local grid_res = 128
@@ -52,6 +52,11 @@ ffi.cdef[[
         uint32_t tf_id, mat_id, img_id, grid_id, idx_id;
         uint32_t use_shadows, sphere_id, coarse_id, bitmask_id;
     } RenderPC;
+    typedef struct FSRPC {
+        float src_res_x, src_res_y;
+        float dst_res_x, dst_res_y;
+        uint32_t src_id, dst_id, pad0, pad1;
+    } FSRPC;
     typedef struct HashPC { uint32_t sphere_id, entry_id, num_blocks, pad; } HashPC;
     typedef struct SortPC { uint32_t entry_id, j, k, pad; } SortPC;
     typedef struct BuildPC { uint32_t entry_id, grid_id, coarse_id, idx_id, bitmask_id; uint32_t num_blocks, pass, pad; } BuildPC;
@@ -101,9 +106,14 @@ function M.create_render_target()
     local render_w = math.floor(sw.extent.width * M.render_scale)
     local render_h = math.floor(sw.extent.height * M.render_scale)
     out_img = mc.gpu.image(render_w, render_h, vk.VK_FORMAT_R32G32B32A32_SFLOAT, "storage")
+    upscale_img = mc.gpu.image(sw.extent.width, sw.extent.height, vk.VK_FORMAT_R32G32B32A32_SFLOAT, "storage")
+    
     descriptors.update_image_set(device, bindless_set, 2, vk.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, out_img.view, nil, vk.VK_IMAGE_LAYOUT_GENERAL, 0)
+    descriptors.update_image_set(device, bindless_set, 2, vk.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, upscale_img.view, nil, vk.VK_IMAGE_LAYOUT_GENERAL, 1)
+    
     local blit_sampler = mc.gpu.sampler(vk.VK_FILTER_LINEAR, vk.VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE)
     descriptors.update_image_set(device, bindless_set, 1, vk.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, out_img.view, blit_sampler, vk.VK_IMAGE_LAYOUT_GENERAL, 50)
+    descriptors.update_image_set(device, bindless_set, 1, vk.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, upscale_img.view, blit_sampler, vk.VK_IMAGE_LAYOUT_GENERAL, 51)
 end
 
 function M.init()
@@ -158,6 +168,7 @@ function M.init()
     pipe_layout = pipeline.create_layout(device, {bl_layout}, ffi.new("VkPushConstantRange[1]", {{ stageFlags = 0x7FFFFFFF, offset = 0, size = 128 }}))
     local function load_comp(path) return pipeline.create_compute_pipeline(device, pipe_layout, shader.create_module(device, shader.compile_glsl(io.open(path):read("*all"), vk.VK_SHADER_STAGE_COMPUTE_BIT))) end
     pipe_render, pipe_hash, pipe_sort, pipe_build_grid = load_comp("examples/50_custom_renderer/render.comp"), load_comp("examples/50_custom_renderer/hash.comp"), load_comp("examples/50_custom_renderer/sort.comp"), load_comp("examples/50_custom_renderer/build_grid.comp")
+    pipe_fsr = load_comp("examples/50_custom_renderer/fsr.comp")
     
     local v_mod = shader.create_module(device, shader.compile_glsl([[#version 450
         layout(location = 0) out vec2 outUV;
@@ -225,10 +236,24 @@ function M.update()
     vk.vkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_layout, 0, 1, ffi.new("VkDescriptorSet[1]", {bindless_set}), 0, nil)
     vk.vkCmdPushConstants(cb, pipe_layout, 0x7FFFFFFF, 0, ffi.sizeof("RenderPC"), pc)
     vk.vkCmdDispatch(cb, math.ceil(render_w / 8), math.ceil(render_h / 8), 1)
+
+    -- Stage 2: FSR Upscale
+    local img_barrier = ffi.new("VkImageMemoryBarrier[1]", {{ sType = vk.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, srcAccessMask = vk.VK_ACCESS_SHADER_WRITE_BIT, dstAccessMask = vk.VK_ACCESS_SHADER_READ_BIT, oldLayout = vk.VK_IMAGE_LAYOUT_GENERAL, newLayout = vk.VK_IMAGE_LAYOUT_GENERAL, image = out_img.handle, subresourceRange = { aspectMask = vk.VK_IMAGE_ASPECT_COLOR_BIT, levelCount = 1, layerCount = 1 } }})
+    vk.vkCmdPipelineBarrier(cb, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nil, 0, nil, 1, img_barrier)
+    
+    local fsr_pc = ffi.new("FSRPC", { 
+        src_res_x = render_w, src_res_y = render_h, 
+        dst_res_x = sw.extent.width, dst_res_y = sw.extent.height, 
+        src_id = 50, dst_id = 1 
+    })
+    vk.vkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_fsr)
+    vk.vkCmdPushConstants(cb, pipe_layout, 0x7FFFFFFF, 0, ffi.sizeof("FSRPC"), fsr_pc)
+    vk.vkCmdDispatch(cb, math.ceil(sw.extent.width / 8), math.ceil(sw.extent.height / 8), 1)
+
     vk.vkCmdWriteTimestamp(cb, vk.VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, query_pool, 3)
 
-    local img_barrier = ffi.new("VkImageMemoryBarrier[1]", {{ sType = vk.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, srcAccessMask = vk.VK_ACCESS_SHADER_WRITE_BIT, dstAccessMask = vk.VK_ACCESS_SHADER_READ_BIT, oldLayout = vk.VK_IMAGE_LAYOUT_GENERAL, newLayout = vk.VK_IMAGE_LAYOUT_GENERAL, image = out_img.handle, subresourceRange = { aspectMask = vk.VK_IMAGE_ASPECT_COLOR_BIT, levelCount = 1, layerCount = 1 } }})
-    vk.vkCmdPipelineBarrier(cb, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, vk.VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nil, 0, nil, 1, img_barrier)
+    local upscale_barrier = ffi.new("VkImageMemoryBarrier[1]", {{ sType = vk.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, srcAccessMask = vk.VK_ACCESS_SHADER_WRITE_BIT, dstAccessMask = vk.VK_ACCESS_SHADER_READ_BIT, oldLayout = vk.VK_IMAGE_LAYOUT_GENERAL, newLayout = vk.VK_IMAGE_LAYOUT_GENERAL, image = upscale_img.handle, subresourceRange = { aspectMask = vk.VK_IMAGE_ASPECT_COLOR_BIT, levelCount = 1, layerCount = 1 } }})
+    vk.vkCmdPipelineBarrier(cb, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, vk.VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nil, 0, nil, 1, upscale_barrier)
     local bar = ffi.new("VkImageMemoryBarrier[1]", {{ sType=vk.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, oldLayout=vk.VK_IMAGE_LAYOUT_UNDEFINED, newLayout=vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, image=ffi.cast("VkImage", sw.images[idx]), subresourceRange={aspectMask=vk.VK_IMAGE_ASPECT_COLOR_BIT, levelCount=1, layerCount=1}, dstAccessMask=vk.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT }})
     vk.vkCmdPipelineBarrier(cb, vk.VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, vk.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, nil, 0, nil, 1, bar)
     
@@ -239,7 +264,7 @@ function M.update()
     vk.vkCmdSetScissor(cb, 0, 1, ffi.new("VkRect2D", { extent=sw.extent }))
     vk.vkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe_blit)
     vk.vkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe_layout, 0, 1, ffi.new("VkDescriptorSet[1]", {bindless_set}), 0, nil)
-    pc.img_id = 50 -- Binding 1, index 50 (Scene)
+    pc.img_id = 51 -- Binding 1, index 51 (Upscaled Scene)
     vk.vkCmdPushConstants(cb, pipe_layout, 0x7FFFFFFF, 0, ffi.sizeof("RenderPC"), pc)
     vk.vkCmdDraw(cb, 3, 1, 0, 0)
     
