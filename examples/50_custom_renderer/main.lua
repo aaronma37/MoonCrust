@@ -89,15 +89,22 @@ function M.rebuild_grid(cb)
     vk.vkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_build_grid)
     vk.vkCmdPushConstants(cb, pipe_layout, 0x7FFFFFFF, 0, ffi.sizeof("BuildPC"), b_pc)
     vk.vkCmdDispatch(cb, math.ceil((grid_res^3) / 256), 1, 1) 
+    
     local bar_grid = ffi.new("VkBufferMemoryBarrier[3]", {
         { sType=vk.VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER, srcAccessMask=vk.VK_ACCESS_SHADER_WRITE_BIT, dstAccessMask=bit.bor(vk.VK_ACCESS_SHADER_READ_BIT, vk.VK_ACCESS_SHADER_WRITE_BIT), buffer=grid_buf.handle, offset=0, size=grid_buf.size },
         { sType=vk.VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER, srcAccessMask=vk.VK_ACCESS_SHADER_WRITE_BIT, dstAccessMask=bit.bor(vk.VK_ACCESS_SHADER_READ_BIT, vk.VK_ACCESS_SHADER_WRITE_BIT), buffer=coarse_buf.handle, offset=0, size=coarse_buf.size },
         { sType=vk.VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER, srcAccessMask=vk.VK_ACCESS_SHADER_WRITE_BIT, dstAccessMask=bit.bor(vk.VK_ACCESS_SHADER_READ_BIT, vk.VK_ACCESS_SHADER_WRITE_BIT), buffer=bitmask_buf.handle, offset=0, size=bitmask_buf.size }
     })
     vk.vkCmdPipelineBarrier(cb, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nil, 3, bar_grid, 0, nil)
+    
     b_pc.pass = 1
     vk.vkCmdPushConstants(cb, pipe_layout, 0x7FFFFFFF, 0, ffi.sizeof("BuildPC"), b_pc)
-    vk.vkCmdDispatch(cb, num_blocks / 256, 1, 1) 
+    vk.vkCmdDispatch(cb, math.ceil(num_blocks / 256), 1, 1) 
+    vk.vkCmdPipelineBarrier(cb, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nil, 3, bar_grid, 0, nil)
+
+    b_pc.pass = 2
+    vk.vkCmdPushConstants(cb, pipe_layout, 0x7FFFFFFF, 0, ffi.sizeof("BuildPC"), b_pc)
+    vk.vkCmdDispatch(cb, math.ceil(num_blocks / 256), 1, 1) 
     vk.vkCmdPipelineBarrier(cb, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nil, 3, bar_grid, 0, nil)
     vk.vkCmdWriteTimestamp(cb, vk.VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, query_pool, 1)
 end

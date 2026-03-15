@@ -31,7 +31,7 @@ void main() {
     uint id = gl_GlobalInvocationID.x;
 
     if (pc.pass == 0) {
-        // Clear all structures. 128^3 grid, 16^3 coarse, 32^3 bitmasks
+        // Pass 0: Clear all structures (128^3 grid, 16^3 coarse, 32^3 bitmasks)
         if (id < 128*128*128) all_grids[pc.grid_id].cells[id] = uvec2(0, 0);
         if (id < 16*16*16) all_coarse[pc.coarse_id].occupied[id] = 0;
         if (id < 32*32*32) all_bitmasks[pc.bitmask_id].bitmasks[id] = 0;
@@ -40,36 +40,40 @@ void main() {
 
     if (id >= pc.num_blocks) return;
 
-    all_indices[pc.idx_id].ids[id] = all_entries[pc.entry_id].entries[id].value;
     uint key = all_entries[pc.entry_id].entries[id].key;
-    
-    bool is_start = (id == 0) || (key != all_entries[pc.entry_id].entries[id-1].key);
-    bool is_end = (id == pc.num_blocks - 1) || (key != all_entries[pc.entry_id].entries[id+1].key);
 
-    if (is_start) {
-        all_grids[pc.grid_id].cells[key].x = id; 
-    }
-    if (is_end) {
-        uint start = all_grids[pc.grid_id].cells[key].x;
-        all_grids[pc.grid_id].cells[key].y = id - start + 1; 
-        
-        // Coarse cell (16x16x16 blocks of 8x8x8)
-        uint cz = (key / (128 * 128)) / 8;
-        uint cy = ((key / 128) % 128) / 8;
-        uint cx = (key % 128) / 8;
-        all_coarse[pc.coarse_id].occupied[cx + cy * 16 + cz * 16 * 16] = 1;
+    if (pc.pass == 1) {
+        // Pass 1: Write indices and cell offsets (start positions)
+        all_indices[pc.idx_id].ids[id] = all_entries[pc.entry_id].entries[id].value;
+        bool is_start = (id == 0) || (key != all_entries[pc.entry_id].entries[id-1].key);
+        if (is_start) {
+            all_grids[pc.grid_id].cells[key].x = id; 
+        }
+    } else if (pc.pass == 2) {
+        // Pass 2: Write cell counts and hierarchical occupancy (requires offsets to be finished)
+        bool is_end = (id == pc.num_blocks - 1) || (key != all_entries[pc.entry_id].entries[id+1].key);
+        if (is_end) {
+            uint start = all_grids[pc.grid_id].cells[key].x;
+            all_grids[pc.grid_id].cells[key].y = id - start + 1; 
+            
+            // Coarse occupancy (16x16x16 grid)
+            uint cz = (key / (128 * 128)) / 8;
+            uint cy = ((key / 128) % 128) / 8;
+            uint cx = (key % 128) / 8;
+            all_coarse[pc.coarse_id].occupied[cx + cy * 16 + cz * 256] = 1;
 
-        // Bitmask brick (32x32x32 blocks of 4x4x4)
-        uint bz = (key / (128 * 128)) / 4;
-        uint by = ((key / 128) % 128) / 4;
-        uint bx = (key % 128) / 4;
-        uint bidx = bx + by * 32 + bz * 32 * 32;
+            // Micro-occupancy bitmask (32x32x32 bricks of 4x4x4)
+            uint bz = (key / (128 * 128)) / 4;
+            uint by = ((key / 128) % 128) / 4;
+            uint bx = (key % 128) / 4;
+            uint bidx = bx + by * 32 + bz * 1024;
 
-        uint lz = (key / (128 * 128)) % 4;
-        uint ly = (key / 128) % 4;
-        uint lx = key % 4;
-        uint bit_pos = lx + ly * 4 + lz * 16;
-        
-        atomicOr(all_bitmasks[pc.bitmask_id].bitmasks[bidx], uint64_t(1) << bit_pos);
+            uint lz = (key / (128 * 128)) % 4;
+            uint ly = (key / 128) % 4;
+            uint lx = key % 4;
+            uint bit_pos = lx + ly * 4 + lz * 16;
+            
+            atomicOr(all_bitmasks[pc.bitmask_id].bitmasks[bidx], uint64_t(1) << bit_pos);
+        }
     }
 }
