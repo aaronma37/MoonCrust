@@ -1,0 +1,47 @@
+#version 450
+#extension GL_EXT_nonuniform_qualifier : require
+#extension GL_EXT_scalar_block_layout : require
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 1) uniform sampler2D all_textures[];
+layout(set = 0, binding = 2, rgba32f) uniform writeonly image2D all_images[];
+
+layout(push_constant) uniform PC {
+    vec2 src_res;
+    vec2 dst_res;
+    uint src_id;
+    uint dst_id;
+} pc;
+
+// Simple FSR 1.0 EASU (Edge Adaptive Spatial Upsampling) Approximation
+void main() {
+    ivec2 dst_pixel = ivec2(gl_GlobalInvocationID.xy);
+    if (dst_pixel.x >= int(pc.dst_res.x) || dst_pixel.y >= int(pc.dst_res.y)) return;
+
+    vec2 uv = (vec2(dst_pixel) + 0.5) / pc.dst_res;
+    
+    // Tap 5 samples in a cross pattern for edge detection
+    vec3 mid = texture(all_textures[nonuniformEXT(pc.src_id)], uv).rgb;
+    vec3 left = textureOffset(all_textures[nonuniformEXT(pc.src_id)], uv, ivec2(-1, 0)).rgb;
+    vec3 right = textureOffset(all_textures[nonuniformEXT(pc.src_id)], uv, ivec2(1, 0)).rgb;
+    vec3 top = textureOffset(all_textures[nonuniformEXT(pc.src_id)], uv, ivec2(0, -1)).rgb;
+    vec3 bottom = textureOffset(all_textures[nonuniformEXT(pc.src_id)], uv, ivec2(0, 1)).rgb;
+
+    // Luma-based edge weighting
+    float lMid = dot(mid, vec3(0.299, 0.587, 0.114));
+    float lLeft = dot(left, vec3(0.299, 0.587, 0.114));
+    float lRight = dot(right, vec3(0.299, 0.587, 0.114));
+    float lTop = dot(top, vec3(0.299, 0.587, 0.114));
+    float lBottom = dot(bottom, vec3(0.299, 0.587, 0.114));
+
+    float edge = abs(lLeft - lRight) + abs(lTop - lBottom);
+    vec3 color = mid;
+    
+    // Sharpen edges slightly if contrast is high
+    if (edge > 0.1) {
+        color = mid * 1.2 - (left + right + top + bottom) * 0.05;
+    }
+
+    imageStore(all_images[pc.dst_id], dst_pixel, vec4(color, 1.0));
+}

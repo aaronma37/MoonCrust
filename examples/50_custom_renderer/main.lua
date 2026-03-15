@@ -146,14 +146,32 @@ function M.init()
 
     local host_tf, host_mat, host_sphere = ffi.new("Transform[?]", num_blocks), ffi.new("Material[?]", num_blocks), ffi.new("Sphere[?]", num_blocks)
     math.randomseed(42)
+    local PI = math.pi
     for i=0, num_blocks-1 do
-        local px, py, pz = (math.random()-0.5)*38, (math.random()-0.5)*38, (math.random()-0.5)*38
-        local sx = 0.1
+        -- Double Helix Parametrics
+        local strand = i % 2
+        local t = (i / num_blocks) * 40.0 -- 40 units high
+        local angle = t * 2.0 + (strand * PI) -- 2 full rotations
+        local radius = 5.0
+        
+        -- Add some volume/jitter to the strands
+        local jitter_r = (math.random() - 0.5) * 1.5
+        local jitter_a = math.random() * 2.0 * PI
+        local px = (radius + jitter_r * math.cos(jitter_a)) * math.cos(angle)
+        local pz = (radius + jitter_r * math.cos(jitter_a)) * math.sin(angle)
+        local py = (t - 20.0) + (math.random() - 0.5) * 0.5
+        
+        local sx = 0.08
         host_tf[i].px, host_tf[i].py, host_tf[i].pz, host_tf[i].sx = px, py, pz, sx
         host_tf[i].qx, host_tf[i].qy, host_tf[i].qz, host_tf[i].qw = 0, 0, 0, 1
-        host_sphere[i].x, host_sphere[i].y, host_sphere[i].z, host_sphere[i].r = px, py, pz, 0.1
-        host_mat[i].r, host_mat[i].g, host_mat[i].b, host_mat[i].a = math.random(), math.random(), math.random(), 1
-        host_mat[i].emissive = (math.random() > 0.999) and 5.0 or 0.0
+        host_sphere[i].x, host_sphere[i].y, host_sphere[i].z, host_sphere[i].r = px, py, pz, 0.08
+        
+        if strand == 0 then
+            host_mat[i].r, host_mat[i].g, host_mat[i].b, host_mat[i].a = 0.1, 0.6, 1.0, 1 -- Energy Blue
+        else
+            host_mat[i].r, host_mat[i].g, host_mat[i].b, host_mat[i].a = 1.0, 0.1, 0.6, 1 -- Core Magenta
+        end
+        host_mat[i].emissive = (math.random() > 0.99) and 10.0 or 0.0
     end
     tf_buf:upload(host_tf); mat_buf:upload(host_mat); sphere_buf:upload(host_sphere)
 
