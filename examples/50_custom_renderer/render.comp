@@ -34,7 +34,7 @@ bool intersect_aabb(vec3 ro, vec3 rd, vec3 box_min, vec3 box_max, out float t_ne
     return t_near <= t_far && t_far >= 0.0;
 }
 
-bool intersect_obb(vec3 ro, vec3 rd, uint id, out float t, out vec3 normal) {
+bool intersect_obb(vec3 ro, vec3 rd, uint id, out float t) {
     // Fast sphere reject (16 bytes)
     vec4 s = all_spheres[pc.sphere_id].spheres[id].data;
     vec3 oc = ro - s.xyz;
@@ -56,10 +56,24 @@ bool intersect_obb(vec3 ro, vec3 rd, uint id, out float t, out vec3 normal) {
     
     if (tn <= tf && tf >= 0.0) {
         t = tn;
-        normal = normalize(vec3(tn==tmin.x?-sign(l_rd.x):0, tn==tmin.y?-sign(l_rd.y):0, tn==tmin.z?-sign(l_rd.z):0) * mat3(inv_m));
         return true;
     }
     return false;
+}
+
+vec3 get_obb_normal(vec3 ro, vec3 rd, uint id, float t) {
+    mat4 inv_m = all_tfs[pc.tf_id].tfs[id].inv_m;
+    vec3 l_ro = (inv_m * vec4(ro, 1.0)).xyz;
+    vec3 l_rd = (inv_m * vec4(rd, 0.0)).xyz;
+    vec3 hit_p = l_ro + l_rd * t;
+    vec3 n = vec3(0.0);
+    if (abs(hit_p.x - 0.5) < 0.001) n = vec3(1,0,0);
+    else if (abs(hit_p.x + 0.5) < 0.001) n = vec3(-1,0,0);
+    else if (abs(hit_p.y - 0.5) < 0.001) n = vec3(0,1,0);
+    else if (abs(hit_p.y + 0.5) < 0.001) n = vec3(0,-1,0);
+    else if (abs(hit_p.z - 0.5) < 0.001) n = vec3(0,0,1);
+    else if (abs(hit_p.z + 0.5) < 0.001) n = vec3(0,0,-1);
+    return normalize(n * mat3(inv_m));
 }
 
 bool trace_shadow(vec3 ro, vec3 rd, float max_t) {
@@ -71,18 +85,20 @@ bool trace_shadow(vec3 ro, vec3 rd, float max_t) {
     for(int i=0; i<3; ++i) t_max_step[i] = t_min + (rd[i]>0.0?floor(cell_p[i])+1.0-cell_p[i]:cell_p[i]-floor(cell_p[i])) * t_delta[i];
     
     uint64_t cached_mask = 0; ivec3 last_brick = ivec3(-1);
-    for (int i = 0; i < 24; ++i) {
+    for (int i = 0; i < 32; ++i) {
         ivec3 brick_p = cell >> 2;
         if (brick_p != last_brick) {
-            cached_mask = all_bitmasks[pc.bitmask_id].bitmasks[brick_p.x + (brick_p.y << 5) + (brick_p.z << 10)]; // Indexing for 128 res (32x32x32 bricks)
+            cached_mask = all_bitmasks[pc.bitmask_id].bitmasks[brick_p.x + (brick_p.y << 5) + (brick_p.z << 10)];
             last_brick = brick_p;
         }
+
         if ((cached_mask & (uint64_t(1) << ((cell.x&3) + (cell.y&3)*4 + (cell.z&3)*16))) != 0) {
             uvec2 c_data = all_grids[pc.grid_id].cells[cell.x + (cell.y << 7) + (cell.z << 14)];
             for (uint j = 0; j < min(c_data.y, 2); ++j) {
-                float st; vec3 sn; if (intersect_obb(ro, rd, all_indices[pc.idx_id].ids[c_data.x + j], st, sn)) if (st < max_t) return true;
+                float st; if (intersect_obb(ro, rd, all_indices[pc.idx_id].ids[c_data.x + j], st)) if (st < max_t) return true;
             }
         }
+        
         if (t_max_step.x < t_max_step.y) {
             if (t_max_step.x < t_max_step.z) { cell.x += int(step.x); if (cell.x < 0 || cell.x >= 128) break; t_max_step.x += t_delta.x; }
             else { cell.z += int(step.z); if (cell.z < 0 || cell.z >= 128) break; t_max_step.z += t_delta.z; }
@@ -111,22 +127,38 @@ void main() {
         float hit_t = 1e30; vec3 hit_n; int hit_id = -1;
         uint64_t cached_mask = 0; ivec3 last_brick = ivec3(-1);
 
-        for (int i = 0; i < 192; ++i) {
+        for (int i = 0; i < 224; ++i) {
             ivec3 brick_p = cell >> 2;
             if (brick_p != last_brick) {
                 cached_mask = all_bitmasks[pc.bitmask_id].bitmasks[brick_p.x + (brick_p.y << 5) + (brick_p.z << 10)];
                 last_brick = brick_p;
             }
-            if ((cached_mask & (uint64_t(1) << ((cell.x&3) + (cell.y&3)*4 + (cell.z&3)*16))) != 0) {
-                uvec2 c_data = all_grids[pc.grid_id].cells[cell.x + (cell.y << 7) + (cell.z << 14)];
-                for (uint j = 0; j < min(c_data.y, 16); ++j) {
-                    float t; vec3 n; uint id = all_indices[pc.idx_id].ids[c_data.x + j];
-                    if (intersect_obb(ro, rd, id, t, n)) if (t < hit_t) { hit_t = t; hit_n = n; hit_id = int(id); }
+
+            if (cached_mask == 0) {
+                vec3 brick_boundary = vec3((brick_p + ivec3(max(step, vec3(0.0)))) << 2) * CELL_SIZE + WORLD_MIN;
+                vec3 t_to_boundary = (brick_boundary - ro) / rd;
+                float t_skip = min(t_to_boundary.x, min(t_to_boundary.y, t_to_boundary.z));
+                float next_t = t_skip + 0.0001;
+                vec3 p_new = (ro + rd * next_t - WORLD_MIN) / CELL_SIZE;
+                cell = clamp(ivec3(floor(p_new)), ivec3(0), ivec3(127));
+                for(int k=0; k<3; ++k) {
+                    float cell_edge = (step[k] > 0.0) ? floor(p_new[k]) + 1.0 : floor(p_new[k]);
+                    t_max_step[k] = (cell_edge * CELL_SIZE + WORLD_MIN - ro[k]) / rd[k];
                 }
-                if (hit_id != -1) { if (hit_t <= min(t_max_step.x, min(t_max_step.y, t_max_step.z)) + 0.001) break; }
+                if (any(lessThan(cell, ivec3(0))) || any(greaterThanEqual(cell, ivec3(128)))) break;
+                continue;
+            }
+
+            if ((cached_mask & (uint64_t(1) << ((cell.x&3) + (cell.y&3)*4 + (cell.z&3)*16))) != 0) {
+                uint g_idx = cell.x + (cell.y << 7) + (cell.z << 14);
+                uvec2 c_data = all_grids[pc.grid_id].cells[g_idx];
+                for (uint j = 0; j < min(c_data.y, 8); ++j) {
+                    float t; uint id = all_indices[pc.idx_id].ids[c_data.x + j];
+                    if (intersect_obb(ro, rd, id, t)) if (t < hit_t) { hit_t = t; hit_id = int(id); }
+                }
+                if (hit_id != -1 && hit_t <= min(t_max_step.x, min(t_max_step.y, t_max_step.z)) + 0.001) break;
             }
             
-            // Branchless-ish DDA
             if (t_max_step.x < t_max_step.y) {
                 if (t_max_step.x < t_max_step.z) { cell.x += int(step.x); if (cell.x < 0 || cell.x >= 128) break; t_max_step.x += t_delta.x; }
                 else { cell.z += int(step.z); if (cell.z < 0 || cell.z >= 128) break; t_max_step.z += t_delta.z; }
@@ -136,6 +168,7 @@ void main() {
             }
         }
         if (hit_id != -1) {
+            vec3 hit_n = get_obb_normal(ro, rd, uint(hit_id), hit_t);
             Material mat = all_mats[pc.mat_id].mats[hit_id]; vec3 L = normalize(vec3(0.5, 1.0, 0.3));
             float diff = max(dot(hit_n, L), 0.0); color = mat.base_color.rgb * (diff * 0.8 + 0.2);
             if (mat.emissive > 0.0) color += mat.base_color.rgb * mat.emissive;
