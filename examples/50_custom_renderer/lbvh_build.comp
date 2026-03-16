@@ -1,0 +1,98 @@
+#version 450
+#extension GL_EXT_nonuniform_qualifier : require
+#extension GL_EXT_scalar_block_layout : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+
+struct Entry {
+    uint64_t key;
+    uint64_t value;
+};
+
+struct BVHNode {
+    int left;   
+    int right;
+    int pad0, pad1;
+    vec4 min_p; 
+    vec4 max_p; 
+};
+
+layout(set = 0, binding = 0, scalar) buffer SortBuffer { Entry entries[]; } all_entries[];
+layout(set = 0, binding = 0, scalar) buffer BVHBuffer { BVHNode nodes[]; } all_bvhs[];
+layout(set = 0, binding = 0, scalar) buffer ParentBuffer { int parents[]; } all_parents[];
+
+layout(push_constant) uniform PC {
+    uint entry_id;
+    uint bvh_id;
+    uint parent_id;
+    uint num_leaves;
+} pc;
+
+int delta(int i, int j) {
+    if (j < 0 || j >= int(pc.num_leaves)) return -1;
+    uint64_t a = all_entries[pc.entry_id].entries[i].key;
+    uint64_t b = all_entries[pc.entry_id].entries[j].key;
+    uint64_t diff = a ^ b;
+    uint hi = uint(diff >> 32);
+    if (hi != 0) return 31 - findMSB(hi);
+    return 32 + (31 - findMSB(uint(diff & 0xFFFFFFFFu)));
+}
+
+layout (local_size_x = 256) in;
+
+void main() {
+    int i = int(gl_GlobalInvocationID.x);
+    int N = int(pc.num_leaves);
+    if (i >= N - 1) return;
+
+    // --- Edge-Based Mapping (Split i is between Entry i and i+1) ---
+    
+    // 1. Find range [L, R] for this split
+    int d = (delta(i, i + 1) - delta(i, i - 1)) >= 0 ? 1 : -1;
+    int d_min = delta(i, i - d);
+    int l_max = 2;
+    while (delta(i, i + l_max * d) > d_min) l_max *= 2;
+    int l = 0;
+    for (int t = l_max >> 1; t > 0; t >>= 1) {
+        if (delta(i, i + (l + t) * d) > d_min) l += t;
+    }
+    int j = i + l * d;
+    int first = min(i, j);
+    int last = max(i, j);
+
+    // 2. Find split point s
+    int d_node = delta(i, j);
+    int s_acc = 0;
+    for (int t = (l + 1) >> 1; t > 0; t >>= 1) {
+        if (delta(i, i + (s_acc + t) * d) > d_node) s_acc += t;
+    }
+    int split = i + s_acc * d + min(d, 0);
+
+    // 3. Assign Children
+    int left_child, right_child;
+
+    // Left child is either a leaf or another internal node (split)
+    if (first == split) {
+        left_child = -(split) - 1; // Leaf
+        all_parents[pc.parent_id].parents[N - 1 + split] = i;
+    } else {
+        left_child = split; // Internal
+        all_parents[pc.parent_id].parents[split] = i;
+    }
+
+    // Right child
+    if (last == split + 1) {
+        right_child = -(split + 1) - 1; // Leaf
+        all_parents[pc.parent_id].parents[N - 1 + split + 1] = i;
+    } else {
+        right_child = split + 1; // Internal
+        all_parents[pc.parent_id].parents[split + 1] = i;
+    }
+
+    all_bvhs[pc.bvh_id].nodes[i].left = left_child;
+    all_bvhs[pc.bvh_id].nodes[i].right = right_child;
+
+    // 4. Root handling
+    if (first == 0 && last == N - 1) {
+        all_parents[pc.parent_id].parents[i] = -1;
+    }
+}

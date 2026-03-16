@@ -1,0 +1,12 @@
+#version 450
+#extension GL_EXT_nonuniform_qualifier : require
+#extension GL_EXT_scalar_block_layout : require
+
+layout(set = 0, binding = 0, scalar) buffer AtomicBuffer { int data[]; } all_data[];
+layout(push_constant) uniform PC { uint id; uint count; int val; } pc;
+layout (local_size_x = 256) in;
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= pc.count) return;
+    all_data[pc.id].data[i] = pc.val;
+}

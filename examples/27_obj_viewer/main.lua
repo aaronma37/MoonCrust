@@ -103,7 +103,7 @@ function M.update()
     local idx = sw:acquire_next_image(image_available_sem)
     if idx == nil then return end
     
-    input.tick(); local speed = 10.0; local rot_speed = 0.03; local keys = sdl.SDL_GetKeyboardState(nil)
+    local speed = 10.0; local rot_speed = 0.03; local keys = sdl.SDL_GetKeyboardState(nil)
     if keys[80] ~= 0 then M.cam_yaw = M.cam_yaw + rot_speed end
     if keys[79] ~= 0 then M.cam_yaw = M.cam_yaw - rot_speed end
     if keys[82] ~= 0 then M.cam_pitch = clamp(M.cam_pitch + rot_speed, -1.5, 1.5) end

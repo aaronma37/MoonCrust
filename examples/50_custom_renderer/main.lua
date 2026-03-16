@@ -27,11 +27,12 @@ local M = {
 }
 
 local device, queue, sw, pipe_layout, pipe_render, pipe_blit, pipe_fsr
-local pipe_hash, pipe_sort, pipe_build_grid
+local pipe_morton, pipe_sort, pipe_build_grid, pipe_lbvh_build, pipe_lbvh_fit, pipe_clear, pipe_delta_debug, pipe_inf_clear
 local bindless_set, cb, frame_fence, image_available
 local tf_buf, mat_buf, grid_buf, coarse_buf, bitmask_buf, idx_buf, sphere_buf, sort_buf, out_img, upscale_img
+local bvh_buf, atomic_buf, parent_buf, collision_buf, delta_buf
 local query_pool, timestamp_period
-local num_blocks = 1048576 
+local num_blocks = 16384 
 local grid_res = 128
 local coarse_res = 16
 local world_min, world_max = -20, 20
@@ -41,6 +42,13 @@ ffi.cdef[[
     typedef struct Transform { float px, py, pz, sx; float qx, qy, qz, qw; } Transform;
     typedef struct Material { float r, g, b, a; float roughness, metallic, emissive; uint32_t type; } Material;
     typedef struct Sphere { float x, y, z, r; } Sphere;
+    typedef struct Entry { uint64_t key; uint64_t value; } Entry;
+    typedef struct BVHNode { 
+        int32_t left, right; 
+        int32_t pad0, pad1; 
+        float min_px, min_py, min_pz, min_pw; 
+        float max_px, max_py, max_pz, max_pw; 
+    } BVHNode;
     typedef struct RenderPC {
         float cam_px, cam_py, cam_pz, cam_pw;
         float cam_dx, cam_dy, cam_dz, cam_dw;
@@ -50,7 +58,7 @@ ffi.cdef[[
         float time;
         uint32_t num_transforms;
         uint32_t tf_id, mat_id, img_id, grid_id, idx_id;
-        uint32_t use_shadows, sphere_id, coarse_id, bitmask_id;
+        uint32_t use_shadows, sphere_id, coarse_id, bitmask_id, bvh_id, parent_id;
     } RenderPC;
     typedef struct FSRPC {
         float src_res_x, src_res_y;
@@ -60,17 +68,54 @@ ffi.cdef[[
     typedef struct HashPC { uint32_t sphere_id, entry_id, num_blocks, pad; } HashPC;
     typedef struct SortPC { uint32_t entry_id, j, k, pad; } SortPC;
     typedef struct BuildPC { uint32_t entry_id, grid_id, coarse_id, idx_id, bitmask_id; uint32_t num_blocks, pass, pad; } BuildPC;
+    typedef struct BVHDebug { int32_t j, split, d, pad; } BVHDebug;
+    typedef struct LBVHBuildPC { uint32_t entry_id, bvh_id, parent_id, num_leaves, collision_id; } LBVHBuildPC;
+    typedef struct LBVHFitPC { uint32_t sphere_id, entry_id, bvh_id, atomic_id, parent_id, num_leaves; } LBVHFitPC;
+    typedef struct ClearPC { uint32_t id, count; int32_t val; uint32_t pad; } ClearPC;
+    typedef struct DeltaPC { uint32_t sphere_id, delta_id, num_leaves, pad; } DeltaPC;
+    typedef struct InfClearPC { uint32_t bvh_id, count, pad0, pad1; } InfClearPC;
 ]]
 
 function M.rebuild_grid(cb)
     vk.vkCmdWriteTimestamp(cb, vk.VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, query_pool, 0)
-    local h_pc = ffi.new("HashPC", { sphere_id = 4, entry_id = 6, num_blocks = num_blocks })
-    vk.vkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_hash)
+    
+    -- 1. Clear Atomics and Parents (Initialization)
+    local clear_pc = ffi.new("ClearPC", { id = 9, count = num_blocks - 1, val = 0 })
+    vk.vkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_clear)
     vk.vkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_layout, 0, 1, ffi.new("VkDescriptorSet[1]", {bindless_set}), 0, nil)
+    vk.vkCmdPushConstants(cb, pipe_layout, 0x7FFFFFFF, 0, ffi.sizeof("ClearPC"), clear_pc)
+    vk.vkCmdDispatch(cb, math.ceil((num_blocks - 1) / 256), 1, 1)
+    
+    clear_pc.id, clear_pc.count, clear_pc.val = 10, num_blocks * 2 - 1, -1
+    vk.vkCmdPushConstants(cb, pipe_layout, 0x7FFFFFFF, 0, ffi.sizeof("ClearPC"), clear_pc)
+    vk.vkCmdDispatch(cb, math.ceil((num_blocks * 2 - 1) / 256), 1, 1)
+
+    clear_pc.id, clear_pc.val = 11, 0
+    vk.vkCmdPushConstants(cb, pipe_layout, 0x7FFFFFFF, 0, ffi.sizeof("ClearPC"), clear_pc)
+    vk.vkCmdDispatch(cb, math.ceil((num_blocks * 2 - 1) / 256), 1, 1)
+
+    local inf_pc = ffi.new("InfClearPC", { bvh_id = 8, count = num_blocks - 1 })
+    vk.vkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_inf_clear)
+    vk.vkCmdPushConstants(cb, pipe_layout, 0x7FFFFFFF, 0, ffi.sizeof("InfClearPC"), inf_pc)
+    vk.vkCmdDispatch(cb, math.ceil((num_blocks - 1) / 256), 1, 1)
+
+    local atom_bar = ffi.new("VkBufferMemoryBarrier[3]", {
+        { sType=vk.VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER, srcAccessMask=vk.VK_ACCESS_SHADER_WRITE_BIT, dstAccessMask=bit.bor(vk.VK_ACCESS_SHADER_READ_BIT, vk.VK_ACCESS_SHADER_WRITE_BIT), buffer=atomic_buf.handle, offset=0, size=atomic_buf.size },
+        { sType=vk.VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER, srcAccessMask=vk.VK_ACCESS_SHADER_WRITE_BIT, dstAccessMask=bit.bor(vk.VK_ACCESS_SHADER_READ_BIT, vk.VK_ACCESS_SHADER_WRITE_BIT), buffer=parent_buf.handle, offset=0, size=parent_buf.size },
+        { sType=vk.VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER, srcAccessMask=vk.VK_ACCESS_SHADER_WRITE_BIT, dstAccessMask=bit.bor(vk.VK_ACCESS_SHADER_READ_BIT, vk.VK_ACCESS_SHADER_WRITE_BIT), buffer=bvh_buf.handle, offset=0, size=bvh_buf.size }
+    })
+    vk.vkCmdPipelineBarrier(cb, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nil, 3, atom_bar, 0, nil)
+
+    -- 2. Morton Generation
+    local h_pc = ffi.new("HashPC", { sphere_id = 4, entry_id = 6, num_blocks = num_blocks })
+    vk.vkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_morton)
     vk.vkCmdPushConstants(cb, pipe_layout, 0x7FFFFFFF, 0, ffi.sizeof("HashPC"), h_pc)
     vk.vkCmdDispatch(cb, num_blocks / 256, 1, 1)
+    
     local bar_hash = ffi.new("VkBufferMemoryBarrier[1]", {{ sType=vk.VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER, srcAccessMask=vk.VK_ACCESS_SHADER_WRITE_BIT, dstAccessMask=bit.bor(vk.VK_ACCESS_SHADER_READ_BIT, vk.VK_ACCESS_SHADER_WRITE_BIT), buffer=sort_buf.handle, offset=0, size=sort_buf.size }})
     vk.vkCmdPipelineBarrier(cb, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nil, 1, bar_hash, 0, nil)
+    
+    -- 3. Bitonic Sort
     vk.vkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_sort)
     local s_pc = ffi.new("SortPC", { entry_id = 6 })
     local k = 2
@@ -85,27 +130,36 @@ function M.rebuild_grid(cb)
         end
         k = k * 2
     end
-    local b_pc = ffi.new("BuildPC", { entry_id = 6, grid_id = 2, coarse_id = 5, idx_id = 3, bitmask_id = 7, num_blocks = num_blocks, pass = 0 })
-    vk.vkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_build_grid)
-    vk.vkCmdPushConstants(cb, pipe_layout, 0x7FFFFFFF, 0, ffi.sizeof("BuildPC"), b_pc)
-    vk.vkCmdDispatch(cb, math.ceil((grid_res^3) / 256), 1, 1) 
-    
-    local bar_grid = ffi.new("VkBufferMemoryBarrier[3]", {
-        { sType=vk.VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER, srcAccessMask=vk.VK_ACCESS_SHADER_WRITE_BIT, dstAccessMask=bit.bor(vk.VK_ACCESS_SHADER_READ_BIT, vk.VK_ACCESS_SHADER_WRITE_BIT), buffer=grid_buf.handle, offset=0, size=grid_buf.size },
-        { sType=vk.VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER, srcAccessMask=vk.VK_ACCESS_SHADER_WRITE_BIT, dstAccessMask=bit.bor(vk.VK_ACCESS_SHADER_READ_BIT, vk.VK_ACCESS_SHADER_WRITE_BIT), buffer=coarse_buf.handle, offset=0, size=coarse_buf.size },
-        { sType=vk.VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER, srcAccessMask=vk.VK_ACCESS_SHADER_WRITE_BIT, dstAccessMask=bit.bor(vk.VK_ACCESS_SHADER_READ_BIT, vk.VK_ACCESS_SHADER_WRITE_BIT), buffer=bitmask_buf.handle, offset=0, size=bitmask_buf.size }
-    })
-    vk.vkCmdPipelineBarrier(cb, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nil, 3, bar_grid, 0, nil)
-    
-    b_pc.pass = 1
-    vk.vkCmdPushConstants(cb, pipe_layout, 0x7FFFFFFF, 0, ffi.sizeof("BuildPC"), b_pc)
-    vk.vkCmdDispatch(cb, math.ceil(num_blocks / 256), 1, 1) 
-    vk.vkCmdPipelineBarrier(cb, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nil, 3, bar_grid, 0, nil)
 
-    b_pc.pass = 2
-    vk.vkCmdPushConstants(cb, pipe_layout, 0x7FFFFFFF, 0, ffi.sizeof("BuildPC"), b_pc)
-    vk.vkCmdDispatch(cb, math.ceil(num_blocks / 256), 1, 1) 
-    vk.vkCmdPipelineBarrier(cb, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nil, 3, bar_grid, 0, nil)
+    -- 3.5 Delta Debug (Copy sphere X after sort to verify buffer access)
+    local delta_pc = ffi.new("DeltaPC", { sphere_id = 4, delta_id = 13, num_leaves = num_blocks })
+    vk.vkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_delta_debug)
+    vk.vkCmdPushConstants(cb, pipe_layout, 0x7FFFFFFF, 0, ffi.sizeof("DeltaPC"), delta_pc)
+    vk.vkCmdDispatch(cb, math.ceil(num_blocks / 256), 1, 1)
+    local delta_bar = ffi.new("VkBufferMemoryBarrier[1]", {{ sType=vk.VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER, srcAccessMask=vk.VK_ACCESS_SHADER_WRITE_BIT, dstAccessMask=bit.bor(vk.VK_ACCESS_SHADER_READ_BIT, vk.VK_ACCESS_SHADER_WRITE_BIT), buffer=delta_buf.handle, offset=0, size=delta_buf.size }})
+    vk.vkCmdPipelineBarrier(cb, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nil, 1, delta_bar, 0, nil)
+
+    -- 4. LBVH Build
+    local bvh_build_pc = ffi.new("LBVHBuildPC", { entry_id = 6, bvh_id = 8, parent_id = 10, num_leaves = num_blocks })
+    vk.vkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_lbvh_build)
+    vk.vkCmdPushConstants(cb, pipe_layout, 0x7FFFFFFF, 0, ffi.sizeof("LBVHBuildPC"), bvh_build_pc)
+    vk.vkCmdDispatch(cb, math.ceil((num_blocks - 1) / 256), 1, 1)
+
+
+
+    local bvh_bar = ffi.new("VkBufferMemoryBarrier[2]", {
+        { sType=vk.VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER, srcAccessMask=vk.VK_ACCESS_SHADER_WRITE_BIT, dstAccessMask=bit.bor(vk.VK_ACCESS_SHADER_READ_BIT, vk.VK_ACCESS_SHADER_WRITE_BIT), buffer=bvh_buf.handle, offset=0, size=bvh_buf.size },
+        { sType=vk.VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER, srcAccessMask=vk.VK_ACCESS_SHADER_WRITE_BIT, dstAccessMask=bit.bor(vk.VK_ACCESS_SHADER_READ_BIT, vk.VK_ACCESS_SHADER_WRITE_BIT), buffer=parent_buf.handle, offset=0, size=parent_buf.size }
+    })
+    vk.vkCmdPipelineBarrier(cb, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nil, 2, bvh_bar, 0, nil)
+
+    -- 5. LBVH Fit
+    local bvh_fit_pc = ffi.new("LBVHFitPC", { sphere_id = 4, entry_id = 6, bvh_id = 8, atomic_id = 9, parent_id = 10, num_leaves = num_blocks })
+    vk.vkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_lbvh_fit)
+    vk.vkCmdPushConstants(cb, pipe_layout, 0x7FFFFFFF, 0, ffi.sizeof("LBVHFitPC"), bvh_fit_pc)
+    vk.vkCmdDispatch(cb, math.ceil(num_blocks / 256), 1, 1)
+    vk.vkCmdPipelineBarrier(cb, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nil, 1, bvh_bar, 0, nil)
+    
     vk.vkCmdWriteTimestamp(cb, vk.VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, query_pool, 1)
 end
 
@@ -139,12 +193,18 @@ function M.init()
     mat_buf = mc.buffer(num_blocks * ffi.sizeof("Material"), "storage", nil, false)
     sphere_buf = mc.buffer(num_blocks * ffi.sizeof("Sphere"), "storage", nil, false)
     idx_buf = mc.buffer(num_blocks * 4, "storage", nil, false) 
-    sort_buf = mc.buffer(num_blocks * 8, "storage", nil, false) 
+    sort_buf = mc.buffer(num_blocks * ffi.sizeof("Entry"), "storage", nil, true) 
     grid_buf = mc.buffer(grid_res * grid_res * grid_res * 8, "storage", nil, false) 
     coarse_buf = mc.buffer(coarse_res * coarse_res * coarse_res * 4, "storage", nil, false) 
     bitmask_buf = mc.buffer((grid_res/4)^3 * 8, "storage", nil, false) 
+    bvh_buf = mc.buffer((num_blocks - 1) * ffi.sizeof("BVHNode"), "storage", nil, true)
+    atomic_buf = mc.buffer((num_blocks - 1) * 4, "storage", nil, true)
+    parent_buf = mc.buffer((num_blocks * 2 - 1) * 4, "storage", nil, true)
+    collision_buf = mc.buffer((num_blocks * 2 - 1) * 4, "storage", nil, true)
+    delta_buf = mc.buffer(num_blocks * 4, "storage", nil, true)
 
     local host_tf, host_mat, host_sphere = ffi.new("Transform[?]", num_blocks), ffi.new("Material[?]", num_blocks), ffi.new("Sphere[?]", num_blocks)
+
     math.randomseed(42)
     local PI = math.pi
     for i=0, num_blocks-1 do
@@ -184,12 +244,19 @@ function M.init()
     descriptors.update_buffer_set(device, bindless_set, 0, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, coarse_buf.handle, 0, coarse_buf.size, 5)
     descriptors.update_buffer_set(device, bindless_set, 0, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, sort_buf.handle, 0, sort_buf.size, 6)
     descriptors.update_buffer_set(device, bindless_set, 0, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, bitmask_buf.handle, 0, bitmask_buf.size, 7)
+    descriptors.update_buffer_set(device, bindless_set, 0, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, bvh_buf.handle, 0, bvh_buf.size, 8)
+    descriptors.update_buffer_set(device, bindless_set, 0, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, atomic_buf.handle, 0, atomic_buf.size, 9)
+    descriptors.update_buffer_set(device, bindless_set, 0, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, parent_buf.handle, 0, parent_buf.size, 10)
+    descriptors.update_buffer_set(device, bindless_set, 0, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, collision_buf.handle, 0, collision_buf.size, 11)
+    descriptors.update_buffer_set(device, bindless_set, 0, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, delta_buf.handle, 0, delta_buf.size, 13)
 
     M.create_render_target()
 
     pipe_layout = pipeline.create_layout(device, {bl_layout}, ffi.new("VkPushConstantRange[1]", {{ stageFlags = 0x7FFFFFFF, offset = 0, size = 128 }}))
     local function load_comp(path) return pipeline.create_compute_pipeline(device, pipe_layout, shader.create_module(device, shader.compile_glsl(io.open(path):read("*all"), vk.VK_SHADER_STAGE_COMPUTE_BIT))) end
-    pipe_render, pipe_hash, pipe_sort, pipe_build_grid = load_comp("examples/50_custom_renderer/render.comp"), load_comp("examples/50_custom_renderer/hash.comp"), load_comp("examples/50_custom_renderer/sort.comp"), load_comp("examples/50_custom_renderer/build_grid.comp")
+    pipe_render, pipe_morton, pipe_sort, pipe_build_grid = load_comp("examples/50_custom_renderer/render.comp"), load_comp("examples/50_custom_renderer/morton.comp"), load_comp("examples/50_custom_renderer/sort.comp"), load_comp("examples/50_custom_renderer/build_grid.comp")
+    pipe_lbvh_build, pipe_lbvh_fit, pipe_clear = load_comp("examples/50_custom_renderer/lbvh_build.comp"), load_comp("examples/50_custom_renderer/lbvh_fit.comp"), load_comp("examples/50_custom_renderer/clear.comp")
+    pipe_delta_debug, pipe_inf_clear = load_comp("examples/50_custom_renderer/delta_debug.comp"), load_comp("examples/50_custom_renderer/inf_clear.comp")
     pipe_fsr = load_comp("examples/50_custom_renderer/fsr.comp")
     
     local v_mod = shader.create_module(device, shader.compile_glsl([[#version 450
@@ -226,7 +293,7 @@ function M.update()
     vk.vkResetFences(device, 1, ffi.new("VkFence[1]", {frame_fence}))
     local idx = sw:acquire_next_image(image_available)
     if idx == nil then return end
-    input.tick(); M.current_time = M.current_time + 0.016
+    M.current_time = M.current_time + 0.016
     local speed = 0.2
     if input.key_down(input.SCANCODE_W) then M.cam_pos[1] = M.cam_pos[1] + math.sin(M.cam_yaw) * speed; M.cam_pos[3] = M.cam_pos[3] + math.cos(M.cam_yaw) * speed end
     if input.key_down(input.SCANCODE_S) then M.cam_pos[1] = M.cam_pos[1] - math.sin(M.cam_yaw) * speed; M.cam_pos[3] = M.cam_pos[3] - math.cos(M.cam_yaw) * speed end
@@ -240,7 +307,7 @@ function M.update()
     end
 
     vk.vkResetCommandBuffer(cb, 0); vk.vkBeginCommandBuffer(cb, ffi.new("VkCommandBufferBeginInfo", { sType = vk.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO }))
-    if M.needs_rebuild then M.rebuild_grid(cb); M.needs_rebuild = false
+    if M.needs_rebuild then M.rebuild_grid(cb); M.needs_rebuild = false; M.debug_root = true
     else vk.vkCmdWriteTimestamp(cb, vk.VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, query_pool, 0); vk.vkCmdWriteTimestamp(cb, vk.VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, query_pool, 1) end
 
     local render_w, render_h = math.floor(sw.extent.width * M.render_scale), math.floor(sw.extent.height * M.render_scale)
@@ -250,8 +317,9 @@ function M.update()
     pc.cam_ux, pc.cam_uy, pc.cam_uz, pc.cam_uw = 0, 1, 0, 0.0
     pc.cam_rx, pc.cam_ry, pc.cam_rz, pc.cam_rw = math.cos(M.cam_yaw), 0, -math.sin(M.cam_yaw), 0.0
     pc.res_x, pc.res_y, pc.time, pc.num_transforms = render_w, render_h, M.current_time, num_blocks
-    pc.tf_id, pc.mat_id, pc.img_id, pc.grid_id, pc.idx_id = 0, 1, 0, 2, 3
+    pc.tf_id, pc.mat_id, pc.img_id, pc.grid_id, pc.idx_id = 0, 1, 0, 2, 6
     pc.use_shadows, pc.sphere_id, pc.coarse_id, pc.bitmask_id = (M.enable_shadows and 1 or 0), 4, 5, 7
+    pc.bvh_id, pc.parent_id = 8, 10
 
     vk.vkCmdWriteTimestamp(cb, vk.VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, query_pool, 2)
     vk.vkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_render)
@@ -302,6 +370,94 @@ function M.update()
     bar[0].oldLayout, bar[0].newLayout = vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, vk.VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
     vk.vkCmdPipelineBarrier(cb, vk.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, vk.VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nil, 0, nil, 1, bar); vk.vkEndCommandBuffer(cb)
     vk.vkQueueSubmit(queue, 1, ffi.new("VkSubmitInfo", { sType=vk.VK_STRUCTURE_TYPE_SUBMIT_INFO, waitSemaphoreCount=1, pWaitSemaphores = ffi.new("VkSemaphore[1]", {image_available}), pWaitDstStageMask = ffi.new("VkPipelineStageFlags[1]", {vk.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT}), commandBufferCount=1, pCommandBuffers = ffi.new("VkCommandBuffer[1]", {cb}), signalSemaphoreCount = 1, pSignalSemaphores = ffi.new("VkSemaphore[1]", {sw.semaphores[idx]}) }), frame_fence)
+    
+    if M.debug_root then
+        vk.vkDeviceWaitIdle(device)
+        local bvh_ptr = ffi.cast("BVHNode*", bvh_buf.allocation.ptr)
+        local atom_ptr = ffi.cast("uint32_t*", atomic_buf.allocation.ptr)
+        local parent_ptr = ffi.cast("int32_t*", parent_buf.allocation.ptr)
+        local entries = ffi.cast("Entry*", sort_buf.allocation.ptr)
+        local coll_ptr = ffi.cast("uint32_t*", collision_buf.allocation.ptr)
+        
+        local collisions, double_claims = 0, 0
+        for i=0, num_blocks * 2 - 2 do
+            if coll_ptr[i] > 1 then collisions = collisions + 1; double_claims = double_claims + (coll_ptr[i] - 1) end
+        end
+
+        local internal_orphans, leaf_orphans = 0, 0
+        local leaf_orphan_indices = {}
+        for i=0, num_blocks - 2 do
+            if parent_ptr[i] == -1 then internal_orphans = internal_orphans + 1 end
+        end
+        for i=num_blocks - 1, num_blocks * 2 - 2 do
+            if parent_ptr[i] == -1 then 
+                leaf_orphans = leaf_orphans + 1 
+                if #leaf_orphan_indices < 10 then table.insert(leaf_orphan_indices, i - (num_blocks - 1)) end
+            end
+        end
+
+        local sort_errors = 0
+        for i=0, num_blocks - 2 do
+            if entries[i].key > entries[i+1].key then sort_errors = sort_errors + 1 end
+        end
+
+        local atom_sum = 0
+        local root_idx = -1
+        for i=0, num_blocks - 2 do
+            if atom_ptr[i] > 0 then atom_sum = atom_sum + 1 end
+            if parent_ptr[i] == -1 then root_idx = i end
+        end
+
+        local d_ptr = ffi.cast("float*", delta_buf.allocation.ptr)
+        local d_line = {}
+        for i=0, 19 do table.insert(d_line, string.format("%.2f", d_ptr[i])) end
+        print("Sphere X Trace (first 20):", table.concat(d_line, ", "))
+
+        print("Morton Key Trace (first 5):")
+        for i=0, 4 do
+            local m = tonumber(entries[i].key / 2^32)
+            local id = tonumber(entries[i].key % 2^32)
+            print(string.format("  Entry %d: Morton=%08x, ID=%d", i, m, id))
+        end
+        print(string.format("DEBUG: BVHNode Size: %d, Sort Errors: %d, Internal Orphans: %d, Leaf Orphans: %d", 
+            ffi.sizeof("BVHNode"), sort_errors, internal_orphans, leaf_orphans))
+        
+        if root_idx ~= -1 then
+            local node = bvh_ptr[root_idx]
+            local left = (node.left < 0) and (num_blocks - 1 + (-node.left - 1)) or node.left
+            local right = (node.right < 0) and (num_blocks - 1 + (-node.right - 1)) or node.right
+            
+            print(string.format("ROOT (Node %d): Children L=%d, R=%d", root_idx, left, right))
+            if left < num_blocks - 1 then
+                local ln = bvh_ptr[left]
+                print(string.format("  L-Child AABB: Min(%.2f, %.2f, %.2f) Max(%.2f, %.2f, %.2f) Atomic=%d", 
+                    ln.min_px, ln.min_py, ln.min_pz, ln.max_px, ln.max_py, ln.max_pz, atom_ptr[left]))
+            end
+            if right < num_blocks - 1 then
+                local rn = bvh_ptr[right]
+                print(string.format("  R-Child AABB: Min(%.2f, %.2f, %.2f) Max(%.2f, %.2f, %.2f) Atomic=%d", 
+                    rn.min_px, rn.min_py, rn.min_pz, rn.max_px, rn.max_py, rn.max_pz, atom_ptr[right]))
+            end
+
+            print(string.format("ROOT AABB: Min(%.2f, %.2f, %.2f) Max(%.2f, %.2f, %.2f)",
+                node.min_px, node.min_py, node.min_pz,
+                node.max_px, node.max_py, node.max_pz))
+            
+            print("Ancestry Trace for Leaf 0:")
+            local curr = num_blocks - 1 + 0 -- Leaf 0 index
+            local path = {}
+            for i=1, 32 do
+                table.insert(path, curr)
+                curr = parent_ptr[curr]
+                if curr == -1 then break end
+            end
+            print("  Path: " .. table.concat(path, " -> ") .. " -> ROOT")
+        else
+            print("ROOT NOT FOUND!")
+        end
+        M.debug_root = false
+    end
+
     sw:present(queue, idx, sw.semaphores[idx])
     local now, freq = tonumber(sdl.SDL_GetPerformanceCounter()), tonumber(sdl.SDL_GetPerformanceFrequency())
     local dt = (now - M.last_perf_counter) / freq; M.last_perf_counter = now

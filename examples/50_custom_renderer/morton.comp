@@ -1,0 +1,54 @@
+#version 450
+#extension GL_EXT_nonuniform_qualifier : require
+#extension GL_EXT_scalar_block_layout : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+
+struct Sphere {
+    vec4 data; // x, y, z, r
+};
+
+struct Entry {
+    uint64_t key;   // Morton Code (high 32) | Index (low 32)
+    uint64_t value; // Block ID
+};
+
+layout(set = 0, binding = 0, scalar) buffer SphereSoA { Sphere spheres[]; } all_spheres[];
+layout(set = 0, binding = 0, scalar) buffer SortBuffer { Entry entries[]; } all_entries[];
+
+layout(push_constant) uniform PC {
+    uint sphere_id;
+    uint entry_id;
+    uint num_blocks;
+} pc;
+
+const float WORLD_MIN = -20.0;
+const float WORLD_SIZE = 40.0;
+
+uint expandBits(uint v) {
+    v = (v * 0x00010001u) & 0xFF0000FFu;
+    v = (v * 0x00000101u) & 0x0F00F00Fu;
+    v = (v * 0x00000011u) & 0xC30C30C3u;
+    v = (v * 0x00000005u) & 0x49249249u;
+    return v;
+}
+
+uint morton3D(vec3 p) {
+    p = clamp((p - WORLD_MIN) / WORLD_SIZE * 1024.0, 0.0, 1023.0);
+    uint x = expandBits(uint(p.x));
+    uint y = expandBits(uint(p.y));
+    uint z = expandBits(uint(p.z));
+    return (x << 2) | (y << 1) | z;
+}
+
+layout (local_size_x = 256) in;
+
+void main() {
+    uint id = gl_GlobalInvocationID.x;
+    if (id >= pc.num_blocks) return;
+
+    vec3 p = all_spheres[pc.sphere_id].spheres[id].data.xyz;
+    uint m = morton3D(p);
+    
+    all_entries[pc.entry_id].entries[id].key = (uint64_t(m) << 32) | uint64_t(id);
+    all_entries[pc.entry_id].entries[id].value = uint64_t(id);
+}

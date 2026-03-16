@@ -165,7 +165,7 @@ end
 function M.update()
     vk.vkWaitForFences(device, 1, ffi.new("VkFence[1]", {frame_fence}), vk.VK_TRUE, 0xFFFFFFFFFFFFFFFFULL); vk.vkResetFences(device, 1, ffi.new("VkFence[1]", {frame_fence}))
     local idx = sw:acquire_next_image(image_available); if idx == nil then return end
-    input.tick(); M.current_time = M.current_time + 0.016; M.frame_count = M.frame_count + 1
+    M.current_time = M.current_time + 0.016; M.frame_count = M.frame_count + 1
     local speed, look_speed = (input.key_down(input.SCANCODE_LSHIFT) and 15.0 or 5.0) * 0.016, 1.5 * 0.016
     if input.key_down(input.SCANCODE_A) then M.cam_rot[1] = M.cam_rot[1] + look_speed end; if input.key_down(input.SCANCODE_D) then M.cam_rot[1] = M.cam_rot[1] - look_speed end
     local fwd_x, fwd_z = math.sin(M.cam_rot[1]), -math.cos(M.cam_rot[1])

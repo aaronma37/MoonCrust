@@ -83,7 +83,7 @@ function M.update()
     local idx = sw:acquire_next_image(image_available)
     if idx == nil then return end
     
-    input.tick(); M.current_time = M.current_time + 0.016
+    M.current_time = M.current_time + 0.016
     if input.key_down(input.SCANCODE_W) then 
         M.cam_pos[1] = M.cam_pos[1] + math.sin(M.cam_yaw) * 0.5
         M.cam_pos[3] = M.cam_pos[3] + math.cos(M.cam_yaw) * 0.5

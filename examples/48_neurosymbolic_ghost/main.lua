@@ -97,7 +97,7 @@ function M.update()
     vk.vkWaitForFences(device, 1, ffi.new("VkFence[1]", {frame_fence}), vk.VK_TRUE, 0xFFFFFFFF); vk.vkResetFences(device, 1, ffi.new("VkFence[1]", {frame_fence}))
     local idx = sw:acquire_next_image(image_available); if idx == nil then return end
     
-    input.tick(); M.current_time = M.current_time + 0.016
+    M.current_time = M.current_time + 0.016
     
     local dx, dy = input.mouse_delta()
     if input.mouse_down(3) then 

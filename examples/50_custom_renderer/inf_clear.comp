@@ -1,0 +1,25 @@
+#version 450
+#extension GL_EXT_nonuniform_qualifier : require
+#extension GL_EXT_scalar_block_layout : require
+
+struct BVHNode {
+    int left, right, pad0, pad1;
+    vec4 min_p, max_p;
+};
+
+layout(set = 0, binding = 0, scalar) buffer BVHBuffer { BVHNode nodes[]; } all_bvhs[];
+
+layout(push_constant) uniform PC {
+    uint bvh_id;
+    uint count;
+} pc;
+
+layout (local_size_x = 256) in;
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= pc.count) return;
+    
+    all_bvhs[pc.bvh_id].nodes[i].min_p = vec4(1e30, 1e30, 1e30, 0.0);
+    all_bvhs[pc.bvh_id].nodes[i].max_p = vec4(-1e30, -1e30, -1e30, 0.0);
+}

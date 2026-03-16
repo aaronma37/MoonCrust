@@ -1,0 +1,61 @@
+#version 450
+#extension GL_EXT_nonuniform_qualifier : require
+
+layout(set = 0, binding = 2, rgba32f) uniform image2D all_images[];
+
+layout(push_constant) uniform PushConstants {
+    uint img_id;
+    uint screen_w;
+    uint screen_h;
+    float threshold;
+    vec4 cam_pos;
+} pc;
+
+layout (local_size_x = 16, local_size_y = 16) in;
+
+float get_id(ivec2 coords) {
+    ivec2 c = clamp(coords, ivec2(0), ivec2(pc.screen_w - 1, pc.screen_h - 1));
+    return imageLoad(all_images[pc.img_id], c).a;
+}
+
+void main() {
+    ivec2 coords = ivec2(gl_GlobalInvocationID.xy);
+    if (coords.x >= pc.screen_w || coords.y >= pc.screen_h) return;
+
+    // ELIMINATE ARTIFACTS: Skip edges
+    if (coords.x <= 1 || coords.y <= 1 || coords.x >= pc.screen_w - 2 || coords.y >= pc.screen_h - 2) {
+        imageStore(all_images[pc.img_id], coords, vec4(0.0, 0.0, 0.0, 1.0));
+        return;
+    }
+
+    float id_center = imageLoad(all_images[pc.img_id], coords).a;
+    vec4 color = imageLoad(all_images[pc.img_id], coords);
+
+    // SKY RENDERER (ID 0)
+    if (id_center < 0.5) {
+        float v = float(coords.y) / float(pc.screen_h);
+        vec3 sky_color = mix(vec3(0.05, 0.1, 0.2), vec3(0.4, 0.2, 0.3), v);
+        imageStore(all_images[pc.img_id], coords, vec4(sky_color, 1.0));
+        return;
+    }
+
+    // DISCONTINUITY CHECK (Edge Detection on Asset IDs)
+    bool is_edge = false;
+    for (int y = -1; y <= 1; y++) {
+        for (int x = -1; x <= 1; x++) {
+            if (x == 0 && y == 0) continue;
+            float id_neighbor = get_id(coords + ivec2(x, y));
+            if (abs(id_center - id_neighbor) > 0.1) {
+                is_edge = true;
+                break;
+            }
+        }
+        if (is_edge) break;
+    }
+    
+    if (is_edge) {
+        imageStore(all_images[pc.img_id], coords, vec4(0.0, 0.0, 0.0, 1.0));
+    } else {
+        imageStore(all_images[pc.img_id], coords, vec4(color.rgb, 1.0));
+    }
+}

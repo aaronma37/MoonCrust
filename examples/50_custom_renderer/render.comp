@@ -5,38 +5,24 @@
 
 layout(local_size_x = 8, local_size_y = 8) in;
 
-struct Transform { vec4 pos_scale; vec4 quat; }; // pos.xyz, scale.w
+struct Transform { vec4 pos_scale; vec4 quat; };
 struct Material { vec4 base_color; float roughness, metallic, emissive; uint type; };
 struct Sphere { vec4 data; };
+struct BVHNode { int left, right; int pad0, pad1; vec4 min_p, max_p; };
+struct Entry { uint64_t key, value; };
 
 layout(set = 0, binding = 0, scalar) buffer TransformSoA { Transform tfs[]; } all_tfs[];
 layout(set = 0, binding = 0, scalar) buffer MaterialSoA { Material mats[]; } all_mats[];
-layout(set = 0, binding = 0, scalar) buffer HashGrid { uvec2 cells[]; } all_grids[];
-layout(set = 0, binding = 0, scalar) buffer HashIndices { uint ids[]; } all_indices[];
 layout(set = 0, binding = 0, scalar) buffer SphereSoA { Sphere spheres[]; } all_spheres[];
-layout(set = 0, binding = 0, scalar) buffer CoarseGrid { uint occupied[]; } all_coarse[];
-layout(set = 0, binding = 0, scalar) buffer MicroOccupancy { uint64_t bitmasks[]; } all_bitmasks[];
+layout(set = 0, binding = 0, scalar) buffer BVHBuffer { BVHNode nodes[]; } all_bvhs[];
+layout(set = 0, binding = 0, scalar) buffer SortBuffer { Entry entries[]; } all_entries[];
 layout(set = 0, binding = 2, rgba32f) uniform writeonly image2D all_images[];
 
 layout(push_constant) uniform PushConstants {
     vec4 cam_pos, cam_dir, cam_up, cam_right;
     vec2 res; float time; uint num_blocks;
-    uint tf_id, mat_id, img_id, grid_id, idx_id, use_shadows, sphere_id, coarse_id, bitmask_id;
+    uint tf_id, mat_id, img_id, grid_id, idx_id, use_shadows, sphere_id, coarse_id, bitmask_id, bvh_id, parent_id;
 } pc;
-
-uint hash(uint x) {
-    x = ((x >> 16) ^ x) * 0x45d9f3b;
-    x = ((x >> 16) ^ x) * 0x45d9f3b;
-    x = (x >> 16) ^ x;
-    return x;
-}
-
-float random(inout uint seed) {
-    seed = hash(seed);
-    return float(seed) * (1.0 / 4294967296.0);
-}
-
-const float WORLD_MIN = -20.0, WORLD_MAX = 20.0, GRID_RES = 128.0, CELL_SIZE = 40.0 / 128.0;
 
 vec3 rotate_vector(vec3 v, vec4 q) {
     return v + 2.0 * cross(q.xyz, cross(q.xyz, v) + q.w * v);
@@ -47,44 +33,43 @@ vec3 rotate_vector_inv(vec3 v, vec4 q) {
     return rotate_vector(v, q_inv);
 }
 
+// Robust AABB intersection
 bool intersect_aabb(vec3 ro, vec3 rd, vec3 box_min, vec3 box_max, out float t_near, out float t_far) {
-    vec3 inv_rd = 1.0 / rd;
-    vec3 t0 = (box_min - ro) * inv_rd, t1 = (box_max - ro) * inv_rd;
-    vec3 tmin = min(t0, t1), tmax = max(t0, t1);
-    t_near = max(tmin.x, max(tmin.y, tmin.z)); t_far = min(tmax.x, min(tmax.y, tmax.z));
+    vec3 inv_rd = 1.0 / (rd + sign(rd) * 1e-9); // Prevent div by zero
+    vec3 t0 = (box_min - ro) * inv_rd;
+    vec3 t1 = (box_max - ro) * inv_rd;
+    vec3 tmin = min(t0, t1);
+    vec3 tmax = max(t0, t1);
+    t_near = max(tmin.x, max(tmin.y, tmin.z));
+    t_far = min(tmax.x, min(tmax.y, tmax.z));
     return t_near <= t_far && t_far >= 0.0;
 }
 
 bool intersect_obb(vec3 ro, vec3 rd, uint id, out float t) {
-    // 1. Fast Sphere Reject (16 bytes)
     vec4 s = all_spheres[pc.sphere_id].spheres[id].data;
     vec3 oc = ro - s.xyz;
-    float b = dot(oc, rd);
-    float c = dot(oc, oc) - s.w * s.w;
+    float b = dot(oc, rd), c = dot(oc, oc) - s.w * s.w;
     if (c > 0.0 && b > 0.0) return false;
-    float h = b*b - c;
-    if (h < 0.0) return false;
+    float h = b*b - c; if (h < 0.0) return false;
 
-    // 2. Fetch 32-byte compressed Transform (Half the bandwidth!)
     Transform tf = all_tfs[pc.tf_id].tfs[id];
     vec3 l_ro = rotate_vector_inv(ro - tf.pos_scale.xyz, tf.quat);
     vec3 l_rd = rotate_vector_inv(rd, tf.quat);
-    
-    vec3 inv_l_rd = 1.0 / l_rd;
+    vec3 inv_l_rd = 1.0 / (l_rd + sign(l_rd) * 1e-9);
     float s_half = tf.pos_scale.w * 0.5;
-    vec3 t0 = (-vec3(s_half) - l_ro) * inv_l_rd;
-    vec3 t1 = (vec3(s_half) - l_ro) * inv_l_rd;
+    vec3 t0 = (-vec3(s_half) - l_ro) * inv_l_rd, t1 = (vec3(s_half) - l_ro) * inv_l_rd;
     vec3 tmin = min(t0, t1), tmax = max(t0, t1);
     float tn = max(tmin.x, max(tmin.y, tmin.z)), tf_hit = min(tmax.x, min(tmax.y, tmax.z));
-    
-    if (tn <= tf_hit && tf_hit >= 0.0) { t = tn; return true; }
+    if (tn <= tf_hit && tf_hit >= 0.0) { 
+        t = max(tn, 0.0); // Clamp to 0 if inside
+        return true; 
+    }
     return false;
 }
 
 vec3 get_obb_normal(vec3 ro, vec3 rd, uint id, float t) {
     Transform tf = all_tfs[pc.tf_id].tfs[id];
-    vec3 l_ro = rotate_vector_inv(ro - tf.pos_scale.xyz, tf.quat);
-    vec3 l_rd = rotate_vector_inv(rd, tf.quat);
+    vec3 l_ro = rotate_vector_inv(ro - tf.pos_scale.xyz, tf.quat), l_rd = rotate_vector_inv(rd, tf.quat);
     vec3 hit_p = l_ro + l_rd * t;
     float s_half = tf.pos_scale.w * 0.5;
     vec3 n = vec3(0.0);
@@ -97,140 +82,46 @@ vec3 get_obb_normal(vec3 ro, vec3 rd, uint id, float t) {
     return normalize(rotate_vector(n, tf.quat));
 }
 
-bool trace_shadow_fast(vec3 ro, vec3 rd, float max_t, int max_steps) {
-    float t_min, t_max; if (!intersect_aabb(ro, rd, vec3(WORLD_MIN), vec3(WORLD_MAX), t_min, t_max)) return false;
-    t_min = max(t_min, 0.0); t_max = min(t_max, max_t);
-    vec3 cell_p = (ro + rd * (t_min + 0.001) - WORLD_MIN) / CELL_SIZE;
-    ivec3 cell = clamp(ivec3(floor(cell_p)), ivec3(0), ivec3(127));
-    vec3 step = sign(rd), t_delta = abs(CELL_SIZE / rd), t_max_step;
-    for(int i=0; i<3; ++i) t_max_step[i] = t_min + (rd[i]>0.0?floor(cell_p[i])+1.0-cell_p[i]:cell_p[i]-floor(cell_p[i])) * t_delta[i];
-    uint64_t cached_mask = 0; ivec3 last_brick = ivec3(-1);
-    for (int i = 0; i < max_steps; ++i) {
-        ivec3 brick_p = cell >> 2;
-        if (brick_p != last_brick) {
-            cached_mask = all_bitmasks[pc.bitmask_id].bitmasks[brick_p.x + (brick_p.y << 5) + (brick_p.z << 10)];
-            last_brick = brick_p;
-        }
-        if ((cached_mask & (uint64_t(1) << ((cell.x&3) + (cell.y&3)*4 + (cell.z&3)*16))) != 0) {
-            uvec2 c_data = all_grids[pc.grid_id].cells[cell.x + (cell.y << 7) + (cell.z << 14)];
-            for (uint j = 0; j < min(c_data.y, 2); ++j) {
-                float st; if (intersect_obb(ro, rd, all_indices[pc.idx_id].ids[c_data.x + j], st)) if (st < max_t) return true;
-            }
-        }
-        if (t_max_step.x < t_max_step.y) {
-            if (t_max_step.x < t_max_step.z) { cell.x += int(step.x); if (cell.x < 0 || cell.x >= 128) break; t_max_step.x += t_delta.x; }
-            else { cell.z += int(step.z); if (cell.z < 0 || cell.z >= 128) break; t_max_step.z += t_delta.z; }
-        } else {
-            if (t_max_step.y < t_max_step.z) { cell.y += int(step.y); if (cell.y < 0 || cell.y >= 128) break; t_max_step.y += t_delta.y; }
-            else { cell.z += int(step.z); if (cell.z < 0 || cell.z >= 128) break; t_max_step.z += t_delta.z; }
-        }
-        if (min(t_max_step.x, min(t_max_step.y, t_max_step.z)) > max_t) break;
-    }
-    return false;
-}
-
-float trace_ao(vec3 ro, vec3 n) {
-    // Zero-Noise AO: Trace exactly along the normal
-    vec3 rd = n; 
-    
-    float t_min, t_max; if (!intersect_aabb(ro, rd, vec3(WORLD_MIN), vec3(WORLD_MAX), t_min, t_max)) return 1.0;
-    t_min = max(t_min, 0.0); t_max = min(t_max, 0.8); // Short range
-    vec3 cell_p = (ro + rd * (t_min + 0.01) - WORLD_MIN) / CELL_SIZE;
-    ivec3 cell = clamp(ivec3(floor(cell_p)), ivec3(0), ivec3(127));
-    vec3 step = sign(rd), t_delta = abs(CELL_SIZE / rd), t_max_step;
-    for(int i=0; i<3; ++i) t_max_step[i] = t_min + (rd[i]>0.0?floor(cell_p[i])+1.0-cell_p[i]:cell_p[i]-floor(cell_p[i])) * t_delta[i];
-    
-    uint64_t cached_mask = 0; ivec3 last_brick = ivec3(-1);
-    for (int i = 0; i < 8; ++i) { // 8 steps for better range
-        ivec3 brick_p = cell >> 2;
-        if (brick_p != last_brick) {
-            cached_mask = all_bitmasks[pc.bitmask_id].bitmasks[brick_p.x + (brick_p.y << 5) + (brick_p.z << 10)];
-            last_brick = brick_p;
-        }
-        if ((cached_mask & (uint64_t(1) << ((cell.x&3) + (cell.y&3)*4 + (cell.z&3)*16))) != 0) {
-            float dist = min(t_max_step.x, min(t_max_step.y, t_max_step.z)) - t_min;
-            return 0.4 + 0.6 * clamp(dist / 0.8, 0.0, 1.0); // Smooth distance fade
-        }
-        if (t_max_step.x < t_max_step.y) {
-            if (t_max_step.x < t_max_step.z) { cell.x += int(step.x); if (cell.x < 0 || cell.x >= 128) break; t_max_step.x += t_delta.x; }
-            else { cell.z += int(step.z); if (cell.z < 0 || cell.z >= 128) break; t_max_step.z += t_delta.z; }
-        } else {
-            if (t_max_step.y < t_max_step.z) { cell.y += int(step.y); if (cell.y < 0 || cell.y >= 128) break; t_max_step.y += t_delta.y; }
-            else { cell.z += int(step.z); if (cell.z < 0 || cell.z >= 128) break; t_max_step.z += t_delta.z; }
-        }
-    }
-    return 1.0;
-}
-vec3 get_sky(vec3 rd) {
-    vec3 L = normalize(vec3(0.5, 1.0, 0.3));
-    float sun = pow(max(dot(rd, L), 0.0), 128.0);
-    vec3 sky = mix(vec3(0.1, 0.2, 0.4), vec3(0.4, 0.6, 0.9), max(rd.y, 0.0));
-    return sky + vec3(1.0, 0.8, 0.5) * sun * 5.0; // Bright sun disk
-}
-
 void main() {
     uvec2 pixel = gl_GlobalInvocationID.xy;
     if (pixel.x >= uint(pc.res.x) || pixel.y >= uint(pc.res.y)) return;
-    uint seed = hash(pixel.x + pixel.y * uint(pc.res.x)); 
     vec2 uv = (vec2(pixel) / pc.res) * 2.0 - 1.0; uv.x *= pc.res.x / pc.res.y;
     vec3 rd = normalize(pc.cam_dir.xyz + pc.cam_right.xyz * uv.x + pc.cam_up.xyz * uv.y), ro = pc.cam_pos.xyz;
-    float t_min, t_max; vec3 color = get_sky(rd);
 
-    if (intersect_aabb(ro, rd, vec3(WORLD_MIN), vec3(WORLD_MAX), t_min, t_max)) {
-        t_min = max(t_min, 0.0);
+    float hit_t = 1e30; int hit_id = -1;
+    int stack[128]; int stack_ptr = 0;
+    stack[stack_ptr++] = 0; 
 
-        vec3 cell_p = (ro + rd * (t_min + 0.0001) - WORLD_MIN) / CELL_SIZE;
-        ivec3 cell = clamp(ivec3(floor(cell_p)), ivec3(0), ivec3(127));
-        vec3 step = sign(rd), t_delta = abs(CELL_SIZE / rd), t_max_step;
-        for(int i=0; i<3; ++i) t_max_step[i] = t_min + (rd[i]>0.0?floor(cell_p[i])+1.0-cell_p[i]:cell_p[i]-floor(cell_p[i])) * t_delta[i];
-
-        float hit_t = 1e30; int hit_id = -1;
-        uint64_t cached_mask = 0; ivec3 last_brick = ivec3(-1);
-
-        for (int i = 0; i < 128; ++i) {
-            ivec3 brick_p = cell >> 2;
-            if (brick_p != last_brick) {
-                cached_mask = all_bitmasks[pc.bitmask_id].bitmasks[brick_p.x + (brick_p.y << 5) + (brick_p.z << 10)];
-                last_brick = brick_p;
+    while (stack_ptr > 0) {
+        int curr = stack[--stack_ptr];
+        if (curr < 0) {
+            uint id = uint(all_entries[pc.idx_id].entries[-curr - 1].value);
+            float t; if (intersect_obb(ro, rd, id, t)) {
+                if (t < hit_t) { hit_t = t; hit_id = int(id); }
             }
-
-            // Bitmask skip: only fetch grid/objects if bit is set
-            if ((cached_mask & (uint64_t(1) << ((cell.x&3) + (cell.y&3)*4 + (cell.z&3)*16))) != 0) {
-                uvec2 c_data = all_grids[pc.grid_id].cells[cell.x + (cell.y << 7) + (cell.z << 14)];
-                for (uint j = 0; j < min(c_data.y, 8); ++j) {
-                    float t; uint id = all_indices[pc.idx_id].ids[c_data.x + j];
-                    if (intersect_obb(ro, rd, id, t)) if (t < hit_t) { hit_t = t; hit_id = int(id); }
-                }
-                if (hit_id != -1 && hit_t <= min(t_max_step.x, min(t_max_step.y, t_max_step.z)) + 0.001) break;
-            }
-
-            // Standard 1-cell DDA Step
-            if (t_max_step.x < t_max_step.y) {
-                if (t_max_step.x < t_max_step.z) { cell.x += int(step.x); if (cell.x < 0 || cell.x >= 128) break; t_max_step.x += t_delta.x; }
-                else { cell.z += int(step.z); if (cell.z < 0 || cell.z >= 128) break; t_max_step.z += t_delta.z; }
-            } else {
-                if (t_max_step.y < t_max_step.z) { cell.y += int(step.y); if (cell.y < 0 || cell.y >= 128) break; t_max_step.y += t_delta.y; }
-                else { cell.z += int(step.z); if (cell.z < 0 || cell.z >= 128) break; t_max_step.z += t_delta.z; }
-            }
+            continue;
         }
-        if (hit_id != -1) {
-            vec3 hit_n = get_obb_normal(ro, rd, uint(hit_id), hit_t);
-            Material mat = all_mats[pc.mat_id].mats[hit_id]; vec3 L = normalize(vec3(0.5, 1.0, 0.3));
-            float diff = max(dot(hit_n, L), 0.0);
-            float ao = trace_ao(ro + rd * hit_t + hit_n * 0.01, hit_n);
-
-            vec3 sky_color = get_sky(hit_n);
-            color = mat.base_color.rgb * (diff * 1.5 + sky_color * 0.2 * ao);
-            if (mat.emissive > 0.0) color += mat.base_color.rgb * mat.emissive;
-            if (pc.use_shadows == 1 && diff > 0.0) {
-                if (trace_shadow_fast(ro + rd * hit_t + hit_n * 0.01, L, 20.0, 48)) color *= 0.6;
+        BVHNode node = all_bvhs[pc.bvh_id].nodes[curr];
+        float t_near, t_far;
+        if (intersect_aabb(ro, rd, node.min_p.xyz, node.max_p.xyz, t_near, t_far)) {
+            // Only traverse if the node is closer than our best hit
+            // If t_near < 0, we are inside the box, so we must traverse.
+            if (max(t_near, 0.0) < hit_t) {
+                stack[stack_ptr++] = node.right;
+                stack[stack_ptr++] = node.left;
             }
         }
     }
 
-    // ACES Tonemapping
+    vec3 color = vec3(0.1, 0.2, 0.4) + max(rd.y, 0.0) * vec3(0.3, 0.4, 0.5);
+    if (hit_id != -1) {
+        vec3 hit_n = get_obb_normal(ro, rd, uint(hit_id), hit_t);
+        Material mat = all_mats[pc.mat_id].mats[hit_id];
+        color = mat.base_color.rgb * (max(dot(hit_n, normalize(vec3(0.5, 1.0, 0.3))), 0.0) * 1.5 + 0.2);
+        if (mat.emissive > 0.0) color += mat.base_color.rgb * mat.emissive;
+    }
+
     const float a = 2.51, b = 0.03, c = 2.43, d = 0.59, e = 0.14;
     color = clamp((color * (a * color + b)) / (color * (c * color + d) + e), 0.0, 1.0);
-    
     imageStore(all_images[pc.img_id], ivec2(pixel), vec4(color, 1.0));
 }

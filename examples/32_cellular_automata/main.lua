@@ -167,7 +167,7 @@ function M.update()
     vk.vkResetFences(device, 1, ffi.new("VkFence[1]", {frame_fence}))
     local idx = sw:acquire_next_image(image_available)
     if idx == nil then return end
-    input.tick(); M.current_time = M.current_time + 0.016; M.frame_count = M.frame_count + 1
+    M.current_time = M.current_time + 0.016; M.frame_count = M.frame_count + 1
     
     local speed = 4 * M.zoom -- Slow down camera movement for zoomed view
     if input.key_down(input.SCANCODE_W) then M.cam_y = M.cam_y - speed end
