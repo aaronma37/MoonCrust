@@ -23,7 +23,8 @@ local M = {
     grid_build_ms = 0,
     render_ms = 0,
     render_scale = 1.0,
-    last_render_scale = 1.0
+    last_render_scale = 1.0,
+    bvh_root_idx = 0
 }
 
 local device, queue, sw, pipe_layout, pipe_render, pipe_blit, pipe_fsr
@@ -58,7 +59,7 @@ ffi.cdef[[
         float time;
         uint32_t num_transforms;
         uint32_t tf_id, mat_id, img_id, grid_id, idx_id;
-        uint32_t use_shadows, sphere_id, coarse_id, bitmask_id, bvh_id, parent_id;
+        uint32_t use_shadows, sphere_id, coarse_id, bitmask_id, bvh_id, root_id;
     } RenderPC;
     typedef struct FSRPC {
         float src_res_x, src_res_y;
@@ -144,6 +145,10 @@ function M.rebuild_grid(cb)
     vk.vkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_lbvh_build)
     vk.vkCmdPushConstants(cb, pipe_layout, 0x7FFFFFFF, 0, ffi.sizeof("LBVHBuildPC"), bvh_build_pc)
     vk.vkCmdDispatch(cb, math.ceil((num_blocks - 1) / 256), 1, 1)
+
+
+
+
 
 
 
@@ -319,7 +324,7 @@ function M.update()
     pc.res_x, pc.res_y, pc.time, pc.num_transforms = render_w, render_h, M.current_time, num_blocks
     pc.tf_id, pc.mat_id, pc.img_id, pc.grid_id, pc.idx_id = 0, 1, 0, 2, 6
     pc.use_shadows, pc.sphere_id, pc.coarse_id, pc.bitmask_id = (M.enable_shadows and 1 or 0), 4, 5, 7
-    pc.bvh_id, pc.parent_id = 8, 10
+    pc.bvh_id, pc.root_id = 8, M.bvh_root_idx
 
     vk.vkCmdWriteTimestamp(cb, vk.VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, query_pool, 2)
     vk.vkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_render)
@@ -385,16 +390,26 @@ function M.update()
         end
 
         local internal_orphans, leaf_orphans = 0, 0
-        local leaf_orphan_indices = {}
+        local parent_counts = {} -- index -> count
+        for i=0, num_blocks * 2 - 2 do parent_counts[i] = 0 end
+        
         for i=0, num_blocks - 2 do
-            if parent_ptr[i] == -1 then internal_orphans = internal_orphans + 1 end
+            local node = bvh_ptr[i]
+            local l = (node.left < 0) and (num_blocks - 1 + (-node.left - 1)) or node.left
+            local r = (node.right < 0) and (num_blocks - 1 + (-node.right - 1)) or node.right
+            if l >= 0 and l < num_blocks * 2 - 1 then parent_counts[l] = parent_counts[l] + 1 end
+            if r >= 0 and r < num_blocks * 2 - 1 then parent_counts[r] = parent_counts[r] + 1 end
         end
-        for i=num_blocks - 1, num_blocks * 2 - 2 do
-            if parent_ptr[i] == -1 then 
-                leaf_orphans = leaf_orphans + 1 
-                if #leaf_orphan_indices < 10 then table.insert(leaf_orphan_indices, i - (num_blocks - 1)) end
-            end
+
+        local zeros, ones, multis = 0, 0, 0
+        for i=0, num_blocks * 2 - 2 do
+            if parent_counts[i] == 0 then zeros = zeros + 1
+            elseif parent_counts[i] == 1 then ones = ones + 1
+            else multis = multis + 1 end
         end
+
+        print(string.format("DEBUG: Parent Counts -> Zero: %d, One: %d, Multi: %d", 
+            zeros, ones, multis))
 
         local sort_errors = 0
         for i=0, num_blocks - 2 do
@@ -407,6 +422,7 @@ function M.update()
             if atom_ptr[i] > 0 then atom_sum = atom_sum + 1 end
             if parent_ptr[i] == -1 then root_idx = i end
         end
+        M.bvh_root_idx = root_idx
 
         local d_ptr = ffi.cast("float*", delta_buf.allocation.ptr)
         local d_line = {}

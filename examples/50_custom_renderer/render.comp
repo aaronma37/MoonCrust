@@ -21,7 +21,7 @@ layout(set = 0, binding = 2, rgba32f) uniform writeonly image2D all_images[];
 layout(push_constant) uniform PushConstants {
     vec4 cam_pos, cam_dir, cam_up, cam_right;
     vec2 res; float time; uint num_blocks;
-    uint tf_id, mat_id, img_id, grid_id, idx_id, use_shadows, sphere_id, coarse_id, bitmask_id, bvh_id, parent_id;
+    uint tf_id, mat_id, img_id, grid_id, idx_id, use_shadows, sphere_id, coarse_id, bitmask_id, bvh_id, root_id;
 } pc;
 
 vec3 rotate_vector(vec3 v, vec4 q) {
@@ -89,8 +89,8 @@ void main() {
     vec3 rd = normalize(pc.cam_dir.xyz + pc.cam_right.xyz * uv.x + pc.cam_up.xyz * uv.y), ro = pc.cam_pos.xyz;
 
     float hit_t = 1e30; int hit_id = -1;
-    int stack[128]; int stack_ptr = 0;
-    stack[stack_ptr++] = 0; 
+    int stack[64]; int stack_ptr = 0;
+    stack[stack_ptr++] = int(pc.root_id); 
 
     while (stack_ptr > 0) {
         int curr = stack[--stack_ptr];
