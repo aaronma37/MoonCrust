@@ -116,7 +116,7 @@ function M.init()
     skeleton_tree, skeleton_order = generator.create_skeleton()
     for i, name in ipairs(skeleton_order) do bone_map[name] = i - 1 end
     
-    local equipped_sdfs = generator.equip_character(skeleton_tree, "knight")
+    local equipped_sdfs = generator.equip_character(skeleton_tree, "base")
     sdf_count = #equipped_sdfs
 
     local cape_p, cape_c = generator.generate_cape(15, 15, bone_map)
@@ -234,10 +234,7 @@ function M.update()
     if img_idx == nil then return end 
     vk.vkResetFences(device, 1, ffi.new("VkFence[1]", {frame_fences[current_frame]}))
 
-    -- Simple Procedural Animation (Idle)
-    skeleton_tree.spine.rot[1] = math.sin(current_time * 1.5) * 0.1
-    skeleton_tree.arm_upper_L.rot[3] = 1.5 + math.sin(current_time * 2.0) * 0.2
-    skeleton_tree.arm_upper_R.rot[3] = -1.5 - math.sin(current_time * 2.0) * 0.2
+    generator.apply_pose(skeleton_tree, current_time, "walk")
     generator.update_matrices(skeleton_tree, skeleton_order, bone_data, bone_map)
 
     local cb = M.cbs[current_frame + 1]
