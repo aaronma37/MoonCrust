@@ -95,8 +95,8 @@ function M.equip_character(tree, style)
     local sdfs = {}
     local body_color = pack_color(0.8, 0.7, 0.6)
     
-    local function add_body(bone, type, params)
-        table.insert(sdfs, { bone = bone, type = type, id = 1, color = body_color, params = params })
+    local function add_body(bone, type, params, offset)
+        table.insert(sdfs, { bone = bone, type = type, id = 1, color = body_color, params = params, offset = offset })
     end
 
     -- Torso & Head
@@ -135,23 +135,27 @@ function M.equip_character(tree, style)
         local dark_metal = pack_color(0.3, 0.3, 0.35)
 
         -- Bucket Helm (Head)
-        table.insert(sdfs, { bone = "head", type = "capsule", id = 10, color = metal, params = {0.12, -0.05, 0.05, 0.01} })
-        -- Eye slit (subtracts implicitly if we set id to background, but for now we just add a dark box over the eyes)
-        table.insert(sdfs, { bone = "head", type = "box", id = 11, color = dark_metal, params = {0.08, 0.02, 0.13, 0.0} })
+        table.insert(sdfs, { bone = "head", type = "capsule", id = 10, color = metal, params = {0.12, -0.05, 0.05, 0.01}, offset = {0, 0, 0} })
+        -- Eye slit (Dark box pushed forward using local offset)
+        table.insert(sdfs, { bone = "head", type = "box", id = 11, color = dark_metal, params = {0.08, 0.02, 0.04, 0.0}, offset = {0, 0.02, 0.1} })
+        -- Plume base on top of the head
+        table.insert(sdfs, { bone = "head", type = "sphere", id = 12, color = gold, params = {0.03, 0, 0, 0.0}, offset = {0, 0.18, 0} })
 
-        -- Pauldrons (Shoulders)
-        table.insert(sdfs, { bone = "shoulder_L", type = "sphere", id = 12, color = gold, params = {0.11, 0, 0, 0.0} })
-        table.insert(sdfs, { bone = "shoulder_R", type = "sphere", id = 13, color = gold, params = {0.11, 0, 0, 0.0} })
+        -- Pauldrons (Shoulders) - Shifted up and out slightly
+        table.insert(sdfs, { bone = "shoulder_L", type = "sphere", id = 13, color = gold, params = {0.11, 0, 0, 0.0}, offset = {-0.02, 0.05, 0} })
+        table.insert(sdfs, { bone = "shoulder_R", type = "sphere", id = 14, color = gold, params = {0.11, 0, 0, 0.0}, offset = {0.02, 0.05, 0} })
 
         -- Bracers (Lower Arms)
-        table.insert(sdfs, { bone = "arm_upper_L", type = "capsule", id = 14, color = metal, params = {0.055, -0.05, -0.2, 0.0} })
-        table.insert(sdfs, { bone = "arm_upper_R", type = "capsule", id = 15, color = metal, params = {0.055, -0.05, -0.2, 0.0} })
+        table.insert(sdfs, { bone = "arm_lower_L", type = "capsule", id = 15, color = metal, params = {0.055, -0.05, -0.2, 0.0} })
+        table.insert(sdfs, { bone = "arm_lower_R", type = "capsule", id = 16, color = metal, params = {0.055, -0.05, -0.2, 0.0} })
 
         -- Sword (Right Hand)
-        -- Blade
-        table.insert(sdfs, { bone = "arm_lower_R", type = "box", id = 16, color = metal, params = {0.02, 0.4, 0.05, 0.0} })
+        -- Blade pushed forward so it's held in the hand
+        table.insert(sdfs, { bone = "hand_R", type = "box", id = 17, color = metal, params = {0.02, 0.4, 0.05, 0.0}, offset = {0, -0.3, 0.1} })
         -- Crossguard
-        table.insert(sdfs, { bone = "arm_lower_R", type = "box", id = 17, color = gold, params = {0.12, 0.02, 0.03, 0.0} })
+        table.insert(sdfs, { bone = "hand_R", type = "box", id = 18, color = gold, params = {0.12, 0.02, 0.03, 0.0}, offset = {0, 0.1, 0.1} })
+        -- Pommel
+        table.insert(sdfs, { bone = "hand_R", type = "sphere", id = 19, color = gold, params = {0.04, 0, 0, 0}, offset = {0, 0.2, 0.1} })
     end
 
     return sdfs

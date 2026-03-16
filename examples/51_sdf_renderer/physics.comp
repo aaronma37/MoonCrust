@@ -14,6 +14,7 @@ struct SDFDescriptor {
     uint id;
     uint color_packed;
     vec4 params;
+    vec4 local_offset;
 };
 
 struct Particle {
@@ -69,6 +70,7 @@ float map(vec3 p) {
         // all_bones is array element 0
         mat4 inv_m = all_bones[0].bones[s.bone_index].inv_world_matrix;
         vec3 local_p = (inv_m * vec4(p, 1.0)).xyz;
+        local_p -= s.local_offset.xyz;
         float dist = 1e10;
         if (s.primitive_type == 0) dist = sdSphere(local_p, s.params.x);
         else if (s.primitive_type == 1) dist = sdCapsule(local_p, vec3(0, s.params.y, 0), vec3(0, s.params.z, 0), s.params.x);

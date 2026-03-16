@@ -55,6 +55,7 @@ ffi.cdef[[
         uint32_t id;
         uint32_t color_packed;
         float params[4]; 
+        float local_offset[4];
     } SDFDescriptor;
 
     typedef struct Particle {
@@ -116,7 +117,7 @@ function M.init()
     skeleton_tree, skeleton_order = generator.create_skeleton()
     for i, name in ipairs(skeleton_order) do bone_map[name] = i - 1 end
     
-    local equipped_sdfs = generator.equip_character(skeleton_tree, "base")
+    local equipped_sdfs = generator.equip_character(skeleton_tree, "knight")
     sdf_count = #equipped_sdfs
 
     local cape_p, cape_c = generator.generate_cape(15, 15, bone_map)
@@ -146,6 +147,10 @@ function M.init()
         local d = sdf_data[i-1]
         d.bone_index, d.primitive_type, d.id, d.color_packed = bone_map[s.bone], primitive_map[s.type] or 0, s.id, s.color
         for j=1,4 do d.params[j-1] = s.params[j] end
+        d.local_offset[0] = s.offset and s.offset[1] or 0
+        d.local_offset[1] = s.offset and s.offset[2] or 0
+        d.local_offset[2] = s.offset and s.offset[3] or 0
+        d.local_offset[3] = 0
     end
 
     for i, p in ipairs(cape_p) do
