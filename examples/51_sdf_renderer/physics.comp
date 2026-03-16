@@ -1,0 +1,158 @@
+#version 450
+#extension GL_EXT_nonuniform_qualifier : require
+
+layout(local_size_x = 256) in;
+
+struct Bone {
+    mat4 world_matrix;
+    mat4 inv_world_matrix;
+};
+
+struct SDFDescriptor {
+    uint bone_index;
+    uint primitive_type;
+    uint id;
+    uint color_packed;
+    vec4 params;
+};
+
+struct Particle {
+    vec4 pos;
+    vec4 prev_pos;
+    vec4 vel;
+    float inv_mass;
+    int bone_index;
+    uint id;
+    float padding;
+    vec4 local_pos;
+};
+
+struct Constraint {
+    uint a;
+    uint b;
+    float rest_length;
+    float compliance;
+};
+
+// Binding 0: Storage Buffers
+layout(set = 0, binding = 0) buffer BoneBuffer { Bone bones[]; } all_bones[];
+layout(set = 0, binding = 0) buffer SDFBuffer { SDFDescriptor descriptors[]; } all_sdfs[];
+layout(set = 0, binding = 0) buffer ParticleBuffer { Particle particles[]; } all_particles[];
+layout(set = 0, binding = 0) buffer ConstraintBuffer { Constraint constraints[]; } all_constraints[];
+
+layout(push_constant) uniform PushConstants {
+    float dt;
+    uint particle_count;
+    uint constraint_count;
+    uint sdf_count;
+    uint sub_steps;
+} pc;
+
+// --- SDF Functions ---
+float sdSphere(vec3 p, float s) { return length(p) - s; }
+float sdCapsule(vec3 p, vec3 a, vec3 b, float r) {
+    vec3 pa = p - a, ba = b - a;
+    float h = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0);
+    return length(pa - ba * h) - r;
+}
+float sdBox(vec3 p, vec3 b) {
+    vec3 q = abs(p) - b;
+    return length(max(q, 0.0)) + min(max(q.x, max(q.y, q.z)), 0.0);
+}
+
+float map(vec3 p) {
+    float d = 1e10;
+    // all_sdfs is array element 1
+    for (uint i = 0; i < pc.sdf_count; i++) {
+        SDFDescriptor s = all_sdfs[1].descriptors[i];
+        if (s.id != 1) continue;
+        // all_bones is array element 0
+        mat4 inv_m = all_bones[0].bones[s.bone_index].inv_world_matrix;
+        vec3 local_p = (inv_m * vec4(p, 1.0)).xyz;
+        float dist = 1e10;
+        if (s.primitive_type == 0) dist = sdSphere(local_p, s.params.x);
+        else if (s.primitive_type == 1) dist = sdCapsule(local_p, vec3(0, -s.params.y, 0), vec3(0, s.params.y, 0), s.params.x);
+        else if (s.primitive_type == 2) dist = sdBox(local_p, s.params.xyz);
+        d = min(d, dist);
+    }
+    return d;
+}
+
+vec3 calcNormal(vec3 p) {
+    const float h = 0.01;
+    const vec2 k = vec2(1, -1);
+    return normalize(k.xyy * map(p + k.xyy * h) + k.yyx * map(p + k.yyx * h) + k.yxy * map(p + k.yxy * h) + k.xxx * map(p + k.xxx * h));
+}
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= pc.particle_count) return;
+
+    Particle p = all_particles[2].particles[idx];
+    float sdt = pc.dt / float(pc.sub_steps);
+
+    for (uint step = 0; step < pc.sub_steps; step++) {
+        if (p.inv_mass > 0.0) {
+            // 1. Integrate
+            vec3 external_forces = vec3(0, -9.8, 0);
+
+            // Skeleton Pull: A weak spring pulling the cape towards the character's general movement
+            // We use the spine (bone 1) as the center of mass reference
+            vec3 spine_vel = vec3(0.0); // If we tracked bone velocity, we'd use it here.
+            vec3 spine_pos = all_bones[0].bones[1].world_matrix[3].xyz;
+            vec3 to_spine = spine_pos - p.pos.xyz;
+            
+            // If the particle drifts too far from the spine, pull it back slightly
+            float dist_to_spine = length(to_spine);
+            if (dist_to_spine > 1.0) {
+                external_forces += (to_spine / dist_to_spine) * (dist_to_spine - 1.0) * 5.0;
+            }
+
+            p.vel.xyz += external_forces * sdt;
+            p.prev_pos.xyz = p.pos.xyz;
+            p.pos.xyz += p.vel.xyz * sdt;
+
+            // 2. SDF Collision
+            float d = map(p.pos.xyz);
+            if (d < 0.08) {
+                vec3 n = calcNormal(p.pos.xyz);
+                p.pos.xyz += n * (0.08 - d);
+                // Simple friction on collision
+                p.vel.xyz *= 0.9;
+            }
+        } else if (p.bone_index >= 0) {
+            // Pinned Update
+            p.pos.xyz = (all_bones[0].bones[p.bone_index].world_matrix * p.local_pos).xyz;
+            p.prev_pos.xyz = p.pos.xyz;
+        }
+
+        // 3. Constraint Solving
+        for (uint i = 0; i < pc.constraint_count; i++) {
+            Constraint c = all_constraints[3].constraints[i];
+            if (c.a != idx && c.b != idx) continue;
+            
+            uint other_idx = (c.a == idx) ? c.b : c.a;
+            vec3 other_pos = all_particles[2].particles[other_idx].pos.xyz;
+            float other_inv_mass = all_particles[2].particles[other_idx].inv_mass;
+
+            vec3 dir = p.pos.xyz - other_pos;
+            float dist = length(dir);
+            if (dist > 0.0001) {
+                float err = dist - c.rest_length;
+                float alpha = c.compliance / (sdt * sdt);
+                float correction = err / (p.inv_mass + other_inv_mass + alpha);
+                if (p.inv_mass > 0.0) {
+                    p.pos.xyz -= (dir / dist) * correction * p.inv_mass;
+                }
+            }
+        }
+
+        // Update velocity from position change and apply Damping (Air Resistance)
+        p.vel.xyz = (p.pos.xyz - p.prev_pos.xyz) / sdt;
+        
+        // High damping for cloth to prevent infinite swinging
+        p.vel.xyz *= exp(-2.5 * sdt); 
+    }
+
+    all_particles[2].particles[idx] = p;
+}

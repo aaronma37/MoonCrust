@@ -3,22 +3,9 @@
 #extension GL_EXT_scalar_block_layout : require
 #extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
 
-struct Entry {
-    uint64_t key;
-    uint64_t value;
-};
-
-struct Sphere {
-    vec4 data; // x, y, z, r
-};
-
-struct BVHNode {
-    int left;   
-    int right;
-    int pad0, pad1;
-    vec4 min_p; 
-    vec4 max_p; 
-};
+struct Entry { uint64_t key, value; };
+struct Sphere { vec4 data; };
+struct BVHNode { int left, right; int pad0, pad1; vec4 min_p, max_p; };
 
 layout(set = 0, binding = 0, scalar) buffer SortBuffer { Entry entries[]; } all_entries[];
 layout(set = 0, binding = 0, scalar) buffer SphereSoA { Sphere spheres[]; } all_spheres[];
@@ -26,14 +13,7 @@ layout(set = 0, binding = 0, scalar) coherent buffer BVHBuffer { BVHNode nodes[]
 layout(set = 0, binding = 0, scalar) coherent buffer AtomicBuffer { uint counters[]; } all_atomics[];
 layout(set = 0, binding = 0, scalar) buffer ParentBuffer { int parents[]; } all_parents[];
 
-layout(push_constant) uniform PC {
-    uint sphere_id;
-    uint entry_id;
-    uint bvh_id;
-    uint atomic_id;
-    uint parent_id;
-    uint num_leaves;
-} pc;
+layout(push_constant) uniform PC { uint sphere_id, entry_id, bvh_id, atomic_id, parent_id, num_leaves; } pc;
 
 layout (local_size_x = 256) in;
 
@@ -42,49 +22,37 @@ void main() {
     uint N = pc.num_leaves;
     if (id >= N) return;
 
-    // Start from leaf 'id'
-    int curr = all_parents[pc.parent_id].parents[N - 1 + id];
+    // 1. Pre-populate Leaf AABB in unified buffer
+    uint leaf_buf_idx = (N - 1) + id;
+    uint block_id = uint(all_entries[pc.entry_id].entries[id].value);
+    vec4 s = all_spheres[pc.sphere_id].spheres[block_id].data;
     
-    for (int i = 0; i < 64; ++i) {
+    all_bvhs[pc.bvh_id].nodes[leaf_buf_idx].min_p = vec4(s.xyz - vec3(s.w), 0.0);
+    all_bvhs[pc.bvh_id].nodes[leaf_buf_idx].max_p = vec4(s.xyz + vec3(s.w), 0.0);
+    all_bvhs[pc.bvh_id].nodes[leaf_buf_idx].left = -1;
+    all_bvhs[pc.bvh_id].nodes[leaf_buf_idx].right = -1;
+
+    // 2. Climb from leaf to root
+    int curr = all_parents[pc.parent_id].parents[leaf_buf_idx];
+    
+    for (int i = 0; i < 128; ++i) {
         if (curr == -1) break;
 
-        // Barrier 1: Flush my child's AABB writes before I signal completion
         memoryBarrierBuffer();
-        
         uint count = atomicAdd(all_atomics[pc.atomic_id].counters[curr], 1);
-        if (count == 0) return; // First thread to arrive exits
-
-        // Barrier 2: Ensure I see the other thread's child-AABB writes
-        memoryBarrierBuffer();
+        if (count == 0) return; // First thread exits
+        memoryBarrierBuffer(); // Second thread sees child writes
 
         int left = all_bvhs[pc.bvh_id].nodes[curr].left;
         int right = all_bvhs[pc.bvh_id].nodes[curr].right;
 
-        vec3 l_min, l_max, r_min, r_max;
+        uint l_idx = (left < 0) ? (N - 1 + (-left - 1)) : uint(left);
+        uint r_idx = (right < 0) ? (N - 1 + (-right - 1)) : uint(right);
 
-        if (left < 0) {
-            uint l_idx = uint(all_entries[pc.entry_id].entries[-left - 1].value);
-            vec4 s = all_spheres[pc.sphere_id].spheres[l_idx].data;
-            l_min = s.xyz - vec3(s.w); l_max = s.xyz + vec3(s.w);
-        } else {
-            l_min = all_bvhs[pc.bvh_id].nodes[left].min_p.xyz;
-            l_max = all_bvhs[pc.bvh_id].nodes[left].max_p.xyz;
-        }
-
-        if (right < 0) {
-            uint r_idx = uint(all_entries[pc.entry_id].entries[-right - 1].value);
-            vec4 s = all_spheres[pc.sphere_id].spheres[r_idx].data;
-            r_min = s.xyz - vec3(s.w); r_max = s.xyz + vec3(s.w);
-        } else {
-            r_min = all_bvhs[pc.bvh_id].nodes[right].min_p.xyz;
-            r_max = all_bvhs[pc.bvh_id].nodes[right].max_p.xyz;
-        }
-
-        // Safety: If somehow we still see infinity, don't propagate it
-        l_min = clamp(l_min, vec3(-100.0), vec3(100.0));
-        l_max = clamp(l_max, vec3(-100.0), vec3(100.0));
-        r_min = clamp(r_min, vec3(-100.0), vec3(100.0));
-        r_max = clamp(r_max, vec3(-100.0), vec3(100.0));
+        vec3 l_min = all_bvhs[pc.bvh_id].nodes[l_idx].min_p.xyz;
+        vec3 l_max = all_bvhs[pc.bvh_id].nodes[l_idx].max_p.xyz;
+        vec3 r_min = all_bvhs[pc.bvh_id].nodes[r_idx].min_p.xyz;
+        vec3 r_max = all_bvhs[pc.bvh_id].nodes[r_idx].max_p.xyz;
 
         all_bvhs[pc.bvh_id].nodes[curr].min_p = vec4(min(l_min, r_min), 0.0);
         all_bvhs[pc.bvh_id].nodes[curr].max_p = vec4(max(l_max, r_max), 0.0);

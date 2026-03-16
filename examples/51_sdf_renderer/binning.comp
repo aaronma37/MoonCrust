@@ -1,0 +1,58 @@
+#version 450
+#extension GL_EXT_nonuniform_qualifier : require
+
+layout(local_size_x = 256) in;
+
+struct Particle {
+    vec4 pos;
+    vec4 prev_pos;
+    vec4 vel;
+    float inv_mass;
+    int bone_index;
+    uint id;
+    float padding;
+    vec4 local_pos;
+};
+
+struct Cell {
+    uint count;
+    uint indices[15];
+};
+
+layout(set = 0, binding = 0) buffer ParticleBuffer { Particle particles[]; } all_particles[];
+layout(set = 0, binding = 0) buffer GridBuffer { Cell cells[]; } all_grids[];
+
+layout(push_constant) uniform PushConstants {
+    uint particle_count;
+    float cell_size;
+    float insert_radius;
+    float padding;
+} pc;
+
+const vec3 grid_min = vec3(-2.0, -1.0, -2.0);
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= pc.particle_count) return;
+
+    vec3 pos = all_particles[2].particles[idx].pos.xyz;
+    
+    // Determine overlapping cells
+    ivec3 min_c = ivec3(floor((pos - pc.insert_radius - grid_min) / pc.cell_size));
+    ivec3 max_c = ivec3(floor((pos + pc.insert_radius - grid_min) / pc.cell_size));
+
+    min_c = clamp(min_c, ivec3(0), ivec3(15));
+    max_c = clamp(max_c, ivec3(0), ivec3(15));
+
+    for (int z = min_c.z; z <= max_c.z; z++) {
+        for (int y = min_c.y; y <= max_c.y; y++) {
+            for (int x = min_c.x; x <= max_c.x; x++) {
+                uint cell_idx = x + y * 16 + z * 16 * 16;
+                uint slot = atomicAdd(all_grids[4].cells[cell_idx].count, 1);
+                if (slot < 15) {
+                    all_grids[4].cells[cell_idx].indices[slot] = idx;
+                }
+            }
+        }
+    }
+}

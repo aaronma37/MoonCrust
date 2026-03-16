@@ -34,8 +34,7 @@ vec3 rotate_vector_inv(vec3 v, vec4 q) {
 }
 
 // Robust AABB intersection
-bool intersect_aabb(vec3 ro, vec3 rd, vec3 box_min, vec3 box_max, out float t_near, out float t_far) {
-    vec3 inv_rd = 1.0 / (rd + sign(rd) * 1e-9); // Prevent div by zero
+bool intersect_aabb(vec3 ro, vec3 inv_rd, vec3 box_min, vec3 box_max, out float t_near, out float t_far) {
     vec3 t0 = (box_min - ro) * inv_rd;
     vec3 t1 = (box_max - ro) * inv_rd;
     vec3 tmin = min(t0, t1);
@@ -87,13 +86,17 @@ void main() {
     if (pixel.x >= uint(pc.res.x) || pixel.y >= uint(pc.res.y)) return;
     vec2 uv = (vec2(pixel) / pc.res) * 2.0 - 1.0; uv.x *= pc.res.x / pc.res.y;
     vec3 rd = normalize(pc.cam_dir.xyz + pc.cam_right.xyz * uv.x + pc.cam_up.xyz * uv.y), ro = pc.cam_pos.xyz;
+    vec3 inv_rd = 1.0 / (rd + sign(rd) * 1e-9);
 
     float hit_t = 1e30; int hit_id = -1;
-    int stack[64]; int stack_ptr = 0;
+    int stack[32]; int stack_ptr = 0;
     stack[stack_ptr++] = int(pc.root_id); 
 
-    while (stack_ptr > 0) {
+    int iterations = 0;
+    while (stack_ptr > 0 && iterations < 1024) {
+        iterations++;
         int curr = stack[--stack_ptr];
+        
         if (curr < 0) {
             uint id = uint(all_entries[pc.idx_id].entries[-curr - 1].value);
             float t; if (intersect_obb(ro, rd, id, t)) {
@@ -101,15 +104,33 @@ void main() {
             }
             continue;
         }
+        
         BVHNode node = all_bvhs[pc.bvh_id].nodes[curr];
-        float t_near, t_far;
-        if (intersect_aabb(ro, rd, node.min_p.xyz, node.max_p.xyz, t_near, t_far)) {
-            // Only traverse if the node is closer than our best hit
-            // If t_near < 0, we are inside the box, so we must traverse.
-            if (max(t_near, 0.0) < hit_t) {
+        uint l_idx = (node.left < 0) ? (pc.num_blocks - 1 + (-node.left - 1)) : uint(node.left);
+        uint r_idx = (node.right < 0) ? (pc.num_blocks - 1 + (-node.right - 1)) : uint(node.right);
+        
+        BVHNode ln = all_bvhs[pc.bvh_id].nodes[l_idx];
+        BVHNode rn = all_bvhs[pc.bvh_id].nodes[r_idx];
+
+        float tl_near, tl_far, tr_near, tr_far;
+        bool hit_l = intersect_aabb(ro, inv_rd, ln.min_p.xyz, ln.max_p.xyz, tl_near, tl_far);
+        bool hit_r = intersect_aabb(ro, inv_rd, rn.min_p.xyz, rn.max_p.xyz, tr_near, tr_far);
+        
+        hit_l = hit_l && (max(tl_near, 0.0) < hit_t);
+        hit_r = hit_r && (max(tr_near, 0.0) < hit_t);
+
+        if (hit_l && hit_r) {
+            if (tl_near < tr_near) {
                 stack[stack_ptr++] = node.right;
                 stack[stack_ptr++] = node.left;
+            } else {
+                stack[stack_ptr++] = node.left;
+                stack[stack_ptr++] = node.right;
             }
+        } else if (hit_l) {
+            stack[stack_ptr++] = node.left;
+        } else if (hit_r) {
+            stack[stack_ptr++] = node.right;
         }
     }
 
@@ -120,6 +141,12 @@ void main() {
         color = mat.base_color.rgb * (max(dot(hit_n, normalize(vec3(0.5, 1.0, 0.3))), 0.0) * 1.5 + 0.2);
         if (mat.emissive > 0.0) color += mat.base_color.rgb * mat.emissive;
     }
+
+    // DEBUG: Heatmap of iterations
+    // 0 iterations = blue, 128+ = red
+    float complexity = float(iterations) / 128.0;
+    vec3 heat = mix(vec3(0,0,1), vec3(1,0,0), clamp(complexity, 0.0, 1.0));
+    color = mix(color, heat, 0.8); // 80% heatmap overlay
 
     const float a = 2.51, b = 0.03, c = 2.43, d = 0.59, e = 0.14;
     color = clamp((color * (a * color + b)) / (color * (c * color + d) + e), 0.0, 1.0);

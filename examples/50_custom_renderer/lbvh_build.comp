@@ -3,35 +3,22 @@
 #extension GL_EXT_scalar_block_layout : require
 #extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
 
-struct Entry {
-    uint64_t key;
-    uint64_t value;
-};
-
-struct BVHNode {
-    int left;   
-    int right;
-    int pad0, pad1;
-    vec4 min_p; 
-    vec4 max_p; 
-};
+struct Entry { uint64_t key, value; };
+struct BVHNode { int left, right; int pad0, pad1; vec4 min_p, max_p; };
 
 layout(set = 0, binding = 0, scalar) buffer SortBuffer { Entry entries[]; } all_entries[];
 layout(set = 0, binding = 0, scalar) buffer BVHBuffer { BVHNode nodes[]; } all_bvhs[];
 layout(set = 0, binding = 0, scalar) buffer ParentBuffer { int parents[]; } all_parents[];
 
-layout(push_constant) uniform PC {
-    uint entry_id;
-    uint bvh_id;
-    uint parent_id;
-    uint num_leaves;
-} pc;
+layout(push_constant) uniform PC { uint entry_id, bvh_id, parent_id, num_leaves; } pc;
 
+// Simple, robust delta function using the now-unique keys
 int delta(int i, int j) {
     if (j < 0 || j >= int(pc.num_leaves)) return -1;
     uint64_t a = all_entries[pc.entry_id].entries[i].key;
     uint64_t b = all_entries[pc.entry_id].entries[j].key;
     uint64_t diff = a ^ b;
+    if (diff == 0) return 64 + (31 - findMSB(uint(i ^ j))); // Same key (impossible now), use index
     uint hi = uint(diff >> 32);
     if (hi != 0) return 31 - findMSB(hi);
     return 32 + (31 - findMSB(uint(diff & 0xFFFFFFFFu)));
@@ -41,64 +28,46 @@ layout (local_size_x = 256) in;
 
 void main() {
     int i = int(gl_GlobalInvocationID.x);
-    int N = int(pc.num_leaves);
-    if (i >= N - 1) return;
+    int n = int(pc.num_leaves);
+    if (i >= n - 1) return;
 
-    // --- Aila & Laine (2013) Edge-Based Mapping ---
-    // Internal node 'i' represents the split between sorted entry 'i' and 'i+1'.
-    int d_i = delta(i, i + 1);
+    // 1. Determine direction d
+    int d = (delta(i, i + 1) - delta(i, i - 1) >= 0) ? 1 : -1;
 
-    // 1. Find range [L, R] where split 'i' is the coarsest (smallest delta)
-    // Left boundary L: nearest split to the left that is coarser than d_i
-    int L = i;
-    while (L > 0 && delta(L - 1, L) > d_i) L--;
-
-    // Right boundary R: nearest split to the right that is coarser than d_i
-    int R = i;
-    while (R < N - 2 && delta(R + 1, R + 2) > d_i) R++;
-    // Range of leaves covered by this subtree is [L, R+1]
-
-    // 2. Find Children
-    int left_child, right_child;
-
-    // Left child is either Leaf L (if L == i) or the split in [L, i-1] with smallest delta
-    if (L == i) {
-        left_child = -i - 1; // Leaf i
-        all_parents[pc.parent_id].parents[N - 1 + i] = i;
-    } else {
-        // The left child is the unique split in [L, i-1] that is the coarsest
-        // In this Edge-Based scheme, it's the split that covers the range [L, i-1]
-        // Which is the split j in [L, i-1] such that delta(j, j+1) is minimal.
-        int best_j = i - 1;
-        int best_d = delta(i - 1, i);
-        for (int j = i - 2; j >= L; j--) {
-            int d_j = delta(j, j + 1);
-            if (d_j < best_d) { best_d = d_j; best_j = j; }
-        }
-        left_child = best_j;
-        all_parents[pc.parent_id].parents[left_child] = i;
+    // 2. Compute upper bound l_max
+    int delta_min = delta(i, i - d);
+    int l_max = 2;
+    while (delta(i, i + l_max * d) > delta_min) {
+        l_max *= 2;
+        if (i + l_max * d < 0 || i + l_max * d >= n) break;
     }
 
-    // Right child is either Leaf R+1 (if R == i) or the coarsest split in [i+1, R]
-    if (R == i) {
-        right_child = -(i + 1) - 1; // Leaf i+1
-        all_parents[pc.parent_id].parents[N - 1 + i + 1] = i;
-    } else {
-        int best_k = i + 1;
-        int best_d = delta(i + 1, i + 2);
-        for (int k = i + 2; k <= R; k++) {
-            int d_k = delta(k, k + 1);
-            if (d_k < best_d) { best_d = d_k; best_k = k; }
-        }
-        right_child = best_k;
-        all_parents[pc.parent_id].parents[right_child] = i;
+    // 3. Find j with binary search
+    int l = 0;
+    for (int t = l_max / 2; t >= 1; t /= 2) {
+        if (delta(i, i + (l + t) * d) > delta_min) l += t;
     }
+    int j = i + l * d;
+
+    // 4. Find split s with binary search
+    int delta_node = delta(i, j);
+    int s = 0;
+    for (int t = (l + 1) / 2; t >= 1; t = (t + 1) / 2) {
+        if (delta(i, i + (s + t) * d) > delta_node) s += t;
+        if (t == 1) break;
+    }
+    int split = i + s * d + min(d, 0);
+
+    // 5. Children assignments
+    int left_child = (min(i, j) == split) ? (-split - 1) : split;
+    int right_child = (max(i, j) == split + 1) ? (-(split + 1) - 1) : (split + 1);
 
     all_bvhs[pc.bvh_id].nodes[i].left = left_child;
     all_bvhs[pc.bvh_id].nodes[i].right = right_child;
 
-    // 3. Root Handling
-    if (L == 0 && R == N - 2) {
-        all_parents[pc.parent_id].parents[i] = -1;
-    }
+    // 6. Set parents for children
+    int l_idx = (left_child < 0) ? (n - 1 + (-left_child - 1)) : left_child;
+    int r_idx = (right_child < 0) ? (n - 1 + (-right_child - 1)) : right_child;
+    all_parents[pc.parent_id].parents[l_idx] = i;
+    all_parents[pc.parent_id].parents[r_idx] = i;
 }

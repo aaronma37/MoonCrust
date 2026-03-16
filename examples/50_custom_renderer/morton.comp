@@ -21,8 +21,8 @@ layout(push_constant) uniform PC {
     uint num_blocks;
 } pc;
 
-const float WORLD_MIN = -20.0;
-const float WORLD_SIZE = 40.0;
+const float WORLD_MIN = -50.0;
+const float WORLD_SIZE = 100.0;
 
 uint expandBits(uint v) {
     v = (v * 0x00010001u) & 0xFF0000FFu;
@@ -33,10 +33,10 @@ uint expandBits(uint v) {
 }
 
 uint morton3D(vec3 p) {
-    p = clamp((p - WORLD_MIN) / WORLD_SIZE * 1024.0, 0.0, 1023.0);
-    uint x = expandBits(uint(p.x));
-    uint y = expandBits(uint(p.y));
-    uint z = expandBits(uint(p.z));
+    p = clamp((p - WORLD_MIN) / WORLD_SIZE, 0.0, 1.0);
+    uint x = expandBits(uint(p.x * 1023.0));
+    uint y = expandBits(uint(p.y * 1023.0));
+    uint z = expandBits(uint(p.z * 1023.0));
     return (x << 2) | (y << 1) | z;
 }
 
@@ -49,6 +49,7 @@ void main() {
     vec3 p = all_spheres[pc.sphere_id].spheres[id].data.xyz;
     uint m = morton3D(p);
     
+    // High 32: Morton, Low 32: Unique ID for stable tie-breaking
     all_entries[pc.entry_id].entries[id].key = (uint64_t(m) << 32) | uint64_t(id);
     all_entries[pc.entry_id].entries[id].value = uint64_t(id);
 }
