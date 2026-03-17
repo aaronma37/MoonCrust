@@ -107,7 +107,9 @@ function M.apply_pose(tree, time, state)
 	tree.shoulder_L.rot[3] = 0.35
 	tree.shoulder_R.rot[3] = -0.35
 	if state == "rest" then
-		-- T-Pose
+		-- T-Pose Flare (to prevent webbing)
+		tree.hip_L.rot[3] = 0.3
+		tree.hip_R.rot[3] = -0.3
 	elseif state == "walk" then
 		local t = time * 5.0
 		tree.root.rot[2] = math.sin(t) * 0.12
@@ -194,18 +196,6 @@ function M.equip_character(tree, loadout, time)
 	local breathe = math.sin(time * 2.0) * 0.01
 	local SK = 0.04
 
-	-- ORIENTATION GUIDE (ID 99)
-	add_sdfs("root", {
-		{
-			bone = "root",
-			type = "box",
-			id = 99,
-			color = pack_color(1, 1, 1),
-			params = { 0.02, 0.01, 1.0, 0 },
-			offset = { 0, -0.45, 0.5 },
-		},
-	})
-
 	-- HEAD
 	add_sdfs("head", {
 		{
@@ -214,23 +204,7 @@ function M.equip_character(tree, loadout, time)
 			id = 1,
 			color = body_color,
 			params = { DATA.head_w / 2, DATA.head_h / 2, DATA.head_d / 2, 0.03 },
-		},
-		{
-			bone = "head",
-			type = "box",
-			id = 99,
-			color = debug_red,
-			params = { 0.01, 0.01, 0.15, 0.0 },
-			offset = { 0, 0, 0.1 },
-		},
-		{
-			bone = "head",
-			type = "sphere",
-			id = 99,
-			color = pack_color(1, 1, 1),
-			params = { 0.02, 0, 0, 0 },
-			offset = { 0, 0, 0.25 },
-		},
+		}
 	})
 	add_sdfs("neck", {
 		{ bone = "neck", type = "capsule", id = 1, color = body_color, params = { 0.05, 0.0, 0.15, 0.03 } },
@@ -418,18 +392,18 @@ function M.equip_character(tree, loadout, time)
 		},
 	})
 
-	local function add_organic_leg(side, sign)
+	local function add_organic_leg(side, sign, id)
 		local hi, uleg, lleg = "hip_" .. side, "leg_upper_" .. side, "leg_lower_" .. side
 		local L, rot_x = tree[hi].length, tree[hi].rot[1]
 		local quad_bulge = math.max(0, -rot_x) * 0.03
 		local glute_bulge = math.max(0, rot_x) * 0.02
 		add_sdfs(hi, {
-			{ bone = hi, type = "sphere", id = 1, color = body_color, params = { 0.09 + glute_bulge, 0, 0, SK } },
-			{ bone = hi, type = "capsule", id = 1, color = body_color, params = { 0.08, 0.05, -L - 0.05, SK } },
+			{ bone = hi, type = "sphere", id = id, color = body_color, params = { 0.09 + glute_bulge, 0, 0, SK } },
+			{ bone = hi, type = "capsule", id = id, color = body_color, params = { 0.08, 0.05, -L - 0.05, SK } },
 			{
 				bone = hi,
 				type = "ellipsoid",
-				id = 1,
+				id = id,
 				color = body_color,
 				params = { 0.02, 0.08, 0.02, 0.1 },
 				offset = { sign * 0.1, -0.05, 0.05 },
@@ -437,7 +411,7 @@ function M.equip_character(tree, loadout, time)
 			{
 				bone = hi,
 				type = "ellipsoid",
-				id = 1,
+				id = id,
 				color = body_color,
 				params = { 0.07 + quad_bulge, 0.18, 0.07, 0.06 },
 				offset = { 0, -0.15, 0.08 },
@@ -445,7 +419,7 @@ function M.equip_character(tree, loadout, time)
 			{
 				bone = hi,
 				type = "ellipsoid",
-				id = 1,
+				id = id,
 				color = body_color,
 				params = { 0.06, 0.22, 0.06, 0.06 },
 				offset = { sign * 0.05, -0.2, 0.02 },
@@ -453,7 +427,7 @@ function M.equip_character(tree, loadout, time)
 			{
 				bone = hi,
 				type = "ellipsoid",
-				id = 1,
+				id = id,
 				color = body_color,
 				params = { 0.05, 0.12, 0.04, 0.08 },
 				offset = { sign * -0.04, -0.1, 0.02 },
@@ -462,18 +436,18 @@ function M.equip_character(tree, loadout, time)
 			{
 				bone = hi,
 				type = "ellipsoid",
-				id = 1,
+				id = id,
 				color = body_color,
 				params = { 0.045, 0.15, 0.045, 0.06 },
 				offset = { 0, -0.18, -0.05 },
 			},
 		})
 		add_sdfs(uleg, {
-			{ bone = uleg, type = "sphere", id = 1, color = body_color, params = { 0.05, 0, 0, 0.03 } },
+			{ bone = uleg, type = "sphere", id = id, color = body_color, params = { 0.05, 0, 0, 0.03 } },
 			{
 				bone = uleg,
 				type = "sphere",
-				id = 1,
+				id = id,
 				color = body_color,
 				params = { 0.04, 0, 0, 0.02 },
 				offset = { 0, 0, 0.06 },
@@ -481,33 +455,33 @@ function M.equip_character(tree, loadout, time)
 			{
 				bone = uleg,
 				type = "capsule",
-				id = 1,
+				id = id,
 				color = body_color,
 				params = { 0.07, 0.05, -tree[uleg].length - 0.05, SK },
 			},
 			{
 				bone = uleg,
 				type = "ellipsoid",
-				id = 1,
+				id = id,
 				color = body_color,
 				params = { 0.055, 0.14, 0.05, 0.05 },
 				offset = { 0, -0.12, -0.05 },
 			},
 		})
 		add_sdfs(lleg, {
-			{ bone = lleg, type = "box", id = 1, color = body_color, params = { 0.06, 0.04, 0.12, 0.02 } },
+			{ bone = lleg, type = "box", id = id, color = body_color, params = { 0.06, 0.04, 0.12, 0.02 } },
 			{
 				bone = lleg,
 				type = "sphere",
-				id = 1,
+				id = id,
 				color = body_color,
 				params = { 0.045, 0, 0, 0.02 },
 				offset = { 0, 0, -0.08 },
 			},
 		})
 	end
-	add_organic_leg("L", -1)
-	add_organic_leg("R", 1)
+	add_organic_leg("L", -1, 2)
+	add_organic_leg("R", 1, 3)
 
 	add_sdfs("head", {
 		{
@@ -523,32 +497,32 @@ function M.equip_character(tree, loadout, time)
 		{ { bone = "neck", type = "capsule", id = 1, color = body_color, params = { 0.045, 0.0, 0.15, 0.02 } } }
 	)
 
-	local function add_anatomical_arm(side, sign)
+	local function add_anatomical_arm(side, sign, id)
 		local sh, up, lo = "shoulder_" .. side, "arm_upper_" .. side, "arm_lower_" .. side
 		add_sdfs(sh, {
-			{ bone = sh, type = "sphere", id = 1, color = body_color, params = { 0.05, 0, 0, SK } },
+			{ bone = sh, type = "sphere", id = id, color = body_color, params = { 0.05, 0, 0, SK } },
 			{
 				bone = sh,
 				type = "capsule",
-				id = 1,
+				id = id,
 				color = body_color,
 				params = { 0.05, 0.05, -tree[sh].length - 0.05, SK },
 			},
 		})
 		add_sdfs(up, {
-			{ bone = up, type = "sphere", id = 1, color = body_color, params = { 0.04, 0, 0, 0.02 } },
+			{ bone = up, type = "sphere", id = id, color = body_color, params = { 0.04, 0, 0, 0.02 } },
 			{
 				bone = up,
 				type = "capsule",
-				id = 1,
+				id = id,
 				color = body_color,
 				params = { 0.04, 0.05, -tree[up].length - 0.05, SK },
 			},
 		})
-		add_sdfs(lo, { { bone = lo, type = "sphere", id = 1, color = body_color, params = { 0.05, 0, 0, 0.02 } } })
+		add_sdfs(lo, { { bone = lo, type = "sphere", id = id, color = body_color, params = { 0.05, 0, 0, 0.02 } } })
 	end
-	add_anatomical_arm("L", -1)
-	add_anatomical_arm("R", 1)
+	add_anatomical_arm("L", -1, 2)
+	add_anatomical_arm("R", 1, 3)
 
 	if loadout then
 		local equip_sdfs = {}
