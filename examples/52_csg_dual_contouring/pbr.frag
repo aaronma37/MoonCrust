@@ -37,25 +37,32 @@ void main() {
 
     // --- STYLIZED SPECULAR ---
     float ndh = max(dot(N, H), 0.0);
-    float spec = smoothstep(0.9, 0.95, pow(ndh, 64.0)); // Sharp "Glint"
+    float spec = smoothstep(0.96, 0.98, pow(ndh, 128.0)); // Even sharper, smaller "Hotspot"
 
     // --- ANIME RIM LIGHTING ---
     float rim_dot = 1.0 - max(dot(N, V), 0.0);
-    float rim = smoothstep(0.7, 0.75, rim_dot);
-    rim *= max(0.0, dot(N, L) + 0.5); // Mask rim by light to prevent "Glow-in-the-dark" look
+    float rim = smoothstep(0.75, 0.8, rim_dot);
+    rim *= max(0.0, dot(N, L) + 0.2); // Tighten mask
 
     vec3 baseColor = inColor.rgb;
     
     // Material Tweaks based on ID
+    float final_spec = 0.0;
+    float final_rim = rim * 0.2; // Soft default rim
+
     if (inID >= 10) { // Metallic parts (Sword/Helmet)
         baseColor *= 1.1;
-        spec *= 1.5;
+        final_spec = spec * 1.2;
+        final_rim = rim * 0.5; // Brighter rim for metal
+    } else {
+        // Skin/Fabric is matte
+        final_spec = 0.0; 
     }
 
     // Final Composite
     vec3 color = baseColor * diff;
-    color += vec3(1.0) * spec * 0.8; // White Specular Glint
-    color += baseColor * rim * 0.4;  // Soft Color-matched Rim
+    color += vec3(1.0) * final_spec; // White Specular Glint
+    color += baseColor * final_rim;  // Color-matched Rim
     
     // Subtle Ambient
     color += baseColor * 0.15;
