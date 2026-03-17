@@ -144,10 +144,12 @@ MapResult map(vec3 p) {
         }
     }
 
-    // 2. Dynamic PBD Particles
+    // 2. Dynamic PBD Particles (Grid Accelerated)
     float d_cloth = 1e10;
-    vec3 cloth_col = vec3(0.8, 0.2, 0.2); // Bright Red Cape
-    
+    float d_hair = 1e10;
+    vec3 cloth_col = vec3(0.8, 0.2, 0.2); // Red Cape
+    vec3 hair_col = vec3(0.2, 0.15, 0.1); // Brown Hair
+
     ivec3 c = ivec3(floor((p - grid_min) / cell_size));
     if (c.x >= 0 && c.x < 16 && c.y >= 0 && c.y < 16 && c.z >= 0 && c.z < 16) {
         uint cell_idx = c.x + c.y * 16 + c.z * 16 * 16;
@@ -155,11 +157,17 @@ MapResult map(vec3 p) {
         for (uint i = 0; i < count; i++) {
             uint p_idx = all_grids[4].cells[cell_idx].indices[i];
             Particle part = all_particles[2].particles[p_idx];
-            float dist = sdSphere(p - part.pos.xyz, 0.06); // Slightly smaller spheres for toon look
-            d_cloth = opSmoothUnion(d_cloth, dist, 0.12);
+            float dist = sdSphere(p - part.pos.xyz, 0.06);
+            if (part.id == 50) d_cloth = opSmoothUnion(d_cloth, dist, 0.1);
+            else if (part.id == 51) d_hair = opSmoothUnion(d_hair, dist, 0.05);
         }
     }
 
+    if (d_hair < d) {
+        d = d_hair;
+        col = hair_col;
+        best_id = 51;
+    }
     if (d_cloth < d) {
         d = d_cloth;
         col = cloth_col;
