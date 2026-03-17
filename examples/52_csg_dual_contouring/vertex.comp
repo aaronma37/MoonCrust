@@ -1,0 +1,150 @@
+#version 460
+#extension GL_EXT_nonuniform_qualifier : require
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 8) in;
+
+struct GridNode {
+    float dist;
+    uint id;
+    uint color_packed;
+    uint padding;
+    uvec4 bone_ids;
+    vec4 bone_weights;
+};
+
+struct Vertex {
+    vec4 position;
+    vec4 normal;
+    vec4 color;
+    uvec4 bone_ids;
+    vec4 bone_weights;
+};
+
+struct IndirectCommand {
+    uint indexCount;
+    uint instanceCount;
+    uint firstIndex;
+    int  vertexOffset;
+    uint firstInstance;
+};
+
+layout(set = 0, binding = 0, std430) buffer AllBuffers { uint data[]; } all_bufs[];
+
+layout(push_constant) uniform PC {
+    vec3 bounds_min;
+    uint bone_count;
+    vec3 bounds_max;
+    uint sdf_count;
+    uvec3 grid_size;
+    uint padding;
+    uint bones_idx;
+    uint sdfs_idx;
+    uint grid_idx;
+    uint vertices_idx;
+    uint indices_idx;
+    uint counter_idx;
+    uint cell_idx;
+    uint vertex_counter_idx;
+} pc;
+
+uint get_grid_idx(uvec3 c) { 
+    c = clamp(c, uvec3(0), pc.grid_size - 1);
+    return c.x + c.y * pc.grid_size.x + c.z * pc.grid_size.x * pc.grid_size.y; 
+}
+
+GridNode get_grid(uint idx) {
+    uint base = idx * 12;
+    GridNode n;
+    n.dist = uintBitsToFloat(all_bufs[nonuniformEXT(pc.grid_idx)].data[base + 0]);
+    n.id = all_bufs[nonuniformEXT(pc.grid_idx)].data[base + 1];
+    n.color_packed = all_bufs[nonuniformEXT(pc.grid_idx)].data[base + 2];
+    n.bone_ids = uvec4(all_bufs[nonuniformEXT(pc.grid_idx)].data[base + 4],
+                       all_bufs[nonuniformEXT(pc.grid_idx)].data[base + 5],
+                       all_bufs[nonuniformEXT(pc.grid_idx)].data[base + 6],
+                       all_bufs[nonuniformEXT(pc.grid_idx)].data[base + 7]);
+    n.bone_weights = vec4(uintBitsToFloat(all_bufs[nonuniformEXT(pc.grid_idx)].data[base + 8]),
+                          uintBitsToFloat(all_bufs[nonuniformEXT(pc.grid_idx)].data[base + 9]),
+                          uintBitsToFloat(all_bufs[nonuniformEXT(pc.grid_idx)].data[base + 10]),
+                          uintBitsToFloat(all_bufs[nonuniformEXT(pc.grid_idx)].data[base + 11]));
+    return n;
+}
+
+// Vertex is 16 + 16 + 16 + 16 + 16 = 80 bytes. 20 uints.
+void set_vertex(uint idx, Vertex v) {
+    uint base = idx * 20;
+    for(int i=0; i<4; i++) all_bufs[nonuniformEXT(pc.vertices_idx)].data[base + 0 + i] = floatBitsToUint(v.position[i]);
+    for(int i=0; i<4; i++) all_bufs[nonuniformEXT(pc.vertices_idx)].data[base + 4 + i] = floatBitsToUint(v.normal[i]);
+    for(int i=0; i<4; i++) all_bufs[nonuniformEXT(pc.vertices_idx)].data[base + 8 + i] = floatBitsToUint(v.color[i]);
+    all_bufs[nonuniformEXT(pc.vertices_idx)].data[base + 12] = v.bone_ids.x;
+    all_bufs[nonuniformEXT(pc.vertices_idx)].data[base + 13] = v.bone_ids.y;
+    all_bufs[nonuniformEXT(pc.vertices_idx)].data[base + 14] = v.bone_ids.z;
+    all_bufs[nonuniformEXT(pc.vertices_idx)].data[base + 15] = v.bone_ids.w;
+    for(int i=0; i<4; i++) all_bufs[nonuniformEXT(pc.vertices_idx)].data[base + 16 + i] = floatBitsToUint(v.bone_weights[i]);
+}
+
+void main() {
+    uvec3 g_id = gl_GlobalInvocationID;
+    
+    if (g_id.x == 0 && g_id.y == 0 && g_id.z == 0) {
+        all_bufs[nonuniformEXT(pc.counter_idx)].data[0] = 0; // indexCount
+        all_bufs[nonuniformEXT(pc.counter_idx)].data[1] = 1; // instanceCount
+        all_bufs[nonuniformEXT(pc.counter_idx)].data[2] = 0; // firstIndex
+        all_bufs[nonuniformEXT(pc.counter_idx)].data[3] = 0; // vertexOffset
+        all_bufs[nonuniformEXT(pc.counter_idx)].data[4] = 0; // firstInstance
+        all_bufs[nonuniformEXT(pc.vertex_counter_idx)].data[0] = 0;
+    }
+
+    if (g_id.x >= pc.grid_size.x - 1 || g_id.y >= pc.grid_size.y - 1 || g_id.z >= pc.grid_size.z - 1) {
+        if (g_id.x < pc.grid_size.x && g_id.y < pc.grid_size.y && g_id.z < pc.grid_size.z) {
+            all_bufs[nonuniformEXT(pc.cell_idx)].data[get_grid_idx(g_id)] = 0xFFFFFFFF;
+        }
+        return;
+    }
+
+    uint sign_changes = 0;
+    float d[8];
+    for(uint i=0; i<8; i++) {
+        d[i] = uintBitsToFloat(all_bufs[nonuniformEXT(pc.grid_idx)].data[get_grid_idx(g_id + uvec3(i&1, (i>>1)&1, (i>>2)&1)) * 12]);
+    }
+    
+    float min_d = 1000.0; uint best_corner = 0;
+    for (uint i=0; i<8; i++) {
+        if ((d[0] < 0.0) != (d[i] < 0.0)) sign_changes++;
+        if (d[i] < min_d) { min_d = d[i]; best_corner = i; }
+    }
+
+    uint cell_idx = get_grid_idx(g_id);
+    if (sign_changes == 0) {
+        all_bufs[nonuniformEXT(pc.cell_idx)].data[cell_idx] = 0xFFFFFFFF;
+        return;
+    }
+
+    uint v_idx = atomicAdd(all_bufs[nonuniformEXT(pc.vertex_counter_idx)].data[0], 1);
+    all_bufs[nonuniformEXT(pc.cell_idx)].data[cell_idx] = v_idx;
+
+    vec3 p_sum = vec3(0.0); int p_count = 0;
+    vec3 vs = (pc.bounds_max - pc.bounds_min) / vec3(max(uvec3(1), pc.grid_size - 1));
+    vec3 p0 = pc.bounds_min + vec3(g_id) * vs;
+
+    #define ADD_EDGE(a, b, oa, ob) if ((d[a] < 0.0) != (d[b] < 0.0)) { float t = d[a] / (d[a] - d[b]); p_sum += p0 + mix(oa, ob, t) * vs; p_count++; }
+    ADD_EDGE(0, 1, vec3(0,0,0), vec3(1,0,0)); ADD_EDGE(2, 3, vec3(0,1,0), vec3(1,1,0));
+    ADD_EDGE(4, 5, vec3(0,0,1), vec3(1,0,1)); ADD_EDGE(6, 7, vec3(0,1,1), vec3(1,1,1));
+    ADD_EDGE(0, 2, vec3(0,0,0), vec3(0,1,0)); ADD_EDGE(1, 3, vec3(1,0,0), vec3(1,1,0));
+    ADD_EDGE(4, 6, vec3(0,0,1), vec3(0,1,1)); ADD_EDGE(5, 7, vec3(1,0,1), vec3(1,1,1));
+    ADD_EDGE(0, 4, vec3(0,0,0), vec3(0,0,1)); ADD_EDGE(1, 5, vec3(1,0,0), vec3(1,0,1));
+    ADD_EDGE(2, 6, vec3(0,1,0), vec3(0,1,1)); ADD_EDGE(3, 7, vec3(1,1,0), vec3(1,1,1));
+
+    vec3 pos = p_sum / float(max(1, p_count));
+    vec3 n = normalize(pos - (pc.bounds_min + pc.bounds_max) * 0.5);
+
+    GridNode best = get_grid(get_grid_idx(g_id + uvec3(best_corner&1, (best_corner>>1)&1, (best_corner>>2)&1)));
+    Vertex v;
+    v.position = vec4(pos, 1.0); v.normal = vec4(n, 1.0);
+    float r = float((best.color_packed >> 16) & 0xFF) / 255.0;
+    float g = float((best.color_packed >> 8) & 0xFF) / 255.0;
+    float b = float(best.color_packed & 0xFF) / 255.0;
+    v.color = vec4(r, g, b, uintBitsToFloat(best.id));
+    v.bone_ids = best.bone_ids; v.bone_weights = best.bone_weights;
+
+    if (v_idx < 256 * 1024) set_vertex(v_idx, v);
+}

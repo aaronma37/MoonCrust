@@ -1,0 +1,206 @@
+#version 460
+#extension GL_EXT_nonuniform_qualifier : require
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 8) in;
+
+// --- SDF Primitives ---
+float sdSphere(vec3 p, float s) { return length(p) - s; }
+float sdBox(vec3 p, vec3 b) { vec3 q = abs(p) - b; return length(max(q, 0.0)) + min(max(q.x, max(q.y, q.z)), 0.0); }
+float sdCapsule(vec3 p, vec3 a, vec3 b, float r) {
+    vec3 pa = p - a, ba = b - a;
+    float h = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0);
+    return length(pa - ba * h) - r;
+}
+float sdEllipsoid(vec3 p, vec3 r) {
+    float k0 = length(p / r);
+    float k1 = length(p / (r * r));
+    return k0 * (k0 - 1.0) / k1;
+}
+float opSmoothUnion(float d1, float d2, float k) {
+    float h = clamp(0.5 + 0.5 * (d2 - d1) / k, 0.0, 1.0);
+    return mix(d2, d1, h) - k * h * (1.0 - h);
+}
+
+struct Bone {
+    mat4 world_matrix;
+    mat4 inv_world_matrix;
+    mat4 bind_matrix;
+    mat4 inv_bind_matrix;
+    float bounding_radius;
+    uint sdf_offset;
+    uint sdf_count;
+    uint padding;
+};
+
+struct SDFDescriptor {
+    uint bone_index;
+    uint primitive_type;
+    uint id;
+    uint color_packed;
+    vec4 params;
+    vec4 local_offset;
+};
+
+struct GridNode {
+    float dist;
+    uint id;
+    uint color_packed;
+    uint padding;
+    uvec4 bone_ids;
+    vec4 bone_weights;
+};
+
+layout(set = 0, binding = 0, std430) buffer AllBuffers { uint data[]; } all_bufs[];
+
+layout(push_constant) uniform PC {
+    vec3 bounds_min;
+    uint bone_count;
+    vec3 bounds_max;
+    uint sdf_count;
+    uvec3 grid_size;
+    uint padding;
+    uint bones_idx;
+    uint sdfs_idx;
+    uint grid_idx;
+    uint vertices_idx;
+    uint indices_idx;
+    uint counter_idx;
+    uint cell_idx;
+    uint vertex_counter_idx;
+} pc;
+
+// Bone is 16*4*4 + 4 + 4 + 4 + 4 = 256 + 16 = 272 bytes. 
+// 272 / 4 = 68 uints.
+Bone get_bone(uint idx) {
+    uint base = idx * 68;
+    Bone b;
+    for(int i=0; i<4; i++) for(int j=0; j<4; j++) b.world_matrix[i][j] = uintBitsToFloat(all_bufs[nonuniformEXT(pc.bones_idx)].data[base + i*4 + j]);
+    for(int i=0; i<4; i++) for(int j=0; j<4; j++) b.inv_world_matrix[i][j] = uintBitsToFloat(all_bufs[nonuniformEXT(pc.bones_idx)].data[base + 16 + i*4 + j]);
+    for(int i=0; i<4; i++) for(int j=0; j<4; j++) b.bind_matrix[i][j] = uintBitsToFloat(all_bufs[nonuniformEXT(pc.bones_idx)].data[base + 32 + i*4 + j]);
+    for(int i=0; i<4; i++) for(int j=0; j<4; j++) b.inv_bind_matrix[i][j] = uintBitsToFloat(all_bufs[nonuniformEXT(pc.bones_idx)].data[base + 48 + i*4 + j]);
+    b.bounding_radius = uintBitsToFloat(all_bufs[nonuniformEXT(pc.bones_idx)].data[base + 64]);
+    b.sdf_offset = all_bufs[nonuniformEXT(pc.bones_idx)].data[base + 65];
+    b.sdf_count = all_bufs[nonuniformEXT(pc.bones_idx)].data[base + 66];
+    return b;
+}
+
+// SDFDescriptor is 4 + 4 + 4 + 4 + 16 + 16 = 48 bytes.
+// 48 / 4 = 12 uints.
+SDFDescriptor get_sdf(uint idx) {
+    uint base = idx * 12;
+    SDFDescriptor s;
+    s.bone_index = all_bufs[nonuniformEXT(pc.sdfs_idx)].data[base + 0];
+    s.primitive_type = all_bufs[nonuniformEXT(pc.sdfs_idx)].data[base + 1];
+    s.id = all_bufs[nonuniformEXT(pc.sdfs_idx)].data[base + 2];
+    s.color_packed = all_bufs[nonuniformEXT(pc.sdfs_idx)].data[base + 3];
+    s.params = vec4(uintBitsToFloat(all_bufs[nonuniformEXT(pc.sdfs_idx)].data[base + 4]),
+                    uintBitsToFloat(all_bufs[nonuniformEXT(pc.sdfs_idx)].data[base + 5]),
+                    uintBitsToFloat(all_bufs[nonuniformEXT(pc.sdfs_idx)].data[base + 6]),
+                    uintBitsToFloat(all_bufs[nonuniformEXT(pc.sdfs_idx)].data[base + 7]));
+    s.local_offset = vec4(uintBitsToFloat(all_bufs[nonuniformEXT(pc.sdfs_idx)].data[base + 8]),
+                          uintBitsToFloat(all_bufs[nonuniformEXT(pc.sdfs_idx)].data[base + 9]),
+                          uintBitsToFloat(all_bufs[nonuniformEXT(pc.sdfs_idx)].data[base + 10]),
+                          uintBitsToFloat(all_bufs[nonuniformEXT(pc.sdfs_idx)].data[base + 11]));
+    return s;
+}
+
+// GridNode is 4+4+4+4 + 16 + 16 = 48 bytes. 12 uints.
+void set_grid(uint idx, GridNode n) {
+    uint base = idx * 12;
+    all_bufs[nonuniformEXT(pc.grid_idx)].data[base + 0] = floatBitsToUint(n.dist);
+    all_bufs[nonuniformEXT(pc.grid_idx)].data[base + 1] = n.id;
+    all_bufs[nonuniformEXT(pc.grid_idx)].data[base + 2] = n.color_packed;
+    all_bufs[nonuniformEXT(pc.grid_idx)].data[base + 3] = 0;
+    all_bufs[nonuniformEXT(pc.grid_idx)].data[base + 4] = n.bone_ids.x;
+    all_bufs[nonuniformEXT(pc.grid_idx)].data[base + 5] = n.bone_ids.y;
+    all_bufs[nonuniformEXT(pc.grid_idx)].data[base + 6] = n.bone_ids.z;
+    all_bufs[nonuniformEXT(pc.grid_idx)].data[base + 7] = n.bone_ids.w;
+    all_bufs[nonuniformEXT(pc.grid_idx)].data[base + 8] = floatBitsToUint(n.bone_weights.x);
+    all_bufs[nonuniformEXT(pc.grid_idx)].data[base + 9] = floatBitsToUint(n.bone_weights.y);
+    all_bufs[nonuniformEXT(pc.grid_idx)].data[base + 10] = floatBitsToUint(n.bone_weights.z);
+    all_bufs[nonuniformEXT(pc.grid_idx)].data[base + 11] = floatBitsToUint(n.bone_weights.w);
+}
+
+void main() {
+    uvec3 g_id = gl_GlobalInvocationID;
+    if (g_id.x >= pc.grid_size.x || g_id.y >= pc.grid_size.y || g_id.z >= pc.grid_size.z) return;
+
+    vec3 pos = pc.bounds_min + (pc.bounds_max - pc.bounds_min) * vec3(g_id) / vec3(max(uvec3(1), pc.grid_size - 1));
+
+    float min_dist = 1000.0;
+    uint closest_id = 0;
+    uint closest_color = 0;
+
+    uint best_bones[4] = {0, 0, 0, 0};
+    float best_bone_dists[4] = {1000.0, 1000.0, 1000.0, 1000.0};
+
+    for (uint i = 0; i < pc.bone_count; i++) {
+        Bone b = get_bone(i);
+        vec3 local_p = (b.inv_world_matrix * vec4(pos, 1.0)).xyz;
+        
+        if (length(local_p) > b.bounding_radius + 0.5) {
+            float d_abs = length(local_p);
+            for (int k = 0; k < 4; k++) {
+                if (d_abs < best_bone_dists[k]) {
+                    for (int m = 3; m > k; m--) {
+                        best_bone_dists[m] = best_bone_dists[m-1];
+                        best_bones[m] = best_bones[m-1];
+                    }
+                    best_bone_dists[k] = d_abs;
+                    best_bones[k] = i;
+                    break;
+                }
+            }
+            continue;
+        }
+
+        float bone_min_d = 1000.0;
+        for (uint j = 0; j < b.sdf_count; j++) {
+            SDFDescriptor sdf = get_sdf(b.sdf_offset + j);
+            vec3 p = local_p - sdf.local_offset.xyz;
+            float d = 1000.0;
+            if (sdf.primitive_type == 0) d = sdSphere(p, sdf.params.x);
+            else if (sdf.primitive_type == 1) {
+                vec3 ca = vec3(0.0, sdf.params.y, 0.0);
+                vec3 cb = vec3(0.0, sdf.params.z, 0.0);
+                d = sdCapsule(p, ca, cb, sdf.params.x);
+            }
+            else if (sdf.primitive_type == 2) d = sdBox(p, sdf.params.xyz);
+            else if (sdf.primitive_type == 3) d = sdEllipsoid(p, sdf.params.xyz);
+
+            bone_min_d = min(bone_min_d, d);
+            if (d < min_dist) {
+                if (sdf.id == closest_id && sdf.id < 50) min_dist = opSmoothUnion(min_dist, d, 0.02);
+                else { min_dist = d; closest_id = sdf.id; closest_color = sdf.color_packed; }
+            } else if (sdf.id == closest_id && sdf.id < 50) min_dist = opSmoothUnion(min_dist, d, 0.02);
+        }
+
+        float d_abs = abs(bone_min_d);
+        for (int k = 0; k < 4; k++) {
+            if (d_abs < best_bone_dists[k]) {
+                for (int m = 3; m > k; m--) {
+                    best_bone_dists[m] = best_bone_dists[m-1];
+                    best_bones[m] = best_bones[m-1];
+                }
+                best_bone_dists[k] = d_abs;
+                best_bones[k] = i;
+                break;
+            }
+        }
+    }
+
+    vec4 weights = vec4(0.0);
+    float sum = 0.0;
+    for (int k = 0; k < 4; k++) {
+        float w = 1.0 / (pow(best_bone_dists[k], 4.0) + 1e-6);
+        weights[k] = w; sum += w;
+    }
+    weights /= (sum + 1e-6);
+
+    uint idx = g_id.x + g_id.y * pc.grid_size.x + g_id.z * pc.grid_size.x * pc.grid_size.y;
+    GridNode n;
+    n.dist = min_dist; n.id = closest_id; n.color_packed = closest_color;
+    n.bone_ids = uvec4(best_bones[0], best_bones[1], best_bones[2], best_bones[3]);
+    n.bone_weights = weights;
+    set_grid(idx, n);
+}

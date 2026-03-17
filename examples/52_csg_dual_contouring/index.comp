@@ -1,0 +1,89 @@
+#version 460
+#extension GL_EXT_nonuniform_qualifier : require
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 8) in;
+
+layout(push_constant) uniform PC {
+    vec3 bounds_min;
+    uint bone_count;
+    vec3 bounds_max;
+    uint sdf_count;
+    uvec3 grid_size;
+    uint padding;
+    uint bones_idx;
+    uint sdfs_idx;
+    uint grid_idx;
+    uint vertices_idx;
+    uint indices_idx;
+    uint counter_idx;
+    uint cell_idx;
+    uint vertex_counter_idx;
+} pc;
+
+layout(set = 0, binding = 0, std430) buffer AllBuffers { uint data[]; } all_bufs[];
+
+uint get_grid_idx(uvec3 c) { 
+    c = clamp(c, uvec3(0), pc.grid_size - 1);
+    return c.x + c.y * pc.grid_size.x + c.z * pc.grid_size.x * pc.grid_size.y; 
+}
+
+uint get_v_idx(uvec3 c) { 
+    return all_bufs[nonuniformEXT(pc.cell_idx)].data[get_grid_idx(c)]; 
+}
+
+float get_dist(uvec3 c) {
+    return uintBitsToFloat(all_bufs[nonuniformEXT(pc.grid_idx)].data[get_grid_idx(c) * 12]);
+}
+
+void emit_quad(uint v1, uint v2, uint v3, uint v4, bool flip) {
+    if (v1 == 0xFFFFFFFF || v2 == 0xFFFFFFFF || v3 == 0xFFFFFFFF || v4 == 0xFFFFFFFF) return;
+    
+    uint i_idx = atomicAdd(all_bufs[nonuniformEXT(pc.counter_idx)].data[0], 6);
+    if (i_idx + 6 > 512 * 1024) return; 
+
+    if (flip) {
+        all_bufs[nonuniformEXT(pc.indices_idx)].data[i_idx + 0] = v1; 
+        all_bufs[nonuniformEXT(pc.indices_idx)].data[i_idx + 1] = v2; 
+        all_bufs[nonuniformEXT(pc.indices_idx)].data[i_idx + 2] = v3;
+        all_bufs[nonuniformEXT(pc.indices_idx)].data[i_idx + 3] = v1; 
+        all_bufs[nonuniformEXT(pc.indices_idx)].data[i_idx + 4] = v3; 
+        all_bufs[nonuniformEXT(pc.indices_idx)].data[i_idx + 5] = v4;
+    } else {
+        all_bufs[nonuniformEXT(pc.indices_idx)].data[i_idx + 0] = v1; 
+        all_bufs[nonuniformEXT(pc.indices_idx)].data[i_idx + 1] = v4; 
+        all_bufs[nonuniformEXT(pc.indices_idx)].data[i_idx + 2] = v3;
+        all_bufs[nonuniformEXT(pc.indices_idx)].data[i_idx + 3] = v1; 
+        all_bufs[nonuniformEXT(pc.indices_idx)].data[i_idx + 4] = v3; 
+        all_bufs[nonuniformEXT(pc.indices_idx)].data[i_idx + 5] = v2;
+    }
+}
+
+void main() {
+    uvec3 g_id = gl_GlobalInvocationID;
+    if (g_id.x >= pc.grid_size.x - 1 || g_id.y >= pc.grid_size.y - 1 || g_id.z >= pc.grid_size.z - 1) return;
+    if (g_id.x == 0 || g_id.y == 0 || g_id.z == 0) return;
+
+    float d0 = get_dist(g_id);
+    
+    if ((d0 < 0.0) != (get_dist(g_id + uvec3(1,0,0)) < 0.0)) {
+        uint v1 = get_v_idx(g_id);
+        uint v2 = get_v_idx(g_id - uvec3(0,1,0));
+        uint v3 = get_v_idx(g_id - uvec3(0,1,1));
+        uint v4 = get_v_idx(g_id - uvec3(0,0,1));
+        emit_quad(v1, v2, v3, v4, d0 < 0.0);
+    }
+    if ((d0 < 0.0) != (get_dist(g_id + uvec3(0,1,0)) < 0.0)) {
+        uint v1 = get_v_idx(g_id);
+        uint v2 = get_v_idx(g_id - uvec3(0,0,1));
+        uint v3 = get_v_idx(g_id - uvec3(1,0,1));
+        uint v4 = get_v_idx(g_id - uvec3(1,0,0));
+        emit_quad(v1, v2, v3, v4, d0 < 0.0);
+    }
+    if ((d0 < 0.0) != (get_dist(g_id + uvec3(0,0,1)) < 0.0)) {
+        uint v1 = get_v_idx(g_id);
+        uint v2 = get_v_idx(g_id - uvec3(1,0,0));
+        uint v3 = get_v_idx(g_id - uvec3(1,1,0));
+        uint v4 = get_v_idx(g_id - uvec3(0,1,0));
+        emit_quad(v1, v2, v3, v4, d0 < 0.0);
+    }
+}
