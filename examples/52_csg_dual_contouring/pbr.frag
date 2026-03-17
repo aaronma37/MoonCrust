@@ -18,24 +18,48 @@ layout(push_constant) uniform PC {
 
 void main() {
     vec3 N = normalize(inNormal);
-    vec3 L = normalize(vec3(1.0, 1.0, 1.0));
+    vec3 L = normalize(vec3(1.0, 1.0, 1.5)); // Main Directional Light
     vec3 V = normalize(pc.cam_pos - inWorldPos);
     vec3 H = normalize(L + V);
 
-    float diff = max(dot(N, L), 0.1);
-    float spec = pow(max(dot(N, H), 0.0), 32.0);
+    // --- STEP-TONE DIFFUSE ---
+    float ndl = dot(N, L);
+    float diff = 0.0;
     
-    float rim = 1.0 - max(dot(N, V), 0.0);
-    rim = pow(rim, 4.0);
+    // 3-Tone Quantization (High, Mid, Shadow)
+    if (ndl > 0.4) {
+        diff = 1.0;
+    } else if (ndl > -0.1) {
+        diff = 0.6;
+    } else {
+        diff = 0.3;
+    }
+
+    // --- STYLIZED SPECULAR ---
+    float ndh = max(dot(N, H), 0.0);
+    float spec = smoothstep(0.9, 0.95, pow(ndh, 64.0)); // Sharp "Glint"
+
+    // --- ANIME RIM LIGHTING ---
+    float rim_dot = 1.0 - max(dot(N, V), 0.0);
+    float rim = smoothstep(0.7, 0.75, rim_dot);
+    rim *= max(0.0, dot(N, L) + 0.5); // Mask rim by light to prevent "Glow-in-the-dark" look
 
     vec3 baseColor = inColor.rgb;
     
-    if (inID >= 10) {
-        baseColor *= 1.2;
+    // Material Tweaks based on ID
+    if (inID >= 10) { // Metallic parts (Sword/Helmet)
+        baseColor *= 1.1;
+        spec *= 1.5;
     }
 
-    vec3 color = baseColor * diff + vec3(0.3) * spec + vec3(0.5) * rim * baseColor;
-    color += baseColor * 0.1;
+    // Final Composite
+    vec3 color = baseColor * diff;
+    color += vec3(1.0) * spec * 0.8; // White Specular Glint
+    color += baseColor * rim * 0.4;  // Soft Color-matched Rim
+    
+    // Subtle Ambient
+    color += baseColor * 0.15;
 
+    // Linear to Gamma (2.2)
     outFragColor = vec4(pow(color, vec3(1.0/2.2)), 1.0);
 }

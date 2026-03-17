@@ -20,6 +20,8 @@ layout(push_constant) uniform PC {
     vec3 cam_pos;
     uint bone_count;
     uint bones_idx;
+    float outline_thickness;
+    uint outline_mode;
 } pc;
 
 mat4 get_bone_mat(uint bone_idx, uint offset) {
@@ -52,9 +54,17 @@ void main() {
     outID = floatBitsToUint(inColor.a);
     outColor = vec4(inColor.rgb, 1.0);
     
-    vec4 worldPos = skinMat * vec4(inPos.xyz, 1.0);
+    vec4 localPos = vec4(inPos.xyz, 1.0);
+    if (pc.outline_mode == 1) {
+        localPos.xyz += inNormal.xyz * pc.outline_thickness;
+    }
+
+    vec4 worldPos = skinMat * localPos;
     outWorldPos = worldPos.xyz;
     outNormal = normalize(mat3(skinMat) * inNormal.xyz);
     
     gl_Position = pc.projection * pc.view * worldPos;
+    if (pc.outline_mode == 1) {
+        gl_Position.z += 0.0001; // Nudge outline slightly back in depth
+    }
 }

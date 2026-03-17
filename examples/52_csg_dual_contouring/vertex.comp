@@ -135,16 +135,82 @@ void main() {
     ADD_EDGE(2, 6, vec3(0,1,0), vec3(0,1,1)); ADD_EDGE(3, 7, vec3(1,1,0), vec3(1,1,1));
 
     vec3 pos = p_sum / float(max(1, p_count));
-    vec3 n = normalize(pos - (pc.bounds_min + pc.bounds_max) * 0.5);
+    
+    // Fractional position within the cell [0, 1]
+    vec3 f = (pos - p0) / vs;
 
-    GridNode best = get_grid(get_grid_idx(g_id + uvec3(best_corner&1, (best_corner>>1)&1, (best_corner>>2)&1)));
+    // Estimate normal from corner distances (trilinear gradient)
+    float nx = (d[1]-d[0] + d[3]-d[2] + d[5]-d[4] + d[7]-d[6]) * 0.25;
+    float ny = (d[2]-d[0] + d[3]-d[1] + d[6]-d[4] + d[7]-d[5]) * 0.25;
+    float nz = (d[4]-d[0] + d[5]-d[1] + d[6]-d[2] + d[7]-d[3]) * 0.25;
+    vec3 n = normalize(vec3(nx, ny, nz));
+
+    // TRILINEAR WEIGHT INTERPOLATION (ID-CONSISTENT)
+    GridNode corners[8];
+    uint unique_bones[8]; // Max 8 bones across 8 corners (optimistic)
+    uint num_unique = 0;
+
+    for (uint i=0; i<8; i++) {
+        corners[i] = get_grid(get_grid_idx(g_id + uvec3(i&1, (i>>1)&1, (i>>2)&1)));
+        for (int k=0; k<4; k++) {
+            uint bid = corners[i].bone_ids[k];
+            bool found = false;
+            for (uint m=0; m<num_unique; m++) { if (unique_bones[m] == bid) { found = true; break; } }
+            if (!found && num_unique < 8) { unique_bones[num_unique++] = bid; }
+        }
+    }
+
+    // Map corner weights to the unified set
+    float unified_weights[8][8]; // [corner][bone_index]
+    for (uint i=0; i<8; i++) {
+        for (uint m=0; m<num_unique; m++) {
+            unified_weights[i][m] = 0.0;
+            for (int k=0; k<4; k++) {
+                if (corners[i].bone_ids[k] == unique_bones[m]) {
+                    unified_weights[i][m] = corners[i].bone_weights[k];
+                }
+            }
+        }
+    }
+
+    // Interpolate the unified weights
+    float final_unified[8];
+    for (uint m=0; m<num_unique; m++) {
+        final_unified[m] = mix(
+            mix(mix(unified_weights[0][m], unified_weights[1][m], f.x), mix(unified_weights[2][m], unified_weights[3][m], f.x), f.y),
+            mix(mix(unified_weights[4][m], unified_weights[5][m], f.x), mix(unified_weights[6][m], unified_weights[7][m], f.x), f.y),
+            f.z
+        );
+    }
+
+    // Pack back into 4 bones for the GPUVertex format (take top 4)
+    uvec4 final_ids = uvec4(0);
+    vec4 final_weights = vec4(0.0);
+    for (int k=0; k<4; k++) {
+        float max_w = -1.0; int best_idx = -1;
+        for (uint m=0; m<num_unique; m++) {
+            if (final_unified[m] > max_w) { max_w = final_unified[m]; best_idx = int(m); }
+        }
+        if (best_idx != -1) {
+            final_ids[k] = unique_bones[best_idx];
+            final_weights[k] = final_unified[best_idx];
+            final_unified[best_idx] = -2.0; // Mark as used
+        }
+    }
+    // Re-normalize to ensure sum is 1.0
+    float w_sum = final_weights.x + final_weights.y + final_weights.z + final_weights.w;
+    if (w_sum > 0.0) final_weights /= w_sum;
+
+    GridNode best = corners[best_corner];
     Vertex v;
     v.position = vec4(pos, 1.0); v.normal = vec4(n, 1.0);
     float r = float((best.color_packed >> 16) & 0xFF) / 255.0;
     float g = float((best.color_packed >> 8) & 0xFF) / 255.0;
     float b = float(best.color_packed & 0xFF) / 255.0;
+    
     v.color = vec4(r, g, b, uintBitsToFloat(best.id));
-    v.bone_ids = best.bone_ids; v.bone_weights = best.bone_weights;
+    v.bone_ids = final_ids; 
+    v.bone_weights = final_weights;
 
     if (v_idx < 256 * 1024) set_vertex(v_idx, v);
 }

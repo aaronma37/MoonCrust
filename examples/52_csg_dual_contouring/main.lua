@@ -18,7 +18,7 @@ local M = {}
 -- --- Constants ---
 local MAX_BONES = 64
 local MAX_SDFS = 512
-local GRID_SIZE = { 64, 128, 64 }
+local GRID_SIZE = { 96, 192, 96 }
 local MAX_VERTICES = 256 * 1024
 local MAX_INDICES = 512 * 1024
 local MAX_FRAMES_IN_FLIGHT = 2
@@ -87,7 +87,8 @@ ffi.cdef[[
         float cam_pos[3];
         uint32_t bone_count;
         uint32_t bones_idx;
-        uint32_t padding[3];
+        float outline_thickness;
+        uint32_t outline_mode;
     } RenderPC;
 
     typedef struct GPUVertex {
@@ -198,6 +199,9 @@ function M.init()
 
     local vert_mod = shader.create_module(device, shader.compile_glsl(vert_src, vk.VK_SHADER_STAGE_VERTEX_BIT))
     local frag_mod = shader.create_module(device, shader.compile_glsl(frag_src, vk.VK_SHADER_STAGE_FRAGMENT_BIT))
+    
+    local outline_frag_src = io.open("examples/52_csg_dual_contouring/outline.frag"):read("*all")
+    local outline_frag_mod = shader.create_module(device, shader.compile_glsl(outline_frag_src, vk.VK_SHADER_STAGE_FRAGMENT_BIT))
 
     graphics_pipe = pipeline.create_graphics_pipeline(device, graphics_layout, vert_mod, frag_mod, {
         vertex_binding = bindings,
@@ -206,7 +210,19 @@ function M.init()
         depth_test = true,
         depth_write = true,
         depth_format = vk.VK_FORMAT_D32_SFLOAT,
-        color_formats = {sw.format}
+        color_formats = {sw.format},
+        cull_mode = vk.VK_CULL_MODE_BACK_BIT -- Standard backface culling
+    })
+
+    outline_pipe = pipeline.create_graphics_pipeline(device, graphics_layout, vert_mod, outline_frag_mod, {
+        vertex_binding = bindings,
+        vertex_attributes = attrs,
+        vertex_attribute_count = 5,
+        depth_test = true,
+        depth_write = true,
+        depth_format = vk.VK_FORMAT_D32_SFLOAT,
+        color_formats = {sw.format},
+        cull_mode = vk.VK_CULL_MODE_FRONT_BIT -- CULL FRONT for inverted hull
     })
 
     -- 4. Graph & Cbs
@@ -354,6 +370,8 @@ function M.update()
     pc_render.cam_pos[0], pc_render.cam_pos[1], pc_render.cam_pos[2] = cx, cy, cz
     pc_render.bone_count = #skeleton_order
     pc_render.bones_idx = 0
+    pc_render.outline_thickness = 0.008
+    pc_render.outline_mode = 1 -- Pass 1: Outline
 
     local cb = M.cbs[current_frame + 1]
     vk.vkResetCommandBuffer(cb, 0); vk.vkBeginCommandBuffer(cb, ffi.new("VkCommandBufferBeginInfo", { sType = vk.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO }))
@@ -408,12 +426,23 @@ function M.update()
     vk.vkCmdBeginRendering(cb, rendering_info)
     vk.vkCmdSetViewport(cb, 0, 1, ffi.new("VkViewport", { x=0, y=0, width=sw.extent.width, height=sw.extent.height, minDepth=0, maxDepth=1 }))
     vk.vkCmdSetScissor(cb, 0, 1, ffi.new("VkRect2D", { offset={x=0,y=0}, extent=sw.extent }))
-    vk.vkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, graphics_pipe)
+    
     vk.vkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, graphics_layout, 0, 1, ffi.new("VkDescriptorSet[1]", {bindless_set}), 0, nil)
-    vk.vkCmdPushConstants(cb, graphics_layout, bit.bor(vk.VK_SHADER_STAGE_VERTEX_BIT, vk.VK_SHADER_STAGE_FRAGMENT_BIT), 0, ffi.sizeof("RenderPC"), pc_render)
     vk.vkCmdBindVertexBuffers(cb, 0, 1, ffi.new("VkBuffer[1]", {vertex_buffer.handle}), ffi.new("VkDeviceSize[1]", {0}))
     vk.vkCmdBindIndexBuffer(cb, index_buffer.handle, 0, vk.VK_INDEX_TYPE_UINT32)
+
+    -- PASS 1: Outline
+    pc_render.outline_mode = 1
+    vk.vkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, outline_pipe)
+    vk.vkCmdPushConstants(cb, graphics_layout, bit.bor(vk.VK_SHADER_STAGE_VERTEX_BIT, vk.VK_SHADER_STAGE_FRAGMENT_BIT), 0, ffi.sizeof("RenderPC"), pc_render)
     vk.vkCmdDrawIndexedIndirect(cb, counter_buffer.handle, 0, 1, 20)
+
+    -- PASS 2: Character
+    pc_render.outline_mode = 0
+    vk.vkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, graphics_pipe)
+    vk.vkCmdPushConstants(cb, graphics_layout, bit.bor(vk.VK_SHADER_STAGE_VERTEX_BIT, vk.VK_SHADER_STAGE_FRAGMENT_BIT), 0, ffi.sizeof("RenderPC"), pc_render)
+    vk.vkCmdDrawIndexedIndirect(cb, counter_buffer.handle, 0, 1, 20)
+
     vk.vkCmdEndRendering(cb)
 
     -- TRANSITION TO PRESENT
