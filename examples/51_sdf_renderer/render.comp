@@ -9,6 +9,10 @@ layout(set = 0, binding = 2, rgba16f) uniform image2D all_images[];
 struct Bone {
     mat4 world_matrix;
     mat4 inv_world_matrix;
+    float bounding_radius;
+    uint sdf_offset;
+    uint sdf_count;
+    uint padding;
 };
 
 struct SDFDescriptor {
@@ -98,6 +102,14 @@ vec3 unpackColor(uint packed_color) {
     return vec3(r, g, b);
 }
 
+// Bone Debug Color
+vec3 getBoneColor(uint bone_idx) {
+    float r = fract(sin(float(bone_idx) * 12.9898) * 43758.5453);
+    float g = fract(sin(float(bone_idx) * 78.233) * 43758.5453);
+    float b = fract(sin(float(bone_idx) * 45.123) * 43758.5453);
+    return normalize(vec3(r, g, b) + 0.5);
+}
+
 // --- Scene Mapping ---
 
 struct MapResult {
@@ -111,45 +123,62 @@ MapResult map(vec3 p) {
     vec3 col = vec3(0.0);
     uint best_id = 0;
 
-    // 1. Static/Rigid SDFs
-    for (uint i = 0; i < pc.sdf_count; i++) {
-        SDFDescriptor s = all_sdfs[1].descriptors[i];
-        mat4 inv_m = all_bones[0].bones[s.bone_index].inv_world_matrix;
-        vec3 local_p = (inv_m * vec4(p, 1.0)).xyz;
-        local_p -= s.local_offset.xyz;
+    // 1. Optimized Rigid SDFs
+    for (uint i = 0; i < pc.bone_count; i++) {
+        Bone b = all_bones[0].bones[i];
+        if (b.sdf_count == 0) continue;
 
-        float dist = 1e10;
-        if (s.primitive_type == 0) dist = sdSphere(local_p, s.params.x);
-        else if (s.primitive_type == 1) dist = sdCapsule(local_p, vec3(0, s.params.y, 0), vec3(0, s.params.z, 0), s.params.x);
-        else if (s.primitive_type == 2) dist = sdBox(local_p, s.params.xyz);
-        else if (s.primitive_type == 3) dist = sdEllipsoid(local_p, s.params.xyz);
+        vec3 bone_pos = b.world_matrix[3].xyz;
+        float dist_to_bone = length(p - bone_pos);
+        
+        if (dist_to_bone > b.bounding_radius + 0.2) {
+            d = min(d, dist_to_bone - b.bounding_radius);
+            continue;
+        }
 
-        if (i == 0) {
-            d = dist;
-            col = unpackColor(s.color_packed);
-            best_id = s.id;
-        } else {
-            if (s.id == best_id) {
-                float k = s.params.w;
-                float h = clamp(0.5 + 0.5 * (dist - d) / k, 0.0, 1.0);
-                d = mix(dist, d, h) - k * h * (1.0 - h);
-                col = mix(unpackColor(s.color_packed), col, h);
+        mat4 inv_m = b.inv_world_matrix;
+        vec3 base_local_p = (inv_m * vec4(p, 1.0)).xyz;
+
+        for (uint j = 0; j < b.sdf_count; j++) {
+            SDFDescriptor s = all_sdfs[1].descriptors[b.sdf_offset + j];
+            vec3 local_p = base_local_p - s.local_offset.xyz;
+
+            float dist = 1e10;
+            if (s.primitive_type == 0) dist = sdSphere(local_p, s.params.x);
+            else if (s.primitive_type == 1) dist = sdCapsule(local_p, vec3(0, s.params.y, 0), vec3(0, s.params.z, 0), s.params.x);
+            else if (s.primitive_type == 2) dist = sdBox(local_p, s.params.xyz);
+            else if (s.primitive_type == 3) dist = sdEllipsoid(local_p, s.params.xyz);
+
+            if (best_id == 0) {
+                d = dist;
+                // DEBUG COLORING: Use Bone ID
+                col = (s.id == 99) ? unpackColor(s.color_packed) : getBoneColor(i);
+                best_id = s.id;
             } else {
-                if (dist < d) {
-                    d = dist;
-                    col = unpackColor(s.color_packed);
-                    best_id = s.id;
+                if (s.id == best_id && s.id != 99) {
+                    float k = s.params.w;
+                    float h = clamp(0.5 + 0.5 * (dist - d) / k, 0.0, 1.0);
+                    d = mix(dist, d, h) - k * h * (1.0 - h);
+                    // Blend debug colors
+                    col = mix(unpackColor(s.color_packed), col, h); // Temporarily stick to original colors for blending
+                    if (s.id == 1) col = mix(getBoneColor(i), col, h);
+                } else {
+                    if (dist < d) {
+                        d = dist;
+                        col = (s.id == 99) ? unpackColor(s.color_packed) : getBoneColor(i);
+                        best_id = s.id;
+                    }
                 }
             }
         }
     }
 
-    // 2. Dynamic PBD Particles (Grid Accelerated)
+    // 2. Dynamic PBD Particles
     float d_cloth = 1e10;
     float d_hair = 1e10;
-    vec3 cloth_col = vec3(0.8, 0.2, 0.2); // Red Cape
-    vec3 hair_col = vec3(0.2, 0.15, 0.1); // Brown Hair
-
+    vec3 cloth_col = vec3(0.8, 0.2, 0.2); 
+    vec3 hair_col = vec3(0.2, 0.15, 0.1); 
+    
     ivec3 c = ivec3(floor((p - grid_min) / cell_size));
     if (c.x >= 0 && c.x < 16 && c.y >= 0 && c.y < 16 && c.z >= 0 && c.z < 16) {
         uint cell_idx = c.x + c.y * 16 + c.z * 16 * 16;
@@ -163,16 +192,8 @@ MapResult map(vec3 p) {
         }
     }
 
-    if (d_hair < d) {
-        d = d_hair;
-        col = hair_col;
-        best_id = 51;
-    }
-    if (d_cloth < d) {
-        d = d_cloth;
-        col = cloth_col;
-        best_id = 50;
-    }
+    if (d_hair < d) { d = d_hair; col = hair_col; best_id = 51; }
+    if (d_cloth < d) { d = d_cloth; col = cloth_col; best_id = 50; }
 
     return MapResult(d, col, best_id);
 }
@@ -188,26 +209,17 @@ vec3 calcNormal(vec3 p) {
 
 // --- Soft Shadows ---
 float calcSoftShadow(vec3 ro, vec3 rd, float mint, float tmax, float k) {
-    // Optimization: Does the shadow ray even pass near the character?
     vec3 char_center = all_bones[0].bones[0].world_matrix[3].xyz;
-    vec2 t_char = sphIntersect(ro, rd, char_center, 2.5); // Slightly larger radius for soft shadow penumbra
-    
-    // If we completely miss the bounding sphere, we are fully lit
+    vec2 t_char = sphIntersect(ro, rd, char_center, 2.5); 
     if (t_char.x < 0.0 && t_char.y < 0.0) return 1.0;
-
     float res = 1.0;
     float t = mint;
-    
-    // Fast forward to the bounding sphere if it's far away
-    if (t_char.x > mint) {
-        t = max(mint, t_char.x);
-    }
-
+    if (t_char.x > mint) t = max(mint, t_char.x);
     for(int i = 0; i < 30; i++) {
         float h = map(ro + rd * t).d;
         res = min(res, k * h / t);
         t += clamp(h, 0.02, 0.10); 
-        if(res < 0.005 || t > min(tmax, t_char.y)) break; // Stop marching if we exit the bounding sphere
+        if(res < 0.005 || t > min(tmax, t_char.y)) break;
     }
     return clamp(res, 0.0, 1.0);
 }
@@ -226,10 +238,7 @@ void main() {
     vec3 rd_up = cross(rd_dir, rd_right);
     vec3 rd = normalize(rd_dir + uv.x * rd_right + uv.y * rd_up);
 
-    // Analytical Floor
     float t_floor = (-0.5 - ro.y) / rd.y;
-    
-    // Character Bounding Sphere
     vec3 char_center = all_bones[0].bones[0].world_matrix[3].xyz;
     vec2 t_char = sphIntersect(ro, rd, char_center, 2.0);
 
@@ -241,7 +250,6 @@ void main() {
 
     if (t_floor > 0.0) {
         t_hit = t_floor;
-        // Checkered floor for style
         vec3 p_floor = ro + rd * t_floor;
         float checker = mod(floor(p_floor.x * 2.0) + floor(p_floor.z * 2.0), 2.0);
         hit_color = mix(vec3(0.15, 0.15, 0.18), vec3(0.1, 0.1, 0.12), checker);
@@ -253,7 +261,6 @@ void main() {
     if (t_char.x > 0.0 && t_char.x < t_hit) {
         float t = max(0.0, t_char.x);
         float t_end = min(t_char.y, t_hit); 
-        
         for (int i = 0; i < 80; i++) {
             MapResult res_m = map(ro + rd * t);
             if (res_m.d < 0.001) {
@@ -269,55 +276,33 @@ void main() {
         }
     }
 
-    // Background Color
     vec3 color = mix(vec3(0.9, 0.85, 0.8), vec3(0.7, 0.75, 0.85), clamp(uv.y * 2.0 + 0.5, 0.0, 1.0));
-
     if (hit) {
         vec3 p = ro + rd * t_hit;
         vec3 light_dir = normalize(vec3(1.5, 2.0, -1.0));
-        
-        // 1. Soft Shadows
         float shadow = 1.0;
-        if (hit_id == 999) { // Floor
+        if (hit_id == 999) { 
             shadow = calcSoftShadow(p, light_dir, 0.02, 5.0, 8.0);
-            // Sharp shadow edge for cartoon style
             shadow = smoothstep(0.1, 0.3, shadow);
         } else {
-            // Self-shadowing on character
             shadow = calcSoftShadow(p, light_dir, 0.05, 2.0, 12.0);
             shadow = smoothstep(0.2, 0.4, shadow);
         }
-
-        // 2. Cel Shaded Diffuse
         float ndotl = dot(hit_normal, light_dir);
-        // Map ndotl to distinct bands
         float diffuse_band = 0.0;
         if (ndotl > 0.4) diffuse_band = 1.0;
         else if (ndotl > 0.0) diffuse_band = 0.4;
         else diffuse_band = 0.1;
-        
-        // Modulate with shadow
         diffuse_band *= (0.2 + 0.8 * shadow);
-
-        // Ambient color (slightly blue/purple)
         vec3 ambient = hit_color * vec3(0.3, 0.35, 0.45);
-        
         color = ambient + hit_color * diffuse_band;
-
-        // 3. Fresnel Outlines (Ink edges)
-        if (hit_id != 999) { // Don't outline the floor
+        if (hit_id != 999) { 
             float ndotv = dot(hit_normal, -rd);
-            // If the normal is nearly perpendicular to the view ray, draw a dark line
             float outline = smoothstep(0.15, 0.25, abs(ndotv));
             color = mix(vec3(0.05, 0.05, 0.05), color, outline);
         }
-        
-        // Distance fog (fade to background color)
         color = mix(color, mix(vec3(0.9, 0.85, 0.8), vec3(0.7, 0.75, 0.85), 0.5), 1.0 - exp(-0.01 * t_hit));
     }
-
-    // Basic Tonemapping/Gamma
     color = pow(color, vec3(1.0/2.2));
-
     imageStore(all_images[pc.out_tex_id], pixel_coords, vec4(color, 1.0));
 }
