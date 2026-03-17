@@ -39,6 +39,9 @@ local mesh_baked = false
 local frame_count = 0
 local fps_timer = 0
 
+local animations = {"rest", "walk", "idle", "run", "wave"}
+local current_anim_idx = 1
+
 local cam_rot = {0, 0}
 local cam_dist = 5.0
 local cam_target = {0, 0.4, 0}
@@ -316,9 +319,14 @@ function M.update()
     fps_timer = fps_timer + dt
     if fps_timer >= 1.0 then
         local fps = frame_count / fps_timer
-        sdl.SDL_SetWindowTitle(_G._SDL_WINDOW, string.format("Example 52: Neurosymbolic CSG | FPS: %.1f", fps))
+        sdl.SDL_SetWindowTitle(_G._SDL_WINDOW, string.format("Example 52: Neurosymbolic CSG | FPS: %.1f | Anim: %s", fps, animations[current_anim_idx]))
         frame_count = 0
         fps_timer = 0
+    end
+
+    if input.key_pressed(input.SCANCODE_N) then
+        current_anim_idx = (current_anim_idx % #animations) + 1
+        print("Switching to Animation: " .. animations[current_anim_idx])
     end
 
     -- Orbit Controls
@@ -353,7 +361,7 @@ function M.update()
     end
 
     -- UPDATE BONES FOR RENDERING (Live Animation)
-    generator.apply_pose(skeleton_tree, current_time, "walk")
+    generator.apply_pose(skeleton_tree, current_time, animations[current_anim_idx])
     generator.update_matrices(skeleton_tree, skeleton_order, bone_data, bone_map)
 
     local cb = M.cbs[current_frame + 1]

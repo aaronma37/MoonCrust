@@ -131,30 +131,15 @@ void main() {
     uint closest_id = 0;
     uint closest_color = 0;
 
-    uint best_bones[4] = {0, 0, 0, 0};
-    float best_bone_dists[4] = {1000.0, 1000.0, 1000.0, 1000.0};
+    float bone_sdf_dists[64]; // Track min dist per bone
+    for (int i=0; i<64; i++) bone_sdf_dists[i] = 1000.0;
 
     for (uint i = 0; i < pc.bone_count; i++) {
         Bone b = get_bone(i);
         vec3 local_p = (b.inv_world_matrix * vec4(pos, 1.0)).xyz;
         
-        if (length(local_p) > b.bounding_radius + 0.5) {
-            float d_abs = length(local_p);
-            for (int k = 0; k < 4; k++) {
-                if (d_abs < best_bone_dists[k]) {
-                    for (int m = 3; m > k; m--) {
-                        best_bone_dists[m] = best_bone_dists[m-1];
-                        best_bones[m] = best_bones[m-1];
-                    }
-                    best_bone_dists[k] = d_abs;
-                    best_bones[k] = i;
-                    break;
-                }
-            }
-            continue;
-        }
+        if (length(local_p) > b.bounding_radius + 0.5) continue;
 
-        float bone_min_d = 1000.0;
         for (uint j = 0; j < b.sdf_count; j++) {
             SDFDescriptor sdf = get_sdf(b.sdf_offset + j);
             vec3 p = local_p - sdf.local_offset.xyz;
@@ -168,17 +153,29 @@ void main() {
             else if (sdf.primitive_type == 2) d = sdBox(p, sdf.params.xyz);
             else if (sdf.primitive_type == 3) d = sdEllipsoid(p, sdf.params.xyz);
 
+            // Track for weighting
+            bone_sdf_dists[i] = min(bone_sdf_dists[i], d);
+
             bool is_first = (closest_id == 0);
-            bool should_blend = (sdf.id == closest_id) || (sdf.id == 0) || is_first;
+            bool is_hair = (sdf.id == 5);
+            bool was_hair = (closest_id == 5);
             
-            bone_min_d = min(bone_min_d, d);
+            bool should_blend = (sdf.id == closest_id) || is_first;
+            if (is_hair && was_hair) should_blend = true;
+            if (is_hair != was_hair && !is_first) should_blend = false;
+            
             if (d < min_dist) {
                 if (!is_first && should_blend && sdf.id < 50) min_dist = opSmoothUnion(min_dist, d, 0.06);
                 else { min_dist = d; closest_id = sdf.id; closest_color = sdf.color_packed; }
             } else if (!is_first && should_blend && sdf.id < 50) min_dist = opSmoothUnion(min_dist, d, 0.06);
         }
+    }
 
-        float d_abs = abs(bone_min_d);
+    // Extract top 4 bones by SDF distance
+    uint best_bones[4] = {0, 0, 0, 0};
+    float best_bone_dists[4] = {1000.0, 1000.0, 1000.0, 1000.0};
+    for (uint i = 0; i < pc.bone_count; i++) {
+        float d_abs = abs(bone_sdf_dists[i]);
         for (int k = 0; k < 4; k++) {
             if (d_abs < best_bone_dists[k]) {
                 for (int m = 3; m > k; m--) {

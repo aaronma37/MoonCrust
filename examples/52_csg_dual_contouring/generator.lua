@@ -110,6 +110,18 @@ function M.apply_pose(tree, time, state)
 		-- T-Pose Flare (to prevent webbing)
 		tree.hip_L.rot[3] = 0.3
 		tree.hip_R.rot[3] = -0.3
+		-- Wide T-Pose for Arms (to prevent skinning bleed)
+		tree.shoulder_L.rot[3] = 1.57
+		tree.shoulder_R.rot[3] = -1.57
+	elseif state == "idle" then
+		local t = time * 2.0
+		local breathe = math.sin(t) * 0.05
+		tree.spine.rot[1] = breathe
+		tree.neck.rot[1] = -breathe * 0.5
+		tree.shoulder_L.rot[3] = 0.4 + breathe * 0.2
+		tree.shoulder_R.rot[3] = -0.4 - breathe * 0.2
+		tree.arm_upper_L.rot[1] = 0.1
+		tree.arm_upper_R.rot[1] = 0.1
 	elseif state == "walk" then
 		local t = time * 5.0
 		tree.root.rot[2] = math.sin(t) * 0.12
@@ -125,6 +137,25 @@ function M.apply_pose(tree, time, state)
 		tree.shoulder_R.rot[1] = math.sin(t) * 0.4
 		tree.arm_upper_L.rot[1] = math.max(0, math.sin(t + math.pi + 0.5)) * 0.6
 		tree.arm_upper_R.rot[1] = math.max(0, math.sin(t + 0.5)) * 0.6
+	elseif state == "run" then
+		local t = time * 10.0
+		tree.root.offset[2] = tree.root.base_offset[2] + math.abs(math.sin(t)) * 0.05
+		tree.root.rot[1] = 0.2 -- Lean forward
+		tree.hip_L.rot[1] = math.sin(t) * 1.0
+		tree.hip_R.rot[1] = math.sin(t + math.pi) * 1.0
+		tree.leg_upper_L.rot[1] = -math.max(0, math.sin(t + 0.8)) * 1.5
+		tree.leg_upper_R.rot[1] = -math.max(0, math.sin(t + math.pi + 0.8)) * 1.5
+		tree.leg_lower_L.rot[1] = 0.2
+		tree.leg_lower_R.rot[1] = 0.2
+		tree.shoulder_L.rot[1] = math.sin(t + math.pi) * 1.2
+		tree.shoulder_R.rot[1] = math.sin(t) * 1.2
+		tree.arm_upper_L.rot[1] = 1.0
+		tree.arm_upper_R.rot[1] = 1.0
+	elseif state == "wave" then
+		local t = time * 4.0
+		tree.shoulder_R.rot[3] = -2.0 -- Arm up
+		tree.arm_upper_R.rot[3] = math.sin(t) * 0.5 -- Wave hand
+		tree.shoulder_L.rot[3] = 0.4
 	end
 end
 
@@ -197,6 +228,7 @@ function M.equip_character(tree, loadout, time)
 	local SK = 0.04
 
 	-- HEAD
+	local hair_color = pack_color(0.2, 0.15, 0.15) -- Dark Brown
 	add_sdfs("head", {
 		{
 			bone = "head",
@@ -204,7 +236,34 @@ function M.equip_character(tree, loadout, time)
 			id = 1,
 			color = body_color,
 			params = { DATA.head_w / 2, DATA.head_h / 2, DATA.head_d / 2, 0.03 },
-		}
+		},
+		-- HAIR CROWN (Main Volume)
+		{
+			bone = "head",
+			type = "ellipsoid",
+			id = 5,
+			color = hair_color,
+			params = { DATA.head_w / 2 + 0.03, DATA.head_h / 2 + 0.02, DATA.head_d / 2 + 0.04, 0.05 },
+			offset = { 0, 0.03, -0.02 },
+		},
+		-- SPIKY FRINGE (Bangs)
+		{ bone = "head", type = "ellipsoid", id = 5, color = hair_color, params = { 0.03, 0.08, 0.02, 0.02 }, offset = { -0.06, 0.02, 0.08 } },
+		{ bone = "head", type = "ellipsoid", id = 5, color = hair_color, params = { 0.03, 0.10, 0.02, 0.02 }, offset = { -0.03, 0.01, 0.09 } },
+		{ bone = "head", type = "ellipsoid", id = 5, color = hair_color, params = { 0.04, 0.12, 0.02, 0.02 }, offset = { 0.0, 0.0, 0.10 } },
+		{ bone = "head", type = "ellipsoid", id = 5, color = hair_color, params = { 0.03, 0.10, 0.02, 0.02 }, offset = { 0.03, 0.01, 0.09 } },
+		{ bone = "head", type = "ellipsoid", id = 5, color = hair_color, params = { 0.03, 0.08, 0.02, 0.02 }, offset = { 0.06, 0.02, 0.08 } },
+		
+		-- SIDE LOCKS
+		{ bone = "head", type = "ellipsoid", id = 5, color = hair_color, params = { 0.02, 0.18, 0.04, 0.03 }, offset = { -0.10, -0.08, 0.02 } },
+		{ bone = "head", type = "ellipsoid", id = 5, color = hair_color, params = { 0.02, 0.18, 0.04, 0.03 }, offset = { 0.10, -0.08, 0.02 } },
+
+		-- REAR MANE (Back of head)
+		{ bone = "head", type = "ellipsoid", id = 5, color = hair_color, params = { 0.08, 0.15, 0.05, 0.05 }, offset = { 0.0, -0.05, -0.08 } },
+		{ bone = "head", type = "ellipsoid", id = 5, color = hair_color, params = { 0.06, 0.12, 0.04, 0.04 }, offset = { -0.05, -0.10, -0.07 } },
+		{ bone = "head", type = "ellipsoid", id = 5, color = hair_color, params = { 0.06, 0.12, 0.04, 0.04 }, offset = { 0.05, -0.10, -0.07 } },
+
+		-- COWLICK (Ahoge)
+		{ bone = "head", type = "ellipsoid", id = 5, color = hair_color, params = { 0.01, 0.08, 0.01, 0.01 }, offset = { 0.02, 0.15, 0.02 } },
 	})
 	add_sdfs("neck", {
 		{ bone = "neck", type = "capsule", id = 1, color = body_color, params = { 0.05, 0.0, 0.15, 0.03 } },

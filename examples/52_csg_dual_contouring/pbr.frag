@@ -54,6 +54,17 @@ void main() {
         baseColor *= 1.1;
         final_spec = spec * 1.2;
         final_rim = rim * 0.5; // Brighter rim for metal
+    } else if (inID == 5) { // HAIR
+        // Anisotropic-style sheen (Angel Ring)
+        // For a horizontal halo, the tangent should be vertical (strand direction)
+        vec3 T = vec3(0, 1, 0); 
+        float dotTH = dot(T, H);
+        float sinTH = sqrt(1.0 - dotTH * dotTH);
+        float sheen = pow(sinTH, 128.0) * 0.8;
+        
+        final_spec = sheen * smoothstep(0.1, 0.2, ndl); // Only in light
+        final_rim = rim * 0.3;
+        baseColor *= 1.1; // Saturated hair
     } else {
         // Skin/Fabric is matte
         final_spec = 0.0; 
