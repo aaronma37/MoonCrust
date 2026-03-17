@@ -168,11 +168,13 @@ void main() {
             else if (sdf.primitive_type == 2) d = sdBox(p, sdf.params.xyz);
             else if (sdf.primitive_type == 3) d = sdEllipsoid(p, sdf.params.xyz);
 
+            bool should_blend = (sdf.id == closest_id) || (sdf.id == 0) || (closest_id == 0);
+            
             bone_min_d = min(bone_min_d, d);
             if (d < min_dist) {
-                if (sdf.id == closest_id && sdf.id < 50) min_dist = opSmoothUnion(min_dist, d, 0.02);
+                if (should_blend && sdf.id < 50) min_dist = opSmoothUnion(min_dist, d, 0.02);
                 else { min_dist = d; closest_id = sdf.id; closest_color = sdf.color_packed; }
-            } else if (sdf.id == closest_id && sdf.id < 50) min_dist = opSmoothUnion(min_dist, d, 0.02);
+            } else if (should_blend && sdf.id < 50) min_dist = opSmoothUnion(min_dist, d, 0.02);
         }
 
         float d_abs = abs(bone_min_d);

@@ -36,6 +36,8 @@ local frame_fences, image_available_sems, render_finished_sems = {}, {}, {}
 local current_frame, current_time = 0, 0
 local last_ticks = 0
 local mesh_baked = false
+local frame_count = 0
+local fps_timer = 0
 
 local cam_rot = {0, 0}
 local cam_dist = 5.0
@@ -287,20 +289,33 @@ local function bake_mesh()
 end
 
 function M.update()
-    mc.tick()
     local current_ticks = tonumber(sdl.SDL_GetTicks())
     local dt = (current_ticks - last_ticks) / 1000.0
     if last_ticks == 0 then dt = 0 end
     last_ticks = current_ticks
     current_time = current_time + dt
 
+    -- FPS Counter
+    frame_count = frame_count + 1
+    fps_timer = fps_timer + dt
+    if fps_timer >= 1.0 then
+        local fps = frame_count / fps_timer
+        sdl.SDL_SetWindowTitle(_G._SDL_WINDOW, string.format("Example 52: Neurosymbolic CSG | FPS: %.1f", fps))
+        frame_count = 0
+        fps_timer = 0
+    end
+
+    -- Orbit Controls
 	local dx, dy = input.mouse_delta()
-	if input.mouse_down(1) then
+	if input.mouse_down(1) then -- Left Click Drag
 	    cam_rot[1] = cam_rot[1] - dx * 0.01
 	    cam_rot[2] = math.max(-1.5, math.min(1.5, cam_rot[2] + dy * 0.01))
 	end
     local wheel = _G._MOUSE_WHEEL or 0
-    if wheel ~= 0 then cam_dist = math.max(1.0, cam_dist - wheel * cam_dist * 0.1); _G._MOUSE_WHEEL = 0 end
+    if wheel ~= 0 then 
+        cam_dist = math.max(1.0, cam_dist - wheel * cam_dist * 0.1)
+        _G._MOUSE_WHEEL = 0 
+    end
 
     vk.vkWaitForFences(device, 1, ffi.new("VkFence[1]", {frame_fences[current_frame]}), vk.VK_TRUE, 0xFFFFFFFFFFFFFFFFULL)
     local img_idx = sw:acquire_next_image(image_available_sems[current_frame])

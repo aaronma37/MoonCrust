@@ -107,8 +107,7 @@ function M.apply_pose(tree, time, state)
 	tree.shoulder_L.rot[3] = 0.35
 	tree.shoulder_R.rot[3] = -0.35
 	if state == "rest" then
-		-- T-Pose: shoulder_L/R already have 0.35/-0.35 for a relaxed A-pose/T-pose
-		-- No additional rotations needed.
+		-- T-Pose
 	elseif state == "walk" then
 		local t = time * 5.0
 		tree.root.rot[2] = math.sin(t) * 0.12
