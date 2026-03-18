@@ -21,14 +21,14 @@ local M = {
     orbit_pitch = 0.3,
     target_pos = {0, 8, 0},
     time = 0,
-    anim_state = "rest", -- "rest" or "walking"
+    anim_state = "rest",
     last_frame_time = 0
 }
 
 local device, queue, sw, pipe_layout, graphics_pipe
 local compute_pipe, compute_layout
 local depth_img, vbuf, ibuf, idx_count
-local bone_buf, param_buf, matrix_buf
+local bone_buf, param_buf, matrix_buf, ds_pool
 local cbs, image_available_sem, frame_fence
 
 local bones, segments
@@ -50,17 +50,13 @@ function M.init()
     local depth_format = image.find_depth_format(physical_device)
     depth_img = mc.gpu.image(sw.extent.width, sw.extent.height, depth_format, "depth")
 
-    -- 1. Skeleton & Mesh Data
     bones = skeleton.get_bone_list()
     segments = mesher.calculate_bone_segments(bones)
     local num_bones = #segments
     idx_count = #mesher.generate_indices(#segments, RINGS_PER_BONE, VERTS_PER_RING)
 
-    -- Load Animations
     animations.walking = dae.load_animations("examples/53_sleeve_generation/Walking.dae")
-    if animations.walking then print("Loaded Walking animation") end
 
-    -- 2. GPU Buffers
     local v_size = #segments * RINGS_PER_BONE * VERTS_PER_RING * ffi.sizeof("MeshVertex")
     local i_size = idx_count * 4
     vbuf = mc.gpu.buffer(v_size, "vertex_storage", nil, true)
@@ -84,7 +80,6 @@ function M.init()
 
     matrix_buf = mc.gpu.buffer(128 * 64, "storage", nil, true)
 
-    -- 3. Inverse Bind Matrices
     local inv_bind_mats = {}
     for _, b in ipairs(bones) do
         local cm_mat = mc.mat4_identity()
@@ -98,9 +93,8 @@ function M.init()
     end
     M.inv_bind_mats = inv_bind_mats
 
-    -- 4. Shaders & Pipelines
     local get_dir = function() return "examples/53_sleeve_generation/" end
-    local ds_pool = descriptors.create_pool(device, {{ type = vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, count = 10 }})
+    ds_pool = descriptors.create_pool(device, {{ type = vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, count = 10 }})
 
     local c_bindings = {
         { binding = 0, type = vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, stages = vk.VK_SHADER_STAGE_COMPUTE_BIT },
@@ -136,25 +130,15 @@ function M.init()
         vertex_attribute_count = 5, depth_test = true, depth_write = true, depth_format = depth_format, cull_mode = vk.VK_CULL_MODE_NONE
     })
 
-    -- 5. Mesh Generation
-    local cmd_pool = command.create_pool(device, family)
-    local cb = command.allocate_buffers(device, cmd_pool, 1)[1]
-    vk.vkBeginCommandBuffer(cb, ffi.new("VkCommandBufferBeginInfo", { sType = vk.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO }))
-    vk.vkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_COMPUTE, compute_pipe)
-    local c_ds = descriptors.allocate_sets(device, ds_pool, {c_ds_layout})[1]
-    descriptors.update_buffer_set(device, c_ds, 0, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, vbuf.handle, 0, v_size)
-    descriptors.update_buffer_set(device, c_ds, 1, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, bone_buf.handle, 0, #segments * ffi.sizeof("MeshBone"))
-    descriptors.update_buffer_set(device, c_ds, 2, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, param_buf.handle, 0, #segments * RINGS_PER_BONE * ffi.sizeof("MeshRingParams"))
-    vk.vkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_COMPUTE, compute_layout, 0, 1, ffi.new("VkDescriptorSet[1]", {c_ds}), 0, nil)
-    vk.vkCmdPushConstants(cb, compute_layout, vk.VK_SHADER_STAGE_COMPUTE_BIT, 0, 12, ffi.new("uint32_t[3]", { #segments, RINGS_PER_BONE, VERTS_PER_RING }))
-    vk.vkCmdDispatch(cb, 1, 1, #segments)
-    vk.vkEndCommandBuffer(cb)
-    vk.vkQueueSubmit(queue, 1, ffi.new("VkSubmitInfo", { sType = vk.VK_STRUCTURE_TYPE_SUBMIT_INFO, commandBufferCount = 1, pCommandBuffers = ffi.new("VkCommandBuffer[1]", {cb}) }), nil)
-    vk.vkQueueWaitIdle(queue)
-    
+    M.c_ds = descriptors.allocate_sets(device, ds_pool, {c_ds_layout})[1]
     M.g_ds = descriptors.allocate_sets(device, ds_pool, {g_ds_layout})[1]
+    
+    descriptors.update_buffer_set(device, M.c_ds, 0, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, vbuf.handle, 0, v_size)
+    descriptors.update_buffer_set(device, M.c_ds, 1, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, bone_buf.handle, 0, #segments * ffi.sizeof("MeshBone"))
+    descriptors.update_buffer_set(device, M.c_ds, 2, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, param_buf.handle, 0, #segments * RINGS_PER_BONE * ffi.sizeof("MeshRingParams"))
     descriptors.update_buffer_set(device, M.g_ds, 3, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, matrix_buf.handle, 0, 128 * 64)
 
+    local cmd_pool = command.create_pool(device, family)
     cbs = command.allocate_buffers(device, cmd_pool, sw.image_count)
     frame_fence = ffi.new("VkFence[1]"); vk.vkCreateFence(device, ffi.new("VkFenceCreateInfo", {sType=vk.VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, flags=vk.VK_FENCE_CREATE_SIGNALED_BIT}), nil, frame_fence); frame_fence = frame_fence[0]
     image_available_sem = ffi.new("VkSemaphore[1]"); vk.vkCreateSemaphore(device, ffi.new("VkSemaphoreCreateInfo", {sType=vk.VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO}), nil, image_available_sem); image_available_sem = image_available_sem[0]
@@ -173,7 +157,6 @@ local function get_animated_matrix(bone_name, anim, time)
     local chan = anim.channels[bone_name]
     local duration = anim.duration
     local t = time % duration
-    
     local idx1, idx2 = 1, 1
     for i=1, #chan.times do
         if chan.times[i] > t then
@@ -182,11 +165,9 @@ local function get_animated_matrix(bone_name, anim, time)
             break
         end
     end
-    
     local t1, t2 = chan.times[idx1], chan.times[idx2]
     local factor = 0
     if t2 > t1 then factor = (t - t1) / (t2 - t1) end
-    
     return lerp_mat(chan.matrices[idx1], chan.matrices[idx2], factor)
 end
 
@@ -195,9 +176,16 @@ function M.update()
     local dt = (current_ticks - M.last_frame_time) / 1000.0
     M.last_frame_time = current_ticks
     M.time = M.time + dt
+    
+    M.fps_timer = (M.fps_timer or 0) + dt
+    M.frame_count = (M.frame_count or 0) + 1
+    if M.fps_timer > 0.5 then
+        sdl.SDL_SetWindowTitle(_G._SDL_WINDOW, string.format("MoonCrust | FPS: %.1f", M.frame_count / M.fps_timer))
+        M.fps_timer, M.frame_count = 0, 0
+    end
 
-    if input.key_pressed(input.SCANCODE_1) then M.anim_state = "rest"; print("State: Rest") end
-    if input.key_pressed(input.SCANCODE_2) then M.anim_state = "walking"; print("State: Walking") end
+    if input.key_pressed(input.SCANCODE_1) then M.anim_state = "rest" end
+    if input.key_pressed(input.SCANCODE_2) then M.anim_state = "walking" end
 
     vk.vkWaitForFences(device, 1, ffi.new("VkFence[1]", {frame_fence}), vk.VK_TRUE, 0xFFFFFFFFFFFFFFFFULL)
     vk.vkResetFences(device, 1, ffi.new("VkFence[1]", {frame_fence}))
@@ -216,38 +204,23 @@ function M.update()
     local cam_z = M.target_pos[3] + math.cos(M.orbit_yaw) * math.cos(M.orbit_pitch) * M.orbit_radius
     local view = mc.mat4_look_at({cam_x, cam_y, cam_z}, M.target_pos, {0, 1, 0})
     local proj = mc.mat4_perspective(mc.rad(60), sw.extent.width/sw.extent.height, 0.1, 1000.0)
-    proj.m[5] = -proj.m[5]
     local vp = mc.mat4_multiply(proj, view)
 
-    -- Calculate Animated Skinning Matrices
     local mats = ffi.new("float[128*16]")
     local function calc_mats(bone, parent_global)
         local local_mat_vals = nil
         if M.anim_state == "walking" and animations.walking then
             local_mat_vals = get_animated_matrix(bone.name, animations.walking, M.time)
         end
-        
         local local_m = mc.mat4_identity()
         local vals = local_mat_vals or bone.local_matrix
-        
-        if vals then
-            for row=0,3 do
-                for col=0,3 do local_m.m[col*4 + row] = vals[row*4 + col + 1] end
-            end
-        end
-
-        -- Scale translation (Mixamo is in cm, we want dm/meters)
+        if vals then for row=0,3 do for col=0,3 do local_m.m[col*4 + row] = vals[row*4 + col + 1] end end end
         local_m.m[12], local_m.m[13], local_m.m[14] = local_m.m[12]*0.1, local_m.m[13]*0.1, local_m.m[14]*0.1
-
         local global_m = mc.mat4_multiply(parent_global, local_m)
         local skin_m = mc.mat4_multiply(global_m, M.inv_bind_mats[bone.id])
-        for j=0,15 do mats[(bone.id-1)*16 + j] = skin_m.m[j] end
-
-        for _, b in ipairs(bones) do
-            if b.parent_id == bone.id then calc_mats(b, global_m) end
-        end
+        for j=0,15 do local i = (bone.id-1)*16 + j; if i < 128*16 then mats[i] = skin_m.m[j] end end
+        for _, b in ipairs(bones) do if b.parent_id == bone.id then calc_mats(b, global_m) end end
     end
-
     local root = nil
     for _, b in ipairs(bones) do if b.parent_id == 0 then root = b; break end end
     if root then calc_mats(root, mc.mat4_identity()) end
@@ -255,7 +228,15 @@ function M.update()
 
     local cb = cbs[idx+1]
     vk.vkResetCommandBuffer(cb, 0); vk.vkBeginCommandBuffer(cb, ffi.new("VkCommandBufferBeginInfo", { sType = vk.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO }))
-    
+
+    vk.vkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_COMPUTE, compute_pipe)
+    vk.vkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_COMPUTE, compute_layout, 0, 1, ffi.new("VkDescriptorSet[1]", {M.c_ds}), 0, nil)
+    vk.vkCmdPushConstants(cb, compute_layout, vk.VK_SHADER_STAGE_COMPUTE_BIT, 0, 12, ffi.new("uint32_t[3]", { #segments, RINGS_PER_BONE, VERTS_PER_RING }))
+    vk.vkCmdDispatch(cb, 1, 1, #segments)
+
+    local v_barrier = ffi.new("VkBufferMemoryBarrier[1]", {{ sType = vk.VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER, srcAccessMask = vk.VK_ACCESS_SHADER_WRITE_BIT, dstAccessMask = vk.VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT, buffer = vbuf.handle, offset = 0, size = vbuf.size }})
+    vk.vkCmdPipelineBarrier(cb, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, vk.VK_PIPELINE_STAGE_VERTEX_INPUT_BIT, 0, 0, nil, 1, v_barrier, 0, nil)
+
     local barriers = ffi.new("VkImageMemoryBarrier[2]")
     barriers[0].sType, barriers[0].oldLayout, barriers[0].newLayout = vk.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, vk.VK_IMAGE_LAYOUT_UNDEFINED, vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
     barriers[0].image, barriers[0].subresourceRange = ffi.cast("VkImage", sw.images[idx]), { aspectMask = vk.VK_IMAGE_ASPECT_COLOR_BIT, levelCount = 1, layerCount = 1 }
