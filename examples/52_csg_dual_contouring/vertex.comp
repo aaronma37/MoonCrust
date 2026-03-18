@@ -143,6 +143,63 @@ float evaluate_sdf(vec3 pos) {
     return min_dist;
 }
 
+struct SkinData {
+    uvec4 bone_ids;
+    vec4 bone_weights;
+};
+
+SkinData calculate_skinning(vec3 pos) {
+    float bone_dists[64];
+    for (int i=0; i<64; i++) bone_dists[i] = 1000.0;
+
+    for (uint i = 0; i < pc.bone_count; i++) {
+        Bone b = get_bone(i);
+        vec3 local_p = (b.inv_world_matrix * vec4(pos, 1.0)).xyz;
+        if (length(local_p) > b.bounding_radius + 0.5) continue;
+
+        for (uint j = 0; j < b.sdf_count; j++) {
+            SDFDescriptor sdf = get_sdf(b.sdf_offset + j);
+            vec3 p = local_p - sdf.local_offset.xyz;
+            float d = 1000.0;
+            if (sdf.primitive_type == 0) d = sdSphere(p, sdf.params.x);
+            else if (sdf.primitive_type == 1) d = sdCapsule(p, vec3(0, sdf.params.y, 0), vec3(0, sdf.params.z, 0), sdf.params.x);
+            else if (sdf.primitive_type == 2) d = sdBox(p, sdf.params.xyz);
+            else if (sdf.primitive_type == 3) d = sdEllipsoid(p, sdf.params.xyz);
+            bone_dists[i] = min(bone_dists[i], d);
+        }
+    }
+
+    uint best_bones[4] = {0, 0, 0, 0};
+    float best_bone_dists[4] = {1000.0, 1000.0, 1000.0, 1000.0};
+    for (uint i = 0; i < pc.bone_count; i++) {
+        float d_abs = abs(bone_dists[i]);
+        for (int k = 0; k < 4; k++) {
+            if (d_abs < best_bone_dists[k]) {
+                for (int m = 3; m > k; m--) {
+                    best_bone_dists[m] = best_bone_dists[m-1];
+                    best_bones[m] = best_bones[m-1];
+                }
+                best_bone_dists[k] = d_abs;
+                best_bones[k] = i;
+                break;
+            }
+        }
+    }
+
+    vec4 weights = vec4(0.0);
+    float sum = 0.0;
+    for (int k = 0; k < 4; k++) {
+        float w = exp(-20.0 * best_bone_dists[k]);
+        weights[k] = w; sum += w;
+    }
+    weights /= (sum + 1e-6);
+
+    SkinData s;
+    s.bone_ids = uvec4(best_bones[0], best_bones[1], best_bones[2], best_bones[3]);
+    s.bone_weights = weights;
+    return s;
+}
+
 uint get_grid_idx(uvec3 c) { 
     c = clamp(c, uvec3(0), pc.grid_size - 1);
     return c.x + c.y * pc.grid_size.x + c.z * pc.grid_size.x * pc.grid_size.y; 
@@ -232,13 +289,15 @@ void main() {
     ));
 
     GridNode best = get_grid(get_grid_idx(g_id + uvec3(best_corner&1, (best_corner>>1)&1, (best_corner>>2)&1)));
+    SkinData skin = calculate_skinning(pos);
+    
     Vertex v;
     v.position = vec4(pos, 1.0); v.normal = vec4(n, 1.0);
     float r = float((best.color_packed >> 16) & 0xFF) / 255.0;
     float g = float((best.color_packed >> 8) & 0xFF) / 255.0;
     float b = float(best.color_packed & 0xFF) / 255.0;
     v.color = vec4(r, g, b, uintBitsToFloat(best.id));
-    v.bone_ids = best.bone_ids; v.bone_weights = best.bone_weights;
+    v.bone_ids = skin.bone_ids; v.bone_weights = skin.bone_weights;
 
     if (v_idx < 256 * 1024) set_vertex(v_idx, v);
 }
