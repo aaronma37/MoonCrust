@@ -645,7 +645,7 @@ function M.generate_dynamic_assets(loadout, bone_map)
 	return particles, constraints
 end
 
-function M.update_matrices(tree, order, bone_data, bone_map, ground_y)
+function M.update_matrices(tree, order, bone_data, bone_map, offset_y)
 	local globals, min_y = {}, 1e10
 	for i, name in ipairs(order) do
 		local node = tree[name]
@@ -663,7 +663,9 @@ function M.update_matrices(tree, order, bone_data, bone_map, ground_y)
 			end
 		end
 	end
-	local shift_y = (ground_y or -0.5) - min_y
+
+	local shift_y = offset_y or (0.0 - min_y)
+	
 	for i, name in ipairs(order) do
 		local global_m = globals[name]
 		global_m.m[13] = global_m.m[13] + shift_y
@@ -675,6 +677,11 @@ function M.update_matrices(tree, order, bone_data, bone_map, ground_y)
 			end
 		end
 	end
+    
+    local h_mat = globals["head"]
+    local head_pos = { h_mat.m[12], h_mat.m[13], h_mat.m[14] }
+    
+	return shift_y, head_pos
 end
 
 return M

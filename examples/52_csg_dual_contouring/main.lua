@@ -46,10 +46,11 @@ local debug_bone = 0
 
 local char_pos = {0, 0, 0}
 local char_yaw = 0
+local static_shift_y = 0
 
-local cam_rot = {0, 0}
-local cam_dist = 5.0
-local cam_target = {0, 0.4, 0}
+local cam_rot = {math.pi, 0.4}
+local cam_dist = 4.0
+local cam_target = {0, 0.9, 0} -- Target height at chest/head level
 
 local skeleton_tree, skeleton_order, bone_map = {}, {}, {}
 
@@ -301,8 +302,8 @@ local function bake_mesh()
     vk.vkBeginCommandBuffer(cb, begin_info)
 
     local pc_field = ffi.new("FieldPC", { 
-        bounds_min = {-1.0, -0.6, -1.0}, bone_count = #skeleton_order,
-        bounds_max = {1.0, 1.4, 1.0}, sdf_count = sdf_count,
+        bounds_min = {-1.0, -0.2, -1.0}, bone_count = #skeleton_order,
+        bounds_max = {1.0, 2.2, 1.0}, sdf_count = sdf_count,
         grid_size = {GRID_SIZE[1], GRID_SIZE[2], GRID_SIZE[3]},
         bones_idx = 0, sdfs_idx = 1, grid_idx = 2, vertices_idx = 3, indices_idx = 4, counter_idx = 5, cell_idx = 6, vertex_counter_idx = 7
     })
@@ -395,16 +396,18 @@ function M.update()
 
     -- Character Movement
     local move_speed = 2.0 * dt
-    local forward = {math.sin(cam_rot[1]), 0, math.cos(cam_rot[1])}
-    local right = {math.cos(cam_rot[1]), 0, -math.sin(cam_rot[1])}
+    -- Standard Camera-Relative Movement
+    local s, c = math.sin(cam_rot[1]), math.cos(cam_rot[1])
+    local forward = {-s, 0, -c}
+    local right = {c, 0, -s}
     local move_dir = {0, 0, 0}
     local moved = false
     if input.key_down(input.SCANCODE_W) then 
-        move_dir[1] = move_dir[1] - forward[1]; move_dir[3] = move_dir[3] - forward[3]
+        move_dir[1] = move_dir[1] + forward[1]; move_dir[3] = move_dir[3] + forward[3]
         moved = true
     end
     if input.key_down(input.SCANCODE_S) then 
-        move_dir[1] = move_dir[1] + forward[1]; move_dir[3] = move_dir[3] + forward[3]
+        move_dir[1] = move_dir[1] - forward[1]; move_dir[3] = move_dir[3] - forward[3]
         moved = true
     end
     if input.key_down(input.SCANCODE_A) then 
@@ -431,7 +434,6 @@ function M.update()
     elseif animations[current_anim_idx] == "walk" or animations[current_anim_idx] == "run" then
         current_anim_idx = 3 -- idle
     end
-    cam_target[1], cam_target[3] = char_pos[1], char_pos[3]
 
     -- Orbit Controls
 	local dx, dy = input.mouse_delta()
@@ -453,7 +455,8 @@ function M.update()
     -- INITIAL BAKE
     if not mesh_baked or input.key_pressed(input.SCANCODE_SPACE) then
         generator.apply_pose(skeleton_tree, 0, "rest")
-        generator.update_matrices(skeleton_tree, skeleton_order, bone_data, bone_map)
+        -- Calculate the ground offset (static_shift_y) once at rest pose
+        static_shift_y = generator.update_matrices(skeleton_tree, skeleton_order, bone_data, bone_map, nil)
         for i=0, #skeleton_order-1 do
             for j=0,15 do
                 bone_data[i].bind_matrix[j] = bone_data[i].world_matrix[j]
@@ -472,10 +475,14 @@ function M.update()
     skeleton_tree.root.offset[3] = skeleton_tree.root.base_offset[3] + char_pos[3]
     skeleton_tree.root.rot[2] = char_yaw
 
-    generator.update_matrices(skeleton_tree, skeleton_order, bone_data, bone_map)
+    -- Apply the static_shift_y offset to all bones
+    local _, head_pos = generator.update_matrices(skeleton_tree, skeleton_order, bone_data, bone_map, static_shift_y)
 
     local cb = M.cbs[current_frame + 1]
     vk.vkResetCommandBuffer(cb, 0); vk.vkBeginCommandBuffer(cb, ffi.new("VkCommandBufferBeginInfo", { sType = vk.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO }))
+
+    -- Camera Target follows the head position
+    cam_target[1], cam_target[2], cam_target[3] = head_pos[1], head_pos[2], head_pos[3]
 
     local cx = cam_target[1] + cam_dist * math.sin(cam_rot[1]) * math.cos(cam_rot[2])
     local cy = cam_target[2] + cam_dist * math.sin(cam_rot[2])
