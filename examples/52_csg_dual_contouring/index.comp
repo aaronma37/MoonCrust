@@ -10,6 +10,7 @@ layout(push_constant) uniform PC {
     uint sdf_count;
     uvec3 grid_size;
     uint padding;
+    vec3 grid_origin;
     uint bones_idx;
     uint sdfs_idx;
     uint grid_idx;

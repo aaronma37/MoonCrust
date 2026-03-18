@@ -79,16 +79,19 @@ ffi.cdef[[
         float bounds_min[3]; uint32_t bone_count;
         float bounds_max[3]; uint32_t sdf_count;
         uint32_t grid_size[3]; uint32_t padding;
-        // Bindless Indices
-        uint32_t bones_idx;
-        uint32_t sdfs_idx;
-        uint32_t grid_idx;
-        uint32_t vertices_idx;
-        uint32_t indices_idx;
-        uint32_t counter_idx;
-        uint32_t cell_idx;
-        uint32_t vertex_counter_idx;
+        float grid_origin[3]; uint32_t bones_idx;
+        uint32_t sdfs_idx; uint32_t grid_idx; uint32_t vertices_idx; uint32_t indices_idx; 
+        uint32_t counter_idx; uint32_t cell_idx; uint32_t vertex_counter_idx;
     } FieldPC;
+
+    typedef struct VertexPC {
+        float bounds_min[3]; uint32_t bone_count;
+        float bounds_max[3]; uint32_t sdf_count;
+        uint32_t grid_size[3]; uint32_t padding;
+        float grid_origin[3]; uint32_t bones_idx;
+        uint32_t sdfs_idx; uint32_t grid_idx; uint32_t vertices_idx; uint32_t indices_idx; 
+        uint32_t counter_idx; uint32_t cell_idx; uint32_t vertex_counter_idx;
+    } VertexPC;
 
     typedef struct RenderPC {
         float projection[16];
@@ -112,7 +115,7 @@ ffi.cdef[[
     } GPUVertex;
 ]]
 
-local primitive_map = { sphere = 0, capsule = 1, box = 2, ellipsoid = 3 }
+local primitive_map = { sphere = 0, capsule = 1, box = 2, ellipsoid = 3, tapered_ellipsoid = 4, subtract_box = 5 }
 
 function M.init()
     print("Example 52: Neurosymbolic CSG & GPU Dual Contouring")
@@ -129,6 +132,7 @@ function M.init()
 
     -- 1. Create Buffers
     bone_buffer = mc.gpu.buffer(ffi.sizeof("Bone") * MAX_BONES, "storage", nil, true)
+    ffi.fill(bone_buffer.allocation.ptr, bone_buffer.size, 0) -- Zero out matrices
     bone_data = ffi.cast("Bone*", bone_buffer.allocation.ptr)
     
     sdf_buffer = mc.gpu.buffer(ffi.sizeof("SDFDescriptor") * MAX_SDFS, "storage", nil, true)
@@ -139,7 +143,9 @@ function M.init()
     cell_buffer = mc.gpu.buffer(total_nodes * 4, "storage", nil, false) -- Vertex index per cell
     vertex_buffer = mc.gpu.buffer(ffi.sizeof("GPUVertex") * MAX_VERTICES, "storage_vertex", nil, false)
     index_buffer = mc.gpu.buffer(4 * MAX_INDICES, "storage_index", nil, false)
-    counter_buffer = mc.gpu.buffer(64, "storage_transfer_indirect", nil, true) -- 20 bytes cmd + extra room
+    counter_buffer = mc.gpu.buffer(64, "storage_transfer", nil, true) 
+    indirect_buffer = mc.gpu.buffer(ffi.sizeof("VkDrawIndexedIndirectCommand") * 4, "indirect|storage", nil, true)
+    ffi.fill(indirect_buffer.allocation.ptr, indirect_buffer.size, 0)
 
     depth_img = mc.gpu.image(sw.extent.width, sw.extent.height, vk.VK_FORMAT_D32_SFLOAT, "depth")
 
@@ -294,22 +300,26 @@ function M.init()
     M.bake_cb = command.allocate_buffers(device, command.create_pool(device, graphics_family), 1)[1]
 end
 
-local function bake_mesh()
-    print("Baking Mesh (One-time)...")
+local function bake_mesh(part)
+    print(string.format("Baking Mesh Part [%s]...", part.name))
     local cb = M.bake_cb
     vk.vkResetCommandBuffer(cb, 0)
     local begin_info = ffi.new("VkCommandBufferBeginInfo", { sType = vk.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, flags = vk.VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT })
     vk.vkBeginCommandBuffer(cb, begin_info)
 
     local pc_field = ffi.new("FieldPC", { 
-        bounds_min = {-1.0, -0.2, -1.0}, bone_count = #skeleton_order,
-        bounds_max = {1.0, 2.2, 1.0}, sdf_count = sdf_count,
+        bounds_min = {part.min[1], part.min[2], part.min[3]}, bone_count = #skeleton_order,
+        bounds_max = {part.max[1], part.max[2], part.max[3]}, sdf_count = sdf_count,
         grid_size = {GRID_SIZE[1], GRID_SIZE[2], GRID_SIZE[3]},
-        bones_idx = 0, sdfs_idx = 1, grid_idx = 2, vertices_idx = 3, indices_idx = 4, counter_idx = 5, cell_idx = 6, vertex_counter_idx = 7
+        grid_origin = {part.origin[1], part.origin[2], part.origin[3]},
+        bones_idx = 0, sdfs_idx = 1, grid_idx = 2, vertices_idx = 3, indices_idx = 4, 
+        counter_idx = 5, cell_idx = 6, vertex_counter_idx = 7
     })
 
-    -- Reset Counter
-    vk.vkCmdFillBuffer(cb, counter_buffer.handle, 0, counter_buffer.size, 0)
+    -- Reset Counter only if reset_counters is true
+    if part.reset_counters then
+        vk.vkCmdFillBuffer(cb, counter_buffer.handle, 0, counter_buffer.size, 0)
+    end
     
     local barrier = ffi.new("VkMemoryBarrier[1]", {{
         sType = vk.VK_STRUCTURE_TYPE_MEMORY_BARRIER,
@@ -318,7 +328,7 @@ local function bake_mesh()
     }})
     vk.vkCmdPipelineBarrier(cb, bit.bor(vk.VK_PIPELINE_STAGE_TRANSFER_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT), vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, barrier, 0, nil, 0, nil)
 
-    -- Pass 0: Reset (Initialization)
+    -- Reset Pass
     vk.vkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_COMPUTE, reset_pipe)
     vk.vkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_COMPUTE, field_layout, 0, 1, ffi.new("VkDescriptorSet[1]", {bindless_set}), 0, nil)
     vk.vkCmdPushConstants(cb, field_layout, vk.VK_SHADER_STAGE_COMPUTE_BIT, 0, ffi.sizeof("FieldPC"), pc_field)
@@ -330,7 +340,6 @@ local function bake_mesh()
 
     -- Field
     vk.vkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_COMPUTE, field_pipe)
-    vk.vkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_COMPUTE, field_layout, 0, 1, ffi.new("VkDescriptorSet[1]", {bindless_set}), 0, nil)
     vk.vkCmdPushConstants(cb, field_layout, vk.VK_SHADER_STAGE_COMPUTE_BIT, 0, ffi.sizeof("FieldPC"), pc_field)
     vk.vkCmdDispatch(cb, GRID_SIZE[1]/8, GRID_SIZE[2]/8, GRID_SIZE[3]/8)
 
@@ -340,7 +349,6 @@ local function bake_mesh()
 
     -- VertexGen
     vk.vkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_COMPUTE, vertex_pipe)
-    vk.vkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_COMPUTE, field_layout, 0, 1, ffi.new("VkDescriptorSet[1]", {bindless_set}), 0, nil)
     vk.vkCmdPushConstants(cb, field_layout, vk.VK_SHADER_STAGE_COMPUTE_BIT, 0, ffi.sizeof("FieldPC"), pc_field)
     vk.vkCmdDispatch(cb, GRID_SIZE[1]/8, GRID_SIZE[2]/8, GRID_SIZE[3]/8)
 
@@ -350,7 +358,6 @@ local function bake_mesh()
 
     -- IndexGen
     vk.vkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_COMPUTE, index_pipe)
-    vk.vkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_COMPUTE, field_layout, 0, 1, ffi.new("VkDescriptorSet[1]", {bindless_set}), 0, nil)
     vk.vkCmdPushConstants(cb, field_layout, vk.VK_SHADER_STAGE_COMPUTE_BIT, 0, ffi.sizeof("FieldPC"), pc_field)
     vk.vkCmdDispatch(cb, GRID_SIZE[1]/8, GRID_SIZE[2]/8, GRID_SIZE[3]/8)
 
@@ -358,7 +365,18 @@ local function bake_mesh()
     local submit_info = ffi.new("VkSubmitInfo", { sType = vk.VK_STRUCTURE_TYPE_SUBMIT_INFO, commandBufferCount = 1, pCommandBuffers = ffi.new("VkCommandBuffer[1]", {cb}) })
     vk.vkQueueSubmit(queue, 1, submit_info, nil)
     vk.vkQueueWaitIdle(queue)
-    print("Bake Complete.")
+
+    -- Read back counts to fill indirect command
+    local ptr = ffi.cast("uint32_t*", counter_buffer.allocation.ptr)
+    local cmd_ptr = ffi.cast("VkDrawIndexedIndirectCommand*", indirect_buffer.allocation.ptr)
+    cmd_ptr[part.cmd_idx].indexCount = ptr[0] - part.prev_index_count
+    cmd_ptr[part.cmd_idx].instanceCount = 1
+    cmd_ptr[part.cmd_idx].firstIndex = part.prev_index_count
+    cmd_ptr[part.cmd_idx].vertexOffset = 0 
+    cmd_ptr[part.cmd_idx].firstInstance = 0
+    
+    print(string.format("Part [%s] Bake Complete. Indices: %d", part.name, cmd_ptr[part.cmd_idx].indexCount))
+    return ptr[0]
 end
 
 function M.update()
@@ -455,15 +473,54 @@ function M.update()
     -- INITIAL BAKE
     if not mesh_baked or input.key_pressed(input.SCANCODE_SPACE) then
         generator.apply_pose(skeleton_tree, 0, "rest")
-        -- Calculate the ground offset (static_shift_y) once at rest pose
-        static_shift_y = generator.update_matrices(skeleton_tree, skeleton_order, bone_data, bone_map, nil)
+        
+        -- 1. BAKE BODY (Skinned)
+        local h_idx = bone_map["head"]
+        local n_idx = bone_map["neck"]
+        local original_sdf_counts = {}
+        for i=0, #skeleton_order-1 do original_sdf_counts[i] = bone_data[i].sdf_count end
+        
+        -- Disable head/neck for body bake to prevent melting
+        bone_data[h_idx].sdf_count = 0
+        bone_data[n_idx].sdf_count = 0
+        
+        static_shift_y = generator.update_matrices(skeleton_tree, skeleton_order, bone_data, bone_map, 0.0)
+        
+        local body_part = { 
+            name = "Body", cmd_idx = 0, reset_counters = true, prev_index_count = 0,
+            min = {-1.0, -0.2, -1.0}, max = {1.0, 1.6, 1.0}, origin = {0, 0, 0} 
+        }
+        local total_indices = bake_mesh(body_part)
+        
+        -- 2. BAKE HEAD (Isolated)
+        -- Disable all except head/neck
+        for i=0, #skeleton_order-1 do
+            if i == h_idx or i == n_idx then
+                bone_data[i].sdf_count = original_sdf_counts[i]
+            else
+                bone_data[i].sdf_count = 0
+            end
+        end
+        
+        -- Center grid on the head position
+        local hp = { bone_data[h_idx].world_matrix[12], bone_data[h_idx].world_matrix[13], bone_data[h_idx].world_matrix[14] }
+        
+        local head_part = {
+            name = "Head", cmd_idx = 1, reset_counters = false, prev_index_count = total_indices,
+            min = {-0.3, -0.3, -0.3}, max = {0.3, 0.3, 0.3}, origin = hp
+        }
+        bake_mesh(head_part)
+        
+        -- Restore all counts
+        for i=0, #skeleton_order-1 do bone_data[i].sdf_count = original_sdf_counts[i] end
+        
+        -- Initialize Bind Matrices
         for i=0, #skeleton_order-1 do
             for j=0,15 do
                 bone_data[i].bind_matrix[j] = bone_data[i].world_matrix[j]
                 bone_data[i].inv_bind_matrix[j] = bone_data[i].inv_world_matrix[j]
             end
         end
-        bake_mesh()
         mesh_baked = true
     end
 
@@ -558,17 +615,19 @@ function M.update()
     vk.vkCmdBindVertexBuffers(cb, 0, 1, ffi.new("VkBuffer[1]", {vertex_buffer.handle}), ffi.new("VkDeviceSize[1]", {0}))
     vk.vkCmdBindIndexBuffer(cb, index_buffer.handle, 0, vk.VK_INDEX_TYPE_UINT32)
 
-    -- PASS 1: Character
+    -- PASS 1: Character (Body + Head)
     pc_render.outline_mode = 0
     vk.vkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, graphics_pipe)
     vk.vkCmdPushConstants(cb, graphics_layout, bit.bor(vk.VK_SHADER_STAGE_VERTEX_BIT, vk.VK_SHADER_STAGE_FRAGMENT_BIT), 0, ffi.sizeof("RenderPC"), pc_render)
-    vk.vkCmdDrawIndexedIndirect(cb, counter_buffer.handle, 0, 1, 20)
+    vk.vkCmdDrawIndexedIndirect(cb, indirect_buffer.handle, 0, 1, 20) -- Body
+    vk.vkCmdDrawIndexedIndirect(cb, indirect_buffer.handle, 20, 1, 20) -- Head
 
-    -- PASS 2: Outline
+    -- PASS 2: Outline (Body + Head)
     pc_render.outline_mode = 1
     vk.vkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, outline_pipe)
     vk.vkCmdPushConstants(cb, graphics_layout, bit.bor(vk.VK_SHADER_STAGE_VERTEX_BIT, vk.VK_SHADER_STAGE_FRAGMENT_BIT), 0, ffi.sizeof("RenderPC"), pc_render)
-    vk.vkCmdDrawIndexedIndirect(cb, counter_buffer.handle, 0, 1, 20)
+    vk.vkCmdDrawIndexedIndirect(cb, indirect_buffer.handle, 0, 1, 20) -- Body
+    vk.vkCmdDrawIndexedIndirect(cb, indirect_buffer.handle, 20, 1, 20) -- Head
 
     -- PASS 3: Floor
     vk.vkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, floor_pipe)

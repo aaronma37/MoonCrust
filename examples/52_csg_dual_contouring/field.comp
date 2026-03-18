@@ -16,6 +16,15 @@ float sdEllipsoid(vec3 p, vec3 r) {
     float k1 = length(p / (r * r));
     return k0 * (k0 - 1.0) / k1;
 }
+
+// Tapering Warp: Narrows X/Z as Y goes down (negative Y)
+float sdTaperedEllipsoid(vec3 p, vec3 r, float k) {
+    float s = max(0.01, 1.0 + p.y * k);
+    vec3 q = p;
+    q.xz /= s;
+    return sdEllipsoid(q, r) * s;
+}
+
 float opSmoothUnion(float d1, float d2, float k) {
     float h = clamp(0.5 + 0.5 * (d2 - d1) / k, 0.0, 1.0);
     return mix(d2, d1, h) - k * h * (1.0 - h);
@@ -59,6 +68,7 @@ layout(push_constant) uniform PC {
     uint sdf_count;
     uvec3 grid_size;
     uint padding;
+    vec3 grid_origin;
     uint bones_idx;
     uint sdfs_idx;
     uint grid_idx;
@@ -125,7 +135,8 @@ void main() {
     uvec3 g_id = gl_GlobalInvocationID;
     if (g_id.x >= pc.grid_size.x || g_id.y >= pc.grid_size.y || g_id.z >= pc.grid_size.z) return;
 
-    vec3 pos = pc.bounds_min + (pc.bounds_max - pc.bounds_min) * vec3(g_id) / vec3(max(uvec3(1), pc.grid_size - 1));
+    vec3 local_grid_pos = pc.bounds_min + (pc.bounds_max - pc.bounds_min) * vec3(g_id) / vec3(max(uvec3(1), pc.grid_size - 1));
+    vec3 pos = local_grid_pos + pc.grid_origin;
 
     float min_dist = 1000.0;
     uint closest_id = 0;
@@ -136,8 +147,9 @@ void main() {
 
     for (uint i = 0; i < pc.bone_count; i++) {
         Bone b = get_bone(i);
-        vec3 local_p = (b.inv_world_matrix * vec4(pos, 1.0)).xyz;
+        if (b.bounding_radius < 0.001) continue; 
         
+        vec3 local_p = (b.inv_world_matrix * vec4(pos, 1.0)).xyz;
         if (length(local_p) > b.bounding_radius + 0.5) continue;
 
         for (uint j = 0; j < b.sdf_count; j++) {
@@ -145,27 +157,30 @@ void main() {
             vec3 p = local_p - sdf.local_offset.xyz;
             float d = 1000.0;
             if (sdf.primitive_type == 0) d = sdSphere(p, sdf.params.x);
-            else if (sdf.primitive_type == 1) {
-                vec3 ca = vec3(0.0, sdf.params.y, 0.0);
-                vec3 cb = vec3(0.0, sdf.params.z, 0.0);
-                d = sdCapsule(p, ca, cb, sdf.params.x);
-            }
+            else if (sdf.primitive_type == 1) d = sdCapsule(p, vec3(0, sdf.params.y, 0), vec3(0, sdf.params.z, 0), sdf.params.x);
             else if (sdf.primitive_type == 2) d = sdBox(p, sdf.params.xyz);
             else if (sdf.primitive_type == 3) d = sdEllipsoid(p, sdf.params.xyz);
+            else if (sdf.primitive_type == 4) d = sdTaperedEllipsoid(p, sdf.params.xyz, sdf.params.w);
+            else if (sdf.primitive_type == 5) d = sdBox(p, sdf.params.xyz);
 
-            // Track for weighting
+            if (sdf.primitive_type == 5) {
+                min_dist = max(min_dist, -d);
+                continue;
+            }
+
             bone_sdf_dists[i] = min(bone_sdf_dists[i], d);
 
             bool is_first = (closest_id == 0);
             bool is_body = (sdf.id >= 1 && sdf.id <= 3);
             bool was_body = (closest_id >= 1 && closest_id <= 3);
-            
             bool should_blend = (sdf.id == closest_id) || (is_body && was_body);
             
             if (d < min_dist) {
                 if (!is_first && should_blend) min_dist = opSmoothUnion(min_dist, d, 0.06);
                 else { min_dist = d; closest_id = sdf.id; closest_color = sdf.color_packed; }
-            } else if (!is_first && should_blend) min_dist = opSmoothUnion(min_dist, d, 0.06);
+            } else if (!is_first && should_blend) {
+                min_dist = opSmoothUnion(min_dist, d, 0.06);
+            }
         }
     }
 

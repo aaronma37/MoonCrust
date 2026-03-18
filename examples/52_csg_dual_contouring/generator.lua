@@ -215,7 +215,7 @@ function M.equip_character(tree, loadout, time)
 				local d1 = math.sqrt(off[1] ^ 2 + (off[2] + s.params[2]) ^ 2 + off[3] ^ 2)
 				local d2 = math.sqrt(off[1] ^ 2 + (off[2] + s.params[3]) ^ 2 + off[3] ^ 2)
 				r = math.max(d1, d2) + s.params[1]
-			elseif s.type == "box" or s.type == "ellipsoid" then
+			elseif s.type == "box" or s.type == "ellipsoid" or s.type == "tapered_ellipsoid" or s.type == "subtract_box" then
 				r = max_off + math.sqrt(s.params[1] ^ 2 + s.params[2] ^ 2 + s.params[3] ^ 2)
 			end
 			if r > grouped[bone].radius then
@@ -227,47 +227,62 @@ function M.equip_character(tree, loadout, time)
 	local breathe = math.sin(time * 2.0) * 0.01
 	local SK = 0.04
 
-	-- HEAD
+	-- HEAD ASSEMBLY (Symbolic Rig)
 	local hair_color = pack_color(0.2, 0.15, 0.15) -- Dark Brown
+    local hw, hh, hd = DATA.head_w / 2, DATA.head_h / 2, DATA.head_d / 2
+    
 	add_sdfs("head", {
+		-- 1. CRANIUM (Upper Head)
 		{
 			bone = "head",
 			type = "ellipsoid",
 			id = 1,
 			color = body_color,
-			params = { DATA.head_w / 2, DATA.head_h / 2, DATA.head_d / 2, 0.03 },
+			params = { hw, hh * 0.8, hd, 0.03 },
+            offset = { 0, hh * 0.2, 0 },
 		},
-		-- HAIR CROWN (Main Volume)
+        -- 2. JAW (Tapered V-Shape)
+        {
+            bone = "head",
+            type = "tapered_ellipsoid",
+            id = 1,
+            color = body_color,
+            params = { hw * 0.95, hh * 0.7, hd * 0.9, 0.8 }, -- k=0.8 for tapering
+            offset = { 0, -hh * 0.2, 0 },
+        },
+        -- 3. FACE PLANE (Flattening for Eyes/Mouth)
+        {
+            bone = "head",
+            type = "subtract_box",
+            id = 99, -- Unique ID for subtraction
+            color = 0,
+            params = { hw * 1.2, hh * 0.6, 0.1, 0.0 }, -- Flat box in front
+            offset = { 0, -0.01, hd + 0.08 }, -- Carve into the front face
+        },
+        -- 4. NOSE
+        {
+            bone = "head",
+            type = "tapered_ellipsoid",
+            id = 1,
+            color = body_color,
+            params = { 0.005, 0.015, 0.01, 1.5 }, -- Tiny sharp nose
+            offset = { 0, -0.01, hd - 0.005 },
+        },
+
+		-- HAIR REMOVED
+		--[[
 		{
 			bone = "head",
 			type = "ellipsoid",
 			id = 5,
-			color = hair_color,
-			params = { DATA.head_w / 2 + 0.03, DATA.head_h / 2 + 0.02, DATA.head_d / 2 + 0.04, 0.05 },
-			offset = { 0, 0.03, -0.02 },
-		},
-		-- SPIKY FRINGE (Bangs)
-		{ bone = "head", type = "ellipsoid", id = 5, color = hair_color, params = { 0.03, 0.08, 0.02, 0.02 }, offset = { -0.06, 0.02, 0.08 } },
-		{ bone = "head", type = "ellipsoid", id = 5, color = hair_color, params = { 0.03, 0.10, 0.02, 0.02 }, offset = { -0.03, 0.01, 0.09 } },
-		{ bone = "head", type = "ellipsoid", id = 5, color = hair_color, params = { 0.04, 0.12, 0.02, 0.02 }, offset = { 0.0, 0.0, 0.10 } },
-		{ bone = "head", type = "ellipsoid", id = 5, color = hair_color, params = { 0.03, 0.10, 0.02, 0.02 }, offset = { 0.03, 0.01, 0.09 } },
-		{ bone = "head", type = "ellipsoid", id = 5, color = hair_color, params = { 0.03, 0.08, 0.02, 0.02 }, offset = { 0.06, 0.02, 0.08 } },
-		
-		-- SIDE LOCKS
-		{ bone = "head", type = "ellipsoid", id = 5, color = hair_color, params = { 0.02, 0.18, 0.04, 0.03 }, offset = { -0.10, -0.08, 0.02 } },
-		{ bone = "head", type = "ellipsoid", id = 5, color = hair_color, params = { 0.02, 0.18, 0.04, 0.03 }, offset = { 0.10, -0.08, 0.02 } },
-
-		-- REAR MANE (Back of head)
-		{ bone = "head", type = "ellipsoid", id = 5, color = hair_color, params = { 0.08, 0.15, 0.05, 0.05 }, offset = { 0.0, -0.05, -0.08 } },
-		{ bone = "head", type = "ellipsoid", id = 5, color = hair_color, params = { 0.06, 0.12, 0.04, 0.04 }, offset = { -0.05, -0.10, -0.07 } },
-		{ bone = "head", type = "ellipsoid", id = 5, color = hair_color, params = { 0.06, 0.12, 0.04, 0.04 }, offset = { 0.05, -0.10, -0.07 } },
-
+...
 		-- COWLICK (Ahoge)
 		{ bone = "head", type = "ellipsoid", id = 5, color = hair_color, params = { 0.01, 0.08, 0.01, 0.01 }, offset = { 0.02, 0.15, 0.02 } },
+		--]]
 
-		-- EYES
-		{ bone = "head", type = "ellipsoid", id = 4, color = pack_color(0.2, 0.4, 0.8), params = { 0.015, 0.025, 0.01, 0.01 }, offset = { -0.04, -0.01, 0.085 } },
-		{ bone = "head", type = "ellipsoid", id = 4, color = pack_color(0.2, 0.4, 0.8), params = { 0.015, 0.025, 0.01, 0.01 }, offset = {  0.04, -0.01, 0.085 } },
+		-- EYES (Repositioned for the flat face)
+		{ bone = "head", type = "ellipsoid", id = 4, color = pack_color(0.2, 0.4, 0.8), params = { 0.015, 0.025, 0.01, 0.01 }, offset = { -0.04, -0.01, hd - 0.01 } },
+		{ bone = "head", type = "ellipsoid", id = 4, color = pack_color(0.2, 0.4, 0.8), params = { 0.015, 0.025, 0.01, 0.01 }, offset = {  0.04, -0.01, hd - 0.01 } },
 	})
 	add_sdfs("neck", {
 		{ bone = "neck", type = "capsule", id = 1, color = body_color, params = { 0.05, 0.0, 0.15, 0.03 } },
@@ -546,20 +561,6 @@ function M.equip_character(tree, loadout, time)
 	add_organic_leg("L", -1, 2)
 	add_organic_leg("R", 1, 3)
 
-	add_sdfs("head", {
-		{
-			bone = "head",
-			type = "ellipsoid",
-			id = 1,
-			color = body_color,
-			params = { DATA.head_w / 2, DATA.head_h / 2, DATA.head_d / 2, 0.03 },
-		},
-	})
-	add_sdfs(
-		"neck",
-		{ { bone = "neck", type = "capsule", id = 1, color = body_color, params = { 0.045, 0.0, 0.15, 0.02 } } }
-	)
-
 	local function add_anatomical_arm(side, sign, id)
 		local sh, up, lo = "shoulder_" .. side, "arm_upper_" .. side, "arm_lower_" .. side
 		add_sdfs(sh, {
@@ -665,6 +666,7 @@ function M.update_matrices(tree, order, bone_data, bone_map, offset_y)
 	end
 
 	local shift_y = offset_y or (0.0 - min_y)
+    local actual_static_shift = (0.0 - min_y)
 	
 	for i, name in ipairs(order) do
 		local global_m = globals[name]
@@ -672,16 +674,17 @@ function M.update_matrices(tree, order, bone_data, bone_map, offset_y)
 		local b_idx = bone_map[name]
 		if b_idx then
 			local inv_m = mc.mat4_inverse(global_m)
-			for j = 0, 15 do
-				bone_data[b_idx].world_matrix[j], bone_data[b_idx].inv_world_matrix[j] = global_m.m[j], inv_m.m[j]
-			end
+            for j=0,15 do
+                bone_data[b_idx].world_matrix[j] = global_m.m[j]
+                bone_data[b_idx].inv_world_matrix[j] = inv_m.m[j]
+            end
 		end
 	end
     
     local h_mat = globals["head"]
     local head_pos = { h_mat.m[12], h_mat.m[13], h_mat.m[14] }
     
-	return shift_y, head_pos
+	return actual_static_shift, head_pos
 end
 
 return M
