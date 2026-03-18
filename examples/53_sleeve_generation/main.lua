@@ -187,36 +187,55 @@ function M.update()
     if root then calc_globals(root, mc.mat4_identity()) end
 
     local bone_data = ffi.new("MeshBone[?]", #segments)
-    local segment_dirs = {} -- Store dirs to calculate flex between parent/child segments
+    local segment_dirs = {}
 
+    -- 1. Pre-calculate directions for all segments
     for i, s in ipairs(segments) do
         local m_start = bone_globals[s.start_pos[4] + 1]
         local m_end = bone_globals[s.end_pos[4] + 1]
-        
         local dx, dy, dz = m_end.m[12]-m_start.m[12], m_end.m[13]-m_start.m[13], m_end.m[14]-m_start.m[14]
         local l = math.sqrt(dx*dx+dy*dy+dz*dz)
         if l > 0 then dx,dy,dz = dx/l, dy/l, dz/l end
         segment_dirs[i] = {dx, dy, dz}
+    end
 
-        -- Calculate Flex (angle with parent segment)
-        local flex = 0
-        -- Find segment that ends where we start
+    -- 2. Calculate Mitered Planes (Bisectors)
+    for i, s in ipairs(segments) do
+        local m_start = bone_globals[s.start_pos[4] + 1]
+        local m_end = bone_globals[s.end_pos[4] + 1]
+        local dir = segment_dirs[i]
+        
+        -- Find incoming dir (parent segment)
+        local incoming = dir
         for j, ps in ipairs(segments) do
-            if ps.end_pos[4] == s.start_pos[4] then
-                local pd = segment_dirs[j]
-                if pd then
-                    local dot = dx*pd[1] + dy*pd[2] + dz*pd[3]
-                    -- 1.0 is straight, 0.0 is 90 degrees, -1.0 is 180 degrees
-                    flex = math.max(0, 1.0 - dot) * 0.5 
-                end
-                break
-            end
+            if ps.end_pos[4] == s.start_pos[4] then incoming = segment_dirs[j]; break end
         end
+
+        -- Find outgoing dir (child segments)
+        local outgoing = dir
+        for j, cs in ipairs(segments) do
+            if cs.start_pos[4] == s.end_pos[4] then outgoing = segment_dirs[j]; break end
+        end
+
+        -- Bisectors
+        local ps = {incoming[1] + dir[1], incoming[2] + dir[2], incoming[3] + dir[3]}
+        local psl = math.sqrt(ps[1]^2 + ps[2]^2 + ps[3]^2); if psl > 0 then ps = {ps[1]/psl, ps[2]/psl, ps[3]/psl} else ps = dir end
+        
+        local pe = {dir[1] + outgoing[1], dir[2] + outgoing[2], dir[3] + outgoing[3]}
+        local pel = math.sqrt(pe[1]^2 + pe[2]^2 + pe[3]^2); if pel > 0 then pe = {pe[1]/pel, pe[2]/pel, pe[3]/pel} else pe = dir end
+
+        -- Flex logic
+        local dot = dir[1]*incoming[1] + dir[2]*incoming[2] + dir[3]*incoming[3]
+        local flex = math.max(0, 1.0 - dot) * 0.5
+
+        -- Stable Side Vector (to prevent flipping)
+        local side = 1.0 -- Left
+        if s.name:find("Right") then side = -1.0 end
 
         bone_data[i-1].start_pos = {m_start.m[12], m_start.m[13], m_start.m[14], s.start_pos[4]}
         bone_data[i-1].end_pos = {m_end.m[12], m_end.m[13], m_end.m[14], s.end_pos[4]}
-        bone_data[i-1].plane_start = {dx, dy, dz, flex} -- STORE FLEX HERE
-        bone_data[i-1].plane_end = {dx, dy, dz, 0}
+        bone_data[i-1].plane_start = {ps[1], ps[2], ps[3], flex}
+        bone_data[i-1].plane_end = {pe[1], pe[2], pe[3], side} -- STORE SIDE HERE
     end
     bone_buf:upload(bone_data)
 

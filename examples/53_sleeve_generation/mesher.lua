@@ -6,9 +6,9 @@ local M = {}
 
 ffi.cdef[[
     typedef struct MeshVertex {
-        float pos[3]; float pad1;
-        float normal[3]; float pad2;
-        float color[3]; float pad3;
+        float pos[4];
+        float normal[4];
+        float color[4];
         float weights[4];
         uint32_t bone_ids[4];
     } MeshVertex;
@@ -39,47 +39,11 @@ function M.calculate_bone_segments(skeleton_bones)
             local len = math.sqrt(dx*dx + dy*dy + dz*dz)
             
             if len > 0.05 then
-                local dir = {dx/len, dy/len, dz/len}
-                
-                -- Mitering: find incoming and outgoing directions
-                local incoming = dir
-                if parent.parent_id ~= 0 then
-                    local gp = bone_map[parent.parent_id]
-                    local idx = parent.pos[1] - gp.pos[1]
-                    local idy = parent.pos[2] - gp.pos[2]
-                    local idz = parent.pos[3] - gp.pos[3]
-                    local ilen = math.sqrt(idx*idx + idy*idy + idz*idz)
-                    if ilen > 0 then incoming = {idx/ilen, idy/ilen, idz/ilen} end
-                end
-                
-                local outgoing = dir
-                for _, b2 in ipairs(skeleton_bones) do
-                    if b2.parent_id == b.id then
-                        local odx = b2.pos[1] - b.pos[1]
-                        local ody = b2.pos[2] - b.pos[2]
-                        local odz = b2.pos[3] - b.pos[3]
-                        local olen = math.sqrt(odx*odx + ody*ody + odz*odz)
-                        if olen > 0.05 then outgoing = {odx/olen, ody/olen, odz/olen}; break end
-                    end
-                end
-
-                -- Bisector Plane Normals
-                -- Start plane: bisector of incoming bone and current bone
-                local plane_start = {incoming[1] + dir[1], incoming[2] + dir[2], incoming[3] + dir[3]}
-                local ps_l = math.sqrt(plane_start[1]^2 + plane_start[2]^2 + plane_start[3]^2)
-                if ps_l > 0.001 then plane_start = {plane_start[1]/ps_l, plane_start[2]/ps_l, plane_start[3]/ps_l} else plane_start = dir end
-
-                -- End plane: bisector of current bone and outgoing bone
-                local plane_end = {dir[1] + outgoing[1], dir[2] + outgoing[2], dir[3] + outgoing[3]}
-                local pe_l = math.sqrt(plane_end[1]^2 + plane_end[2]^2 + plane_end[3]^2)
-                if pe_l > 0.001 then plane_end = {plane_end[1]/pe_l, plane_end[2]/pe_l, plane_end[3]/pe_l} else plane_end = dir end
-
                 table.insert(segments, {
                     start_pos = {parent.pos[1], parent.pos[2], parent.pos[3], parent.id - 1},
                     end_pos = {b.pos[1], b.pos[2], b.pos[3], b.id - 1},
-                    plane_start = {plane_start[1], plane_start[2], plane_start[3], 0},
-                    plane_end = {plane_end[1], plane_end[2], plane_end[3], 0},
-                    name = parent.name .. "_to_" .. b.name
+                    name = parent.name .. "_to_" .. b.name,
+                    bone_name = parent.name
                 })
             end
         end
@@ -107,36 +71,46 @@ end
 
 function M.create_params(num_bones, rings_per_bone, segments)
     local params = ffi.new("MeshRingParams[?]", num_bones * rings_per_bone)
+    
     for b = 0, num_bones - 1 do
         local seg = segments[b+1]
-        local base_r = 0.3
+        local name = seg.bone_name
         
-        -- Default Volumes
-        if seg.name:find("Spine") or seg.name:find("Hips") then base_r = 1.1 end
-        if seg.name:find("Head") then base_r = 0.8 end
-        if seg.name:find("Arm") then base_r = 0.4 end
-        if seg.name:find("Hand") or seg.name:find("Foot") then base_r = 0.2 end
+        local start_r, end_r = 0.4, 0.4
+        local ovality = 0.2
+        
+        -- PURE LOCAL CONTROL: Assign radii to specific bones
+        if name:find("Hips") then 
+            start_r, end_r = 1.3, 1.1
+            ovality = 0.4
+        elseif name:find("Spine") then -- mixamorig_Spine
+            start_r, end_r = 1.1, 0.8
+            ovality = 0.3
+        elseif name:find("Spine1") then
+            start_r, end_r = 0.8, 1.2
+            ovality = 0.4
+        elseif name:find("Spine2") then
+            start_r, end_r = 1.2, 1.6
+            ovality = 0.5
+        elseif name:find("Neck") then
+            start_r, end_r = 0.6, 0.4
+        elseif name:find("Head") then
+            start_r, end_r = 0.8, 0.8
+        elseif name:find("Arm") or name:find("Leg") then
+            start_r, end_r = 0.4, 0.4
+        end
 
         for r = 0, rings_per_bone - 1 do
             local p = params[b * rings_per_bone + r]
             local t = r / (rings_per_bone - 1)
+            local current_r = start_r + (end_r - start_r) * t
             
-            p.coeffs[0] = base_r
-            
-            -- Torso Oval (2nd Harmonic)
-            if seg.name:find("Spine") or seg.name:find("Hips") then
-                p.coeffs[3] = -0.3 -- Wider on X axis
-                p.coeffs[1] = 0.1 * math.sin(t * math.pi) -- Slight belly push
-            end
-            
-            -- Muscle Bulge (Sin tapering + harmonics)
-            if seg.name:find("Arm") or seg.name:find("Leg") then
-                local bulge = 0.4 * math.sin(t * math.pi)
-                p.coeffs[0] = base_r * (0.8 + bulge)
-                p.coeffs[3] = -0.1 * bulge -- Slightly oval muscles
-            end
+            p.coeffs[0] = current_r
+            p.coeffs[3] = ovality * current_r
         end
     end
+
+    -- NO HEAL PASS: Boundary constraints are now the user's responsibility
     return params
 end
 
