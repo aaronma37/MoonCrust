@@ -28,7 +28,15 @@ layout(push_constant) uniform PC {
     uint num_bones;
     uint rings_per_bone;
     uint verts_per_ring;
+    uint diagnostic_mode;
 };
+
+vec3 hash_color(uint i) {
+    float r = fract(sin(float(i) * 12.9898) * 43758.5453);
+    float g = fract(sin(float(i) * 78.233) * 43758.5453);
+    float b = fract(sin(float(i) * 45.164) * 43758.5453);
+    return vec3(r, g, b);
+}
 
 void main() {
     uint theta_idx = gl_GlobalInvocationID.x;
@@ -47,28 +55,22 @@ void main() {
     
     vec3 ring_normal = normalize(mix(b.plane_start.xyz, b.plane_end.xyz, t));
     
-    // STABLE BASIS: Use a forward-biased reference to prevent flipping on side-moves
     vec3 ref = vec3(0, 0, 1);
     if (abs(dot(ref, ring_normal)) > 0.9) ref = vec3(0, 1, 0);
-    
     vec3 u = normalize(cross(ref, ring_normal));
     vec3 v = cross(ring_normal, u);
+    u *= b.plane_end.w; 
     
-    // Mirror the basis for the Right side to ensure symmetry
-    float side = b.plane_end.w;
-    u *= side; 
-    
-    // MUSCLE BULGE
     float flex = b.plane_start.w;
     float bulge = flex * 0.4 * sin(t * 3.14159);
     
     RingParams rp = params[bone_idx * rings_per_bone + ring_idx];
     float r = rp.coeffs[0] * (1.0 + bulge);
     
-    // Fourier Harmonics
     r += rp.coeffs[1] * cos(theta) + rp.coeffs[2] * sin(theta);
     r += rp.coeffs[3] * cos(2.0 * theta) + rp.coeffs[4] * sin(2.0 * theta);
     r += rp.coeffs[5] * cos(3.0 * theta) + rp.coeffs[6] * sin(3.0 * theta);
+    r = max(0.05, r);
     
     vec3 offset = (u * cos(theta) + v * sin(theta)) * r;
     uint v_idx = bone_idx * (rings_per_bone * verts_per_ring) + ring_idx * verts_per_ring + theta_idx;
@@ -76,9 +78,14 @@ void main() {
     vertices[v_idx].pos = vec4(pos_center + offset, 1.0);
     vertices[v_idx].normal = vec4(normalize(offset), 0.0);
     
-    vec3 skin_col = vec3(0.8, 0.75, 0.7);
-    vec3 flex_col = vec3(1.0, 0.1, 0.1);
-    vertices[v_idx].color = vec4(mix(skin_col, flex_col, flex * sin(t * 3.14159)), 1.0);
+    // COLOR LOGIC
+    if (diagnostic_mode == 1) {
+        vertices[v_idx].color = vec4(hash_color(bone_idx), 1.0);
+    } else {
+        vec3 skin_col = vec3(0.8, 0.75, 0.7);
+        vec3 flex_col = vec3(1.0, 0.1, 0.1);
+        vertices[v_idx].color = vec4(mix(skin_col, flex_col, flex * sin(t * 3.14159)), 1.0);
+    }
     
     vertices[v_idx].weights = vec4(1.0 - t, t, 0.0, 0.0);
     vertices[v_idx].bone_ids = uvec4(uint(b.start_pos.w), uint(b.end_pos.w), 0, 0);

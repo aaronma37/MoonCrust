@@ -101,7 +101,8 @@ function M.init()
             { location = 3, binding = 0, format = vk.VK_FORMAT_R32G32B32A32_SFLOAT, offset = 48 },
             { location = 4, binding = 0, format = vk.VK_FORMAT_R32G32B32A32_UINT, offset = 64 }
         }),
-        vertex_attribute_count = 5, depth_test = true, depth_write = true, depth_format = depth_format, cull_mode = vk.VK_CULL_MODE_NONE
+        vertex_attribute_count = 5, depth_test = true, depth_write = true, depth_format = depth_format, 
+        cull_mode = vk.VK_CULL_MODE_NONE
     })
 
     M.c_ds = descriptors.allocate_sets(device, ds_pool, {c_ds_layout})[1]
@@ -154,6 +155,7 @@ function M.update()
     
     if input.key_pressed(input.SCANCODE_1) then M.anim_state = "rest" end
     if input.key_pressed(input.SCANCODE_2) then M.anim_state = "walking" end
+    if input.key_pressed(input.SCANCODE_3) then M.diagnostic = not M.diagnostic; print("Diagnostic Mode: " .. tostring(M.diagnostic)) end
 
     vk.vkWaitForFences(device, 1, ffi.new("VkFence[1]", {frame_fence}), vk.VK_TRUE, 0xFFFFFFFFFFFFFFFFULL)
     vk.vkResetFences(device, 1, ffi.new("VkFence[1]", {frame_fence}))
@@ -243,7 +245,8 @@ function M.update()
     vk.vkResetCommandBuffer(cb, 0); vk.vkBeginCommandBuffer(cb, ffi.new("VkCommandBufferBeginInfo", { sType = vk.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO }))
     vk.vkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_COMPUTE, compute_pipe)
     vk.vkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_COMPUTE, compute_layout, 0, 1, ffi.new("VkDescriptorSet[1]", {M.c_ds}), 0, nil)
-    vk.vkCmdPushConstants(cb, compute_layout, vk.VK_SHADER_STAGE_COMPUTE_BIT, 0, 12, ffi.new("uint32_t[3]", { #segments, RINGS_PER_BONE, VERTS_PER_RING }))
+    local pc_data = ffi.new("uint32_t[4]", { #segments, RINGS_PER_BONE, VERTS_PER_RING, M.diagnostic and 1 or 0 })
+    vk.vkCmdPushConstants(cb, compute_layout, vk.VK_SHADER_STAGE_COMPUTE_BIT, 0, 16, pc_data)
     vk.vkCmdDispatch(cb, 1, 1, #segments)
     local v_barrier = ffi.new("VkBufferMemoryBarrier[1]", {{ sType = vk.VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER, srcAccessMask = vk.VK_ACCESS_SHADER_WRITE_BIT, dstAccessMask = vk.VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT, buffer = vbuf.handle, offset = 0, size = vbuf.size }})
     vk.vkCmdPipelineBarrier(cb, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, vk.VK_PIPELINE_STAGE_VERTEX_INPUT_BIT, 0, 0, nil, 1, v_barrier, 0, nil)
