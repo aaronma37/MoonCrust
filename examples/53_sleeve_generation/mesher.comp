@@ -16,6 +16,14 @@ struct Bone {
     vec4 plane_end;   // w is side (1.0 = left, -1.0 = right)
 };
 
+struct SoftBody {
+    vec4 pos;     // xyz = world pos, w = radius
+    vec4 params;  // x = smax k, y = bone_id, z = type, w = grav_bias
+    vec4 basis_x;
+    vec4 basis_y;
+    vec4 basis_z;
+};
+
 struct RingParams {
     float coeffs[8];
 };
@@ -23,13 +31,45 @@ struct RingParams {
 layout(std430, set = 0, binding = 0) buffer VertexBuffer { Vertex vertices[]; };
 layout(std430, set = 0, binding = 1) readonly buffer BoneBuffer { Bone bones[]; };
 layout(std430, set = 0, binding = 2) readonly buffer ParamBuffer { RingParams params[]; };
+layout(std430, set = 0, binding = 3) readonly buffer SoftBodyBuffer { SoftBody soft_bodies[]; };
 
 layout(push_constant) uniform PC {
     uint num_bones;
     uint rings_per_bone;
     uint verts_per_ring;
     uint diagnostic_mode;
+    uint num_soft_bodies;
 };
+
+// Smooth Maximum (Polynomial)
+float smax(float a, float b, float k) {
+    float h = max(k - abs(a - b), 0.0) / k;
+    return max(a, b) + h * h * k * (1.0 / 4.0);
+}
+
+// Find distance to oriented ellipsoid surface along ray
+float ray_oriented_ellipsoid_dist(vec3 O, vec3 D, vec3 C, float R, vec3 scale, mat3 rot, float droop) {
+    // Transform ray to local space
+    vec3 local_O = (O - C) * rot;
+    vec3 local_D = D * rot;
+    
+    // Apply Vertical "Droop" Skew (Teardrop deformation)
+    // Shift the ellipsoid center locally based on the droop and height
+    local_O.y += droop * clamp(-local_O.y, 0.0, 1.0);
+    
+    local_O /= scale;
+    local_D /= scale;
+    float d_len = length(local_D);
+    local_D /= d_len;
+
+    float tca = dot(-local_O, local_D);
+    if (tca < 0.0) return -1.0; 
+    
+    float d2 = dot(local_O, local_O) - tca * tca;
+    if (d2 > R * R) return -1.0;
+    float thc = sqrt(R * R - d2);
+    return (tca + thc) / d_len; 
+}
 
 vec3 hash_color(uint i) {
     float r = fract(sin(float(i) * 12.9898) * 43758.5453);
@@ -66,17 +106,58 @@ void main() {
     
     RingParams rp = params[bone_idx * rings_per_bone + ring_idx];
     float r = rp.coeffs[0] * (1.0 + bulge);
-    
+
     r += rp.coeffs[1] * cos(theta) + rp.coeffs[2] * sin(theta);
     r += rp.coeffs[3] * cos(2.0 * theta) + rp.coeffs[4] * sin(2.0 * theta);
     r += rp.coeffs[5] * cos(3.0 * theta) + rp.coeffs[6] * sin(3.0 * theta);
+
+    // SOFT BODY INTEGRATION (SDF Radius Merging)
+    vec3 vertex_dir = u * cos(theta) + v * sin(theta);
+    vec3 vertex_normal = vertex_dir;
+
+    for (uint i = 0; i < num_soft_bodies; i++) {
+        SoftBody sb = soft_bodies[i];
+        
+        // BONE-RELATIVE MASKING: Only allow influence if the bone is the anchor, 
+        // its parent (idx-1), or its child (idx+1). This prevents merging with hands/limbs.
+        uint anchor_idx = uint(sb.params.y);
+        bool is_in_neighborhood = (bone_idx == anchor_idx || bone_idx == anchor_idx + 1 || (anchor_idx > 0 && bone_idx == anchor_idx - 1));
+        
+        if (!is_in_neighborhood) continue;
+        if (length(sb.pos.xyz - pos_center) > 3.0) continue; 
+        // ELLIPSOID SCALING BASED ON TYPE
+        vec3 scale = vec3(1.0);
+        if (sb.params.z == 0.0) scale = vec3(1.1, 1.25, 0.75); // Breast: Wider, Taller, Shallower
+        else if (sb.params.z == 1.0) scale = vec3(1.2, 1.3, 1.3); // Butt: More volume
+
+        mat3 rot = mat3(sb.basis_x.xyz, sb.basis_y.xyz, sb.basis_z.xyz);
+        float d_sphere = ray_oriented_ellipsoid_dist(pos_center, vertex_dir, sb.pos.xyz, sb.pos.w, scale, rot, sb.params.w);
+
+        if (d_sphere > 0.0) {
+            float r_old = r;
+            r = smax(r, d_sphere, sb.params.x);
+
+            // SMOOTH NORMAL BLENDING (In Local Space)
+            vec3 surface_pos = pos_center + vertex_dir * r;
+            vec3 local_p = (surface_pos - sb.pos.xyz) * rot;
+            local_p /= scale;
+            vec3 local_normal = normalize(local_p / scale);
+            vec3 world_normal = local_normal * transpose(rot); // Rotate back to world
+
+            // Weight the normal blend by how much the radius was increased by the SDF
+            float h = clamp((r - r_old) / max(0.001, d_sphere - r_old + sb.params.x), 0.0, 1.0);
+            vertex_normal = normalize(mix(vertex_normal, world_normal, h));
+        }
+
+    }
     r = max(0.05, r);
-    
-    vec3 offset = (u * cos(theta) + v * sin(theta)) * r;
+
+    vec3 offset = vertex_dir * r;
     uint v_idx = bone_idx * (rings_per_bone * verts_per_ring) + ring_idx * verts_per_ring + theta_idx;
+
     
     vertices[v_idx].pos = vec4(pos_center + offset, 1.0);
-    vertices[v_idx].normal = vec4(normalize(offset), 0.0);
+    vertices[v_idx].normal = vec4(vertex_normal, 0.0);
     
     // COLOR LOGIC
     if (diagnostic_mode == 1) {

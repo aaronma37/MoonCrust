@@ -23,6 +23,14 @@ ffi.cdef[[
     typedef struct MeshRingParams {
         float coeffs[8];
     } MeshRingParams;
+
+    typedef struct SoftBody {
+        float pos[4];    // xyz = world pos, w = radius
+        float params[4]; // x = smax k, y = bone_id, z = type, w = gravity_bias
+        float basis_x[4];
+        float basis_y[4];
+        float basis_z[4];
+    } SoftBody;
 ]]
 
 function M.calculate_bone_segments(skeleton_bones)
@@ -69,17 +77,17 @@ function M.create_params(num_bones, rings_per_bone, segments)
     
     -- 1. SIMPLE JOINT REPOSITORY (Exact matching only)
     local joints = {
-        mixamorig_Hips = { r = 1.2, oval = 0.35 },
-        mixamorig_Spine = { r = 1.0, oval = 0.3 },
-        mixamorig_Spine1 = { r = 0.7, oval = 0.2 },
-        mixamorig_Spine2 = { r = 1.2, oval = 0.4 }, -- NARROWER CHEST
-        mixamorig_Neck = { r = 0.5, oval = 0.1 },
+        mixamorig_Hips = { r = 1.2, oval = 0.45 }, -- WIDER HIPS
+        mixamorig_Spine = { r = 0.9, oval = 0.3 },
+        mixamorig_Spine1 = { r = 0.75, oval = 0.25 },
+        mixamorig_Spine2 = { r = 0.85, oval = 0.35 }, -- MUCH NARROWER CHEST
+        mixamorig_Neck = { r = 0.45, oval = 0.1 },
         mixamorig_Head = { r = 0.8, oval = 0.0 },
         -- Limbs
-        mixamorig_LeftArm = { r = 0.45, oval = 0.2 },
-        mixamorig_RightArm = { r = 0.45, oval = 0.2 },
-        mixamorig_LeftUpLeg = { r = 0.6, oval = 0.2 },
-        mixamorig_RightUpLeg = { r = 0.6, oval = 0.2 },
+        mixamorig_LeftArm = { r = 0.35, oval = 0.1 },
+        mixamorig_RightArm = { r = 0.35, oval = 0.1 },
+        mixamorig_LeftUpLeg = { r = 0.7, oval = 0.25 }, -- STRONGER THIGHS
+        mixamorig_RightUpLeg = { r = 0.7, oval = 0.25 },
     }
 
     local function get_joint(name)
