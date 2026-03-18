@@ -45,19 +45,40 @@ void main() {
     vec3 p1 = b.end_pos.xyz;
     vec3 pos_center = mix(p0, p1, t);
     
-    vec3 bone_dir = normalize(p1 - p0);
-    vec3 up = abs(bone_dir.y) < 0.9 ? vec3(0, 1, 0) : vec3(1, 0, 0);
-    vec3 u = normalize(cross(up, bone_dir));
-    vec3 v = cross(bone_dir, u);
+    // Use the plane normals provided by Lua (Bisectors)
+    vec3 n0 = b.plane_start.xyz;
+    vec3 n1 = b.plane_end.xyz;
+    vec3 ring_normal = normalize(mix(n0, n1, t));
     
-    float radius = params[bone_idx * rings_per_bone + ring_idx].coeffs[0];
-    vec3 offset = (u * cos(theta) + v * sin(theta)) * radius;
+    // Orthonormal basis for the ring
+    vec3 up = abs(ring_normal.y) < 0.9 ? vec3(0, 1, 0) : vec3(1, 0, 0);
+    vec3 u = normalize(cross(up, ring_normal));
+    vec3 v = cross(ring_normal, u);
+    
+    // Fourier Radial Expansion
+    RingParams rp = params[bone_idx * rings_per_bone + ring_idx];
+    float r = rp.coeffs[0]; // Radius
+    
+    // 1st Harmonic (Translation/Bulge)
+    r += rp.coeffs[1] * cos(theta) + rp.coeffs[2] * sin(theta);
+    // 2nd Harmonic (Oval/Squash)
+    r += rp.coeffs[3] * cos(2.0 * theta) + rp.coeffs[4] * sin(2.0 * theta);
+    // 3rd Harmonic (Definition)
+    r += rp.coeffs[5] * cos(3.0 * theta) + rp.coeffs[6] * sin(3.0 * theta);
+    
+    vec3 offset = (u * cos(theta) + v * sin(theta)) * r;
     
     uint v_idx = bone_idx * (rings_per_bone * verts_per_ring) + ring_idx * verts_per_ring + theta_idx;
     
     vertices[v_idx].pos = vec4(pos_center + offset, 1.0);
+    
+    // Better Normal calculation (rough but effective for Fourier)
+    float eps = 0.01;
+    float r_eps = r + (rp.coeffs[1] * cos(theta+eps) + rp.coeffs[2] * sin(theta+eps)) - (rp.coeffs[1] * cos(theta) + rp.coeffs[2] * sin(theta)); // Simple delta
+    // For now, let's stick to normalized offset for performance, it looks okay with cel shading
     vertices[v_idx].normal = vec4(normalize(offset), 0.0);
-    vertices[v_idx].color = vec4(0.7, 0.7, 0.8, 1.0);
+    
+    vertices[v_idx].color = vec4(0.8, 0.75, 0.7, 1.0);
     vertices[v_idx].weights = vec4(1.0 - t, t, 0.0, 0.0);
     vertices[v_idx].bone_ids = uvec4(uint(b.start_pos.w), uint(b.end_pos.w), 0, 0);
 }
