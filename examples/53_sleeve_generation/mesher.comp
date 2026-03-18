@@ -1,0 +1,63 @@
+#version 460
+layout(local_size_x = 16, local_size_y = 8) in;
+
+struct Vertex {
+    vec4 pos;
+    vec4 normal;
+    vec4 color;
+    vec4 weights;
+    uvec4 bone_ids;
+};
+
+struct Bone {
+    vec4 start_pos;
+    vec4 end_pos;
+    vec4 plane_start;
+    vec4 plane_end;
+};
+
+struct RingParams {
+    float coeffs[8];
+};
+
+layout(std430, set = 0, binding = 0) buffer VertexBuffer { Vertex vertices[]; };
+layout(std430, set = 0, binding = 1) readonly buffer BoneBuffer { Bone bones[]; };
+layout(std430, set = 0, binding = 2) readonly buffer ParamBuffer { RingParams params[]; };
+
+layout(push_constant) uniform PC {
+    uint num_bones;
+    uint rings_per_bone;
+    uint verts_per_ring;
+};
+
+void main() {
+    uint theta_idx = gl_GlobalInvocationID.x;
+    uint ring_idx = gl_GlobalInvocationID.y;
+    uint bone_idx = gl_GlobalInvocationID.z;
+    
+    if (bone_idx >= num_bones || ring_idx >= rings_per_bone || theta_idx >= verts_per_ring) return;
+    
+    float theta = (float(theta_idx) / float(verts_per_ring)) * 6.28318530718;
+    float t = float(ring_idx) / float(rings_per_bone - 1);
+    
+    Bone b = bones[bone_idx];
+    vec3 p0 = b.start_pos.xyz;
+    vec3 p1 = b.end_pos.xyz;
+    vec3 pos_center = mix(p0, p1, t);
+    
+    vec3 bone_dir = normalize(p1 - p0);
+    vec3 up = abs(bone_dir.y) < 0.9 ? vec3(0, 1, 0) : vec3(1, 0, 0);
+    vec3 u = normalize(cross(up, bone_dir));
+    vec3 v = cross(bone_dir, u);
+    
+    float radius = params[bone_idx * rings_per_bone + ring_idx].coeffs[0];
+    vec3 offset = (u * cos(theta) + v * sin(theta)) * radius;
+    
+    uint v_idx = bone_idx * (rings_per_bone * verts_per_ring) + ring_idx * verts_per_ring + theta_idx;
+    
+    vertices[v_idx].pos = vec4(pos_center + offset, 1.0);
+    vertices[v_idx].normal = vec4(normalize(offset), 0.0);
+    vertices[v_idx].color = vec4(0.7, 0.7, 0.8, 1.0);
+    vertices[v_idx].weights = vec4(1.0 - t, t, 0.0, 0.0);
+    vertices[v_idx].bone_ids = uvec4(uint(b.start_pos.w), uint(b.end_pos.w), 0, 0);
+}
