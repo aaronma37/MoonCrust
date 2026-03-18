@@ -44,6 +44,9 @@ local current_anim_idx = 1
 local debug_mode = 0
 local debug_bone = 0
 
+local char_pos = {0, 0, 0}
+local char_yaw = 0
+
 local cam_rot = {0, 0}
 local cam_dist = 5.0
 local cam_target = {0, 0.4, 0}
@@ -390,6 +393,46 @@ function M.update()
         print(string.format("Visualizing Bone [%d]: %s", debug_bone, skeleton_order[debug_bone+1]))
     end
 
+    -- Character Movement
+    local move_speed = 2.0 * dt
+    local forward = {math.sin(cam_rot[1]), 0, math.cos(cam_rot[1])}
+    local right = {math.cos(cam_rot[1]), 0, -math.sin(cam_rot[1])}
+    local move_dir = {0, 0, 0}
+    local moved = false
+    if input.key_down(input.SCANCODE_W) then 
+        move_dir[1] = move_dir[1] - forward[1]; move_dir[3] = move_dir[3] - forward[3]
+        moved = true
+    end
+    if input.key_down(input.SCANCODE_S) then 
+        move_dir[1] = move_dir[1] + forward[1]; move_dir[3] = move_dir[3] + forward[3]
+        moved = true
+    end
+    if input.key_down(input.SCANCODE_A) then 
+        move_dir[1] = move_dir[1] - right[1]; move_dir[3] = move_dir[3] - right[3]
+        moved = true
+    end
+    if input.key_down(input.SCANCODE_D) then 
+        move_dir[1] = move_dir[1] + right[1]; move_dir[3] = move_dir[3] + right[3]
+        moved = true
+    end
+    
+    if moved then
+        local mag = math.sqrt(move_dir[1]^2 + move_dir[3]^2)
+        if mag > 0 then
+            move_dir[1], move_dir[3] = move_dir[1]/mag, move_dir[3]/mag
+            char_pos[1] = char_pos[1] + move_dir[1] * move_speed
+            char_pos[3] = char_pos[3] + move_dir[3] * move_speed
+            char_yaw = math.atan2(move_dir[1], move_dir[3])
+            
+            if animations[current_anim_idx] == "idle" or animations[current_anim_idx] == "rest" then
+                current_anim_idx = 2 -- walk
+            end
+        end
+    elseif animations[current_anim_idx] == "walk" or animations[current_anim_idx] == "run" then
+        current_anim_idx = 3 -- idle
+    end
+    cam_target[1], cam_target[3] = char_pos[1], char_pos[3]
+
     -- Orbit Controls
 	local dx, dy = input.mouse_delta()
 	if input.mouse_down(1) then -- Left Click Drag
@@ -423,6 +466,12 @@ function M.update()
 
     -- UPDATE BONES FOR RENDERING (Live Animation)
     generator.apply_pose(skeleton_tree, current_time, animations[current_anim_idx])
+    
+    -- Apply World Position and Rotation to Root
+    skeleton_tree.root.offset[1] = skeleton_tree.root.base_offset[1] + char_pos[1]
+    skeleton_tree.root.offset[3] = skeleton_tree.root.base_offset[3] + char_pos[3]
+    skeleton_tree.root.rot[2] = char_yaw
+
     generator.update_matrices(skeleton_tree, skeleton_order, bone_data, bone_map)
 
     local cb = M.cbs[current_frame + 1]
