@@ -32,9 +32,7 @@ function M.calculate_bone_segments(skeleton_bones)
     for i, b in ipairs(skeleton_bones) do
         if b.parent_id ~= 0 then
             local parent = bone_map[b.parent_id]
-            local dx, dy, dz = b.pos[1]-parent.pos[1], b.pos[2]-parent.pos[2], b.pos[3]-parent.pos[3]
-            local len = math.sqrt(dx*dx + dy*dy + dz*dz)
-            if len > 0.05 then
+            if parent then
                 table.insert(segments, {
                     start_pos = {parent.pos[1], parent.pos[2], parent.pos[3], parent.id - 1},
                     end_pos = {b.pos[1], b.pos[2], b.pos[3], b.id - 1},
@@ -69,57 +67,77 @@ end
 function M.create_params(num_bones, rings_per_bone, segments)
     local params = ffi.new("MeshRingParams[?]", num_bones * rings_per_bone)
     
-    print("--- Segment Diagnostic Legend ---")
-    for i, s in ipairs(segments) do
-        print(string.format("ID %d: %s", i-1, s.name))
-    end
-
-    local joint_genes = {
-        default = { r = 0.4, oval = 0.2 },
-        mixamorig_Hips = { r = 1.3, oval = 0.35 },
-        mixamorig_Spine = { r = 1.0, oval = 0.25 },
-        mixamorig_Spine1 = { r = 0.6, oval = 0.2 }, 
-        mixamorig_Spine2 = { r = 1.3, oval = 0.35 },
+    -- 1. SIMPLE JOINT REPOSITORY (Exact matching only)
+    local joints = {
+        mixamorig_Hips = { r = 1.2, oval = 0.35 },
+        mixamorig_Spine = { r = 1.0, oval = 0.3 },
+        mixamorig_Spine1 = { r = 0.7, oval = 0.2 },
+        mixamorig_Spine2 = { r = 1.2, oval = 0.4 }, -- NARROWER CHEST
         mixamorig_Neck = { r = 0.5, oval = 0.1 },
         mixamorig_Head = { r = 0.8, oval = 0.0 },
-        mixamorig_LeftArm = { r = 0.4, oval = 0.2 },
-        mixamorig_RightArm = { r = 0.4, oval = 0.2 },
-        mixamorig_LeftUpLeg = { r = 0.5, oval = 0.2 },
-        mixamorig_RightUpLeg = { r = 0.5, oval = 0.2 },
+        -- Limbs
+        mixamorig_LeftArm = { r = 0.45, oval = 0.2 },
+        mixamorig_RightArm = { r = 0.45, oval = 0.2 },
+        mixamorig_LeftUpLeg = { r = 0.6, oval = 0.2 },
+        mixamorig_RightUpLeg = { r = 0.6, oval = 0.2 },
     }
 
-    local function get_gene(name)
-        for k, v in pairs(joint_genes) do if name:find(k) then return v end end
-        return joint_genes.default
+    local function get_joint(name)
+        return joints[name] or { r = 0.4, oval = 0.2 }
     end
 
     for b = 0, num_bones - 1 do
         local seg = segments[b+1]
-        local start_gene = get_gene(seg.parent_name)
-        local end_gene = get_gene(seg.child_name)
+        local start_j = get_joint(seg.parent_name)
+        local end_j = get_joint(seg.child_name)
 
-        -- SOCKET FIX: If we are branching from the Hips to a Leg, 
-        -- don't use the Hips' torso radius for the leg start.
-        if seg.parent_name:find("Hips") and seg.child_name:find("Leg") then
-            start_gene = { r = 0.6, oval = 0.2 } 
+        -- Determine Tapering Profile
+        local taper_pow = 1.0
+        local s_push, e_push = 0.0, 0.0
+
+        if seg.parent_name == "mixamorig_Spine2" and seg.child_name == "mixamorig_Neck" then
+            taper_pow = 5.0 -- STEEP CHEST SHELF
+            s_push = 0.4
         end
 
-        -- SHOULDER SOCKET FIX: If we are branching from the Chest to a Shoulder,
-        -- use a smaller radius to prevent clipping into the pectorals/back.
-        if seg.parent_name:find("Spine2") and (seg.child_name:find("Shoulder") or seg.child_name:find("Arm")) then
-            start_gene = { r = 0.5, oval = 0.2 } 
+        -- Socket Logic: Special cases for branching limbs
+        local s_r, e_r = start_j.r, end_j.r
+        if seg.parent_name == "mixamorig_Hips" and seg.child_name:find("Leg") then
+            s_r = 0.6 -- Leg Socket
+        end
+        if seg.parent_name == "mixamorig_Spine2" and (seg.child_name:find("Shoulder") or seg.child_name:find("Arm")) then
+            s_r = 0.5 -- Shoulder Socket
         end
 
         for r = 0, rings_per_bone - 1 do
             local p = params[b * rings_per_bone + r]
-            local t = r / (rings_per_bone - 1)
-            local current_r = start_gene.r + (end_gene.r - start_gene.r) * t
-            local current_oval = start_gene.oval + (end_gene.oval - start_gene.oval) * t
+            local rt = r / (rings_per_bone - 1)
+            local t = math.pow(rt, taper_pow)
             
-            p.coeffs[0] = current_r
-            p.coeffs[3] = current_oval * current_r
+            local cur_r = s_r + (e_r - s_r) * t
+            local cur_oval = start_j.oval + (end_j.oval - start_j.oval) * t
+            
+            p.coeffs[0] = cur_r
+            p.coeffs[3] = cur_oval * cur_r
+            p.coeffs[2] = (s_push * (1.0 - t) + e_push * t) -- Chest Push
         end
     end
+
+    -- 2. ROBUST VERTICAL WELDING: Close the gaps between vertical segments
+    for b = 0, num_bones - 1 do
+        local curr = segments[b+1]
+        for prev_idx = 0, num_bones - 1 do
+            local prev = segments[prev_idx+1]
+            if prev.end_pos[4] == curr.start_pos[4] then
+                -- If they share a joint, force the child's start to parent's end
+                local p_last = params[prev_idx * rings_per_bone + (rings_per_bone-1)]
+                local c_first = params[b * rings_per_bone]
+                for i=0,7 do c_first.coeffs[i] = p_last.coeffs[i] end
+                break
+            end
+        end
+    end
+
     return params
 end
 

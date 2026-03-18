@@ -27,7 +27,7 @@ local M = {
 
 local device, queue, sw, graphics_pipe, pipe_layout
 local compute_pipe, compute_layout
-local depth_img, vbuf, ibuf, idx_count
+local depth_img, vbuf, ibuf, idx_count, pick_buf
 local bone_buf, param_buf, ds_pool
 local cbs, image_available_sem, frame_fence
 
@@ -59,14 +59,14 @@ function M.init()
     local v_size = #segments * RINGS_PER_BONE * VERTS_PER_RING * ffi.sizeof("MeshVertex")
     local i_size = idx_count * 4
     vbuf = mc.gpu.buffer(v_size, "vertex_storage", nil, true)
-    
-    local indices = mesher.generate_indices(#segments, RINGS_PER_BONE, VERTS_PER_RING)
-    ibuf = mc.gpu.buffer(i_size, "index", ffi.new("uint32_t[?]", #indices, indices), true)
-
+    ibuf = mc.gpu.buffer(i_size, "index", ffi.new("uint32_t[?]", idx_count, mesher.generate_indices(#segments, RINGS_PER_BONE, VERTS_PER_RING)), true)
     bone_buf = mc.gpu.buffer(#segments * ffi.sizeof("MeshBone"), "storage", nil, true)
-
-    local param_data = mesher.create_params(#segments, RINGS_PER_BONE, segments)
-    param_buf = mc.gpu.buffer(#segments * RINGS_PER_BONE * ffi.sizeof("MeshRingParams"), "storage", param_data, true)
+    param_buf = mc.gpu.buffer(#segments * RINGS_PER_BONE * ffi.sizeof("MeshRingParams"), "storage", mesher.create_params(#segments, RINGS_PER_BONE, segments), true)
+    
+    -- GPU PICKING BUFFER (Host visible for easy reading)
+    pick_buf = mc.gpu.buffer(4, "storage", nil, true)
+    local clear_id = ffi.new("uint32_t[1]", {0xFFFFFFFF})
+    pick_buf:upload(clear_id)
 
     local get_dir = function() return "examples/53_sleeve_generation/" end
     ds_pool = descriptors.create_pool(device, {{ type = vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, count = 10 }})
@@ -77,22 +77,20 @@ function M.init()
         { binding = 2, type = vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, stages = vk.VK_SHADER_STAGE_COMPUTE_BIT }
     }
     local c_ds_layout = descriptors.create_layout(device, c_bindings)
-    compute_layout = pipeline.create_layout(device, {c_ds_layout}, { { stageFlags = vk.VK_SHADER_STAGE_COMPUTE_BIT, offset = 0, size = 12 } })
-    
+    compute_layout = pipeline.create_layout(device, {c_ds_layout}, { { stageFlags = vk.VK_SHADER_STAGE_COMPUTE_BIT, offset = 0, size = 16 } })
     local c_src = io.open(get_dir().."mesher.comp"):read("*all")
-    local c_mod = shader.create_module(device, shader.compile_glsl(c_src, vk.VK_SHADER_STAGE_COMPUTE_BIT))
-    compute_pipe = pipeline.create_compute_pipeline(device, compute_layout, c_mod)
+    compute_pipe = pipeline.create_compute_pipeline(device, compute_layout, shader.create_module(device, shader.compile_glsl(c_src, vk.VK_SHADER_STAGE_COMPUTE_BIT)))
 
-    local g_ds_layout = descriptors.create_layout(device, {})
-    pipe_layout = pipeline.create_layout(device, {g_ds_layout}, { { stageFlags = bit.bor(vk.VK_SHADER_STAGE_VERTEX_BIT, vk.VK_SHADER_STAGE_FRAGMENT_BIT), offset = 0, size = 128 } })
+    local g_bindings = {
+        { binding = 4, type = vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, stages = vk.VK_SHADER_STAGE_FRAGMENT_BIT }
+    }
+    local g_ds_layout = descriptors.create_layout(device, g_bindings)
+    pipe_layout = pipeline.create_layout(device, {g_ds_layout}, { { stageFlags = bit.bor(vk.VK_SHADER_STAGE_VERTEX_BIT, vk.VK_SHADER_STAGE_FRAGMENT_BIT), offset = 0, size = 144 } })
 
-    ffi.cdef[[ typedef struct PC { float mvp[16]; float model[16]; } PC; ]]
+    ffi.cdef[[ typedef struct PC { float mvp[16]; float model[16]; float mouse_pos[2]; } PC; ]]
     local v_src = io.open(get_dir().."render.vert"):read("*all")
     local f_src = io.open(get_dir().."render.frag"):read("*all")
-    local v_mod = shader.create_module(device, shader.compile_glsl(v_src, vk.VK_SHADER_STAGE_VERTEX_BIT))
-    local f_mod = shader.create_module(device, shader.compile_glsl(f_src, vk.VK_SHADER_STAGE_FRAGMENT_BIT))
-    
-    graphics_pipe = pipeline.create_graphics_pipeline(device, pipe_layout, v_mod, f_mod, { 
+    graphics_pipe = pipeline.create_graphics_pipeline(device, pipe_layout, shader.create_module(device, shader.compile_glsl(v_src, vk.VK_SHADER_STAGE_VERTEX_BIT)), shader.create_module(device, shader.compile_glsl(f_src, vk.VK_SHADER_STAGE_FRAGMENT_BIT)), { 
         vertex_binding = ffi.new("VkVertexInputBindingDescription[1]", {{ binding = 0, stride = ffi.sizeof("MeshVertex"), inputRate = vk.VK_VERTEX_INPUT_RATE_VERTEX }}),
         vertex_attributes = ffi.new("VkVertexInputAttributeDescription[5]", {
             { location = 0, binding = 0, format = vk.VK_FORMAT_R32G32B32A32_SFLOAT, offset = 0 },
@@ -101,23 +99,29 @@ function M.init()
             { location = 3, binding = 0, format = vk.VK_FORMAT_R32G32B32A32_SFLOAT, offset = 48 },
             { location = 4, binding = 0, format = vk.VK_FORMAT_R32G32B32A32_UINT, offset = 64 }
         }),
-        vertex_attribute_count = 5, depth_test = true, depth_write = true, depth_format = depth_format, 
-        cull_mode = vk.VK_CULL_MODE_NONE
+        vertex_attribute_count = 5, depth_test = true, depth_write = true, depth_format = depth_format, cull_mode = vk.VK_CULL_MODE_NONE
     })
 
     M.c_ds = descriptors.allocate_sets(device, ds_pool, {c_ds_layout})[1]
     M.g_ds = descriptors.allocate_sets(device, ds_pool, {g_ds_layout})[1]
-    
     descriptors.update_buffer_set(device, M.c_ds, 0, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, vbuf.handle, 0, v_size)
     descriptors.update_buffer_set(device, M.c_ds, 1, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, bone_buf.handle, 0, #segments * ffi.sizeof("MeshBone"))
     descriptors.update_buffer_set(device, M.c_ds, 2, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, param_buf.handle, 0, #segments * RINGS_PER_BONE * ffi.sizeof("MeshRingParams"))
+    descriptors.update_buffer_set(device, M.g_ds, 4, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, pick_buf.handle, 0, 4)
 
-    local cmd_pool = command.create_pool(device, family)
-    cbs = command.allocate_buffers(device, cmd_pool, sw.image_count)
+    cbs = command.allocate_buffers(device, command.create_pool(device, family), sw.image_count)
     frame_fence = ffi.new("VkFence[1]"); vk.vkCreateFence(device, ffi.new("VkFenceCreateInfo", {sType=vk.VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, flags=vk.VK_FENCE_CREATE_SIGNALED_BIT}), nil, frame_fence); frame_fence = frame_fence[0]
     image_available_sem = ffi.new("VkSemaphore[1]"); vk.vkCreateSemaphore(device, ffi.new("VkSemaphoreCreateInfo", {sType=vk.VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO}), nil, image_available_sem); image_available_sem = image_available_sem[0]
-    
     M.last_frame_time = tonumber(sdl.SDL_GetTicks())
+    
+    local inv_bind_mats = {}
+    for _, b in ipairs(bones) do
+        local cm_mat = mc.mat4_identity()
+        for row=0,3 do for col=0,3 do cm_mat.m[col*4 + row] = b.global_mat[row*4 + col + 1] end end
+        cm_mat.m[12], cm_mat.m[13], cm_mat.m[14] = cm_mat.m[12]*0.1, cm_mat.m[13]*0.1, cm_mat.m[14]*0.1
+        inv_bind_mats[b.id] = mc.mat4_inverse(cm_mat)
+    end
+    M.inv_bind_mats = inv_bind_mats
 end
 
 local function lerp_mat(a, b, t)
@@ -131,11 +135,7 @@ local function get_animated_matrix(bone_name, anim, time)
     local chan = anim.channels[bone_name]
     local t = time % anim.duration
     local idx1, idx2 = 1, 1
-    for i=1, #chan.times do
-        if chan.times[i] > t then
-            idx2 = i; idx1 = math.max(1, i-1); break
-        end
-    end
+    for i=1, #chan.times do if chan.times[i] > t then idx2 = i; idx1 = math.max(1, i-1); break end end
     local t1, t2 = chan.times[idx1], chan.times[idx2]
     local f = 0; if t2 > t1 then f = (t - t1) / (t2 - t1) end
     return lerp_mat(chan.matrices[idx1], chan.matrices[idx2], f)
@@ -146,16 +146,9 @@ function M.update()
     M.last_frame_time = tonumber(sdl.SDL_GetTicks())
     M.time = M.time + dt
     
-    M.fps_timer = (M.fps_timer or 0) + dt
-    M.frame_count = (M.frame_count or 0) + 1
-    if M.fps_timer > 0.5 then
-        sdl.SDL_SetWindowTitle(_G._SDL_WINDOW, string.format("MoonCrust | FPS: %.1f", M.frame_count / M.fps_timer))
-        M.fps_timer, M.frame_count = 0, 0
-    end
-    
     if input.key_pressed(input.SCANCODE_1) then M.anim_state = "rest" end
     if input.key_pressed(input.SCANCODE_2) then M.anim_state = "walking" end
-    if input.key_pressed(input.SCANCODE_3) then M.diagnostic = not M.diagnostic; print("Diagnostic Mode: " .. tostring(M.diagnostic)) end
+    if input.key_pressed(input.SCANCODE_3) then M.diagnostic = not M.diagnostic end
 
     vk.vkWaitForFences(device, 1, ffi.new("VkFence[1]", {frame_fence}), vk.VK_TRUE, 0xFFFFFFFFFFFFFFFFULL)
     vk.vkResetFences(device, 1, ffi.new("VkFence[1]", {frame_fence}))
@@ -164,8 +157,7 @@ function M.update()
 
     if _G._MOUSE_L then
         local dx, dy = input.mouse_delta()
-        M.orbit_yaw = M.orbit_yaw - dx * 0.01
-        M.orbit_pitch = math.max(-math.pi/2+0.1, math.min(math.pi/2-0.1, M.orbit_pitch + dy * 0.01))
+        M.orbit_yaw, M.orbit_pitch = M.orbit_yaw - dx * 0.01, math.max(-math.pi/2+0.1, math.min(math.pi/2-0.1, M.orbit_pitch + dy * 0.01))
     end
     local cam_x = M.target_pos[1] + math.sin(M.orbit_yaw) * math.cos(M.orbit_pitch) * M.orbit_radius
     local cam_y = M.target_pos[2] + math.sin(M.orbit_pitch) * M.orbit_radius
@@ -174,7 +166,6 @@ function M.update()
     local proj = mc.mat4_perspective(mc.rad(60), sw.extent.width/sw.extent.height, 0.1, 1000.0)
     local vp = mc.mat4_multiply(proj, view)
 
-    -- LIVE BONE UPDATE
     local bone_globals = {}
     local function calc_globals(bone, parent_global)
         local local_m = mc.mat4_identity()
@@ -188,10 +179,8 @@ function M.update()
     local root = nil; for _, b in ipairs(bones) do if b.parent_id == 0 then root = b; break end end
     if root then calc_globals(root, mc.mat4_identity()) end
 
-    local bone_data = ffi.new("MeshBone[?]", #segments)
-    local segment_dirs = {}
-
     -- 1. Pre-calculate directions for all segments
+    local segment_dirs = {}
     for i, s in ipairs(segments) do
         local m_start = bone_globals[s.start_pos[4] + 1]
         local m_end = bone_globals[s.end_pos[4] + 1]
@@ -202,24 +191,23 @@ function M.update()
     end
 
     -- 2. Calculate Mitered Planes (Bisectors)
+    local bone_data = ffi.new("MeshBone[?]", #segments)
     for i, s in ipairs(segments) do
-        local m_start = bone_globals[s.start_pos[4] + 1]
-        local m_end = bone_globals[s.end_pos[4] + 1]
+        local m_start, m_end = bone_globals[s.start_pos[4] + 1], bone_globals[s.end_pos[4] + 1]
         local dir = segment_dirs[i]
         
-        -- Find incoming dir (parent segment)
+        -- Find shared joint planes
         local incoming = dir
         for j, ps in ipairs(segments) do
             if ps.end_pos[4] == s.start_pos[4] then incoming = segment_dirs[j]; break end
         end
 
-        -- Find outgoing dir (child segments)
         local outgoing = dir
         for j, cs in ipairs(segments) do
             if cs.start_pos[4] == s.end_pos[4] then outgoing = segment_dirs[j]; break end
         end
 
-        -- Bisectors
+        -- SHARED MITER MATH: Child Start Normal MUST EQUAL Parent End Normal
         local ps = {incoming[1] + dir[1], incoming[2] + dir[2], incoming[3] + dir[3]}
         local psl = math.sqrt(ps[1]^2 + ps[2]^2 + ps[3]^2); if psl > 0 then ps = {ps[1]/psl, ps[2]/psl, ps[3]/psl} else ps = dir end
         
@@ -229,15 +217,12 @@ function M.update()
         -- Flex logic
         local dot = dir[1]*incoming[1] + dir[2]*incoming[2] + dir[3]*incoming[3]
         local flex = math.max(0, 1.0 - dot) * 0.5
-
-        -- Stable Side Vector (to prevent flipping)
-        local side = 1.0 -- Left
-        if s.name:find("Right") then side = -1.0 end
+        local side = (s.name:find("Right") and -1 or 1)
 
         bone_data[i-1].start_pos = {m_start.m[12], m_start.m[13], m_start.m[14], s.start_pos[4]}
         bone_data[i-1].end_pos = {m_end.m[12], m_end.m[13], m_end.m[14], s.end_pos[4]}
         bone_data[i-1].plane_start = {ps[1], ps[2], ps[3], flex}
-        bone_data[i-1].plane_end = {pe[1], pe[2], pe[3], side} -- STORE SIDE HERE
+        bone_data[i-1].plane_end = {pe[1], pe[2], pe[3], side}
     end
     bone_buf:upload(bone_data)
 
@@ -245,12 +230,18 @@ function M.update()
     vk.vkResetCommandBuffer(cb, 0); vk.vkBeginCommandBuffer(cb, ffi.new("VkCommandBufferBeginInfo", { sType = vk.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO }))
     vk.vkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_COMPUTE, compute_pipe)
     vk.vkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_COMPUTE, compute_layout, 0, 1, ffi.new("VkDescriptorSet[1]", {M.c_ds}), 0, nil)
-    local pc_data = ffi.new("uint32_t[4]", { #segments, RINGS_PER_BONE, VERTS_PER_RING, M.diagnostic and 1 or 0 })
-    vk.vkCmdPushConstants(cb, compute_layout, vk.VK_SHADER_STAGE_COMPUTE_BIT, 0, 16, pc_data)
+    vk.vkCmdPushConstants(cb, compute_layout, vk.VK_SHADER_STAGE_COMPUTE_BIT, 0, 16, ffi.new("uint32_t[4]", { #segments, RINGS_PER_BONE, VERTS_PER_RING, M.diagnostic and 1 or 0 }))
     vk.vkCmdDispatch(cb, 1, 1, #segments)
     local v_barrier = ffi.new("VkBufferMemoryBarrier[1]", {{ sType = vk.VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER, srcAccessMask = vk.VK_ACCESS_SHADER_WRITE_BIT, dstAccessMask = vk.VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT, buffer = vbuf.handle, offset = 0, size = vbuf.size }})
     vk.vkCmdPipelineBarrier(cb, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, vk.VK_PIPELINE_STAGE_VERTEX_INPUT_BIT, 0, 0, nil, 1, v_barrier, 0, nil)
 
+    local color_attach = ffi.new("VkRenderingAttachmentInfo[1]")
+    color_attach[0].sType, color_attach[0].imageView, color_attach[0].imageLayout = vk.VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, ffi.cast("VkImageView", sw.views[idx]), vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
+    color_attach[0].loadOp, color_attach[0].storeOp, color_attach[0].clearValue.color.float32 = vk.VK_ATTACHMENT_LOAD_OP_CLEAR, vk.VK_ATTACHMENT_STORE_OP_STORE, {0.05, 0.05, 0.05, 1.0}
+    local depth_attach = ffi.new("VkRenderingAttachmentInfo[1]")
+    depth_attach[0].sType, depth_attach[0].imageView, depth_attach[0].imageLayout = vk.VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, depth_img.view, vk.VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL
+    depth_attach[0].loadOp, depth_attach[0].storeOp, depth_attach[0].clearValue.depthStencil.depth = vk.VK_ATTACHMENT_LOAD_OP_CLEAR, vk.VK_ATTACHMENT_STORE_OP_STORE, 1.0
+    
     local barriers = ffi.new("VkImageMemoryBarrier[2]")
     barriers[0].sType, barriers[0].oldLayout, barriers[0].newLayout = vk.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, vk.VK_IMAGE_LAYOUT_UNDEFINED, vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
     barriers[0].image, barriers[0].subresourceRange = ffi.cast("VkImage", sw.images[idx]), { aspectMask = vk.VK_IMAGE_ASPECT_COLOR_BIT, levelCount = 1, layerCount = 1 }
@@ -260,14 +251,7 @@ function M.update()
     barriers[1].dstAccessMask = bit.bor(vk.VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT, vk.VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT)
     vk.vkCmdPipelineBarrier(cb, vk.VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, bit.bor(vk.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, vk.VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT), 0, 0, nil, 0, nil, 2, barriers)
 
-    local color_attach = ffi.new("VkRenderingAttachmentInfo[1]")
-    color_attach[0].sType, color_attach[0].imageView, color_attach[0].imageLayout = vk.VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, ffi.cast("VkImageView", sw.views[idx]), vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
-    color_attach[0].loadOp, color_attach[0].storeOp, color_attach[0].clearValue.color.float32 = vk.VK_ATTACHMENT_LOAD_OP_CLEAR, vk.VK_ATTACHMENT_STORE_OP_STORE, {0.05, 0.05, 0.05, 1.0}
-    local depth_attach = ffi.new("VkRenderingAttachmentInfo[1]")
-    depth_attach[0].sType, depth_attach[0].imageView, depth_attach[0].imageLayout = vk.VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, depth_img.view, vk.VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL
-    depth_attach[0].loadOp, depth_attach[0].storeOp, depth_attach[0].clearValue.depthStencil.depth = vk.VK_ATTACHMENT_LOAD_OP_CLEAR, vk.VK_ATTACHMENT_STORE_OP_STORE, 1.0
     vk.vkCmdBeginRendering(cb, ffi.new("VkRenderingInfo", { sType=vk.VK_STRUCTURE_TYPE_RENDERING_INFO, renderArea={extent=sw.extent}, layerCount=1, colorAttachmentCount=1, pColorAttachments=color_attach, pDepthAttachment=depth_attach }))
-    
     vk.vkCmdSetViewport(cb, 0, 1, ffi.new("VkViewport", { x=0, y=0, width=sw.extent.width, height=sw.extent.height, minDepth=0, maxDepth=1 }))
     vk.vkCmdSetScissor(cb, 0, 1, ffi.new("VkRect2D", { extent=sw.extent }))
     vk.vkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, graphics_pipe)
@@ -276,14 +260,25 @@ function M.update()
     local pc = ffi.new("PC")
     local model = mc.mat4_identity()
     local mvp = mc.mat4_multiply(vp, model)
-    for i=0,15 do pc.mvp[i] = mvp.m[i]; pc.model[i] = model.m[i] end
-    vk.vkCmdPushConstants(cb, pipe_layout, bit.bor(vk.VK_SHADER_STAGE_VERTEX_BIT, vk.VK_SHADER_STAGE_FRAGMENT_BIT), 0, 128, pc)
+    for i=0,15 do pc.mvp[i], pc.model[i] = mvp.m[i], model.m[i] end
+    local mx, my = input.mouse_pos(); pc.mouse_pos[0], pc.mouse_pos[1] = mx, my
+    vk.vkCmdPushConstants(cb, pipe_layout, bit.bor(vk.VK_SHADER_STAGE_VERTEX_BIT, vk.VK_SHADER_STAGE_FRAGMENT_BIT), 0, 144, pc)
     
     vk.vkCmdBindVertexBuffers(cb, 0, 1, ffi.new("VkBuffer[1]", {vbuf.handle}), ffi.new("VkDeviceSize[1]", {0}))
     vk.vkCmdBindIndexBuffer(cb, ibuf.handle, 0, vk.VK_INDEX_TYPE_UINT32)
     vk.vkCmdDrawIndexed(cb, idx_count, 1, 0, 0, 0)
-
     vk.vkCmdEndRendering(cb)
+
+    -- READBACK PICKING
+    local clear_id = ffi.new("uint32_t[1]", {0xFFFFFFFF})
+    local pick_id = ffi.new("uint32_t[1]")
+    ffi.copy(pick_id, pick_buf.allocation.ptr, 4)
+    if pick_id[0] ~= 0xFFFFFFFF then
+        local s = segments[pick_id[0]+1]
+        if s then print("Mouse over: " .. s.name) end
+    end
+    pick_buf:upload(clear_id)
+
     local present_bar = ffi.new("VkImageMemoryBarrier[1]", {{ sType=vk.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, oldLayout=vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, newLayout=vk.VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, image=ffi.cast("VkImage", sw.images[idx]), subresourceRange={ aspectMask=vk.VK_IMAGE_ASPECT_COLOR_BIT, levelCount=1, layerCount=1 }, srcAccessMask=vk.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, dstAccessMask=0 }})
     vk.vkCmdPipelineBarrier(cb, vk.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, vk.VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nil, 0, nil, 1, present_bar)
     vk.vkEndCommandBuffer(cb)
