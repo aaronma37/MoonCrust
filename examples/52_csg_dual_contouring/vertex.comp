@@ -47,6 +47,102 @@ layout(push_constant) uniform PC {
     uint vertex_counter_idx;
 } pc;
 
+// --- SDF Primitives ---
+float sdSphere(vec3 p, float s) { return length(p) - s; }
+float sdBox(vec3 p, vec3 b) { vec3 q = abs(p) - b; return length(max(q, 0.0)) + min(max(q.x, max(q.y, q.z)), 0.0); }
+float sdCapsule(vec3 p, vec3 a, vec3 b, float r) {
+    vec3 pa = p - a, ba = b - a;
+    float h = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0);
+    return length(pa - ba * h) - r;
+}
+float sdEllipsoid(vec3 p, vec3 r) {
+    float k0 = length(p / r);
+    float k1 = length(p / (r * r));
+    return k0 * (k0 - 1.0) / k1;
+}
+float opSmoothUnion(float d1, float d2, float k) {
+    float h = clamp(0.5 + 0.5 * (d2 - d1) / k, 0.0, 1.0);
+    return mix(d2, d1, h) - k * h * (1.0 - h);
+}
+
+struct Bone {
+    mat4 world_matrix;
+    mat4 inv_world_matrix;
+    mat4 bind_matrix;
+    mat4 inv_bind_matrix;
+    float bounding_radius;
+    uint sdf_offset;
+    uint sdf_count;
+    uint padding;
+};
+
+struct SDFDescriptor {
+    uint bone_index;
+    uint primitive_type;
+    uint id;
+    uint color_packed;
+    vec4 params;
+    vec4 local_offset;
+};
+
+Bone get_bone(uint idx) {
+    uint base = idx * 68;
+    Bone b;
+    for(int i=0; i<4; i++) for(int j=0; j<4; j++) b.world_matrix[i][j] = uintBitsToFloat(all_bufs[nonuniformEXT(pc.bones_idx)].data[base + i*4 + j]);
+    for(int i=0; i<4; i++) for(int j=0; j<4; j++) b.inv_world_matrix[i][j] = uintBitsToFloat(all_bufs[nonuniformEXT(pc.bones_idx)].data[base + 16 + i*4 + j]);
+    for(int i=0; i<4; i++) for(int j=0; j<4; j++) b.bind_matrix[i][j] = uintBitsToFloat(all_bufs[nonuniformEXT(pc.bones_idx)].data[base + 32 + i*4 + j]);
+    for(int i=0; i<4; i++) for(int j=0; j<4; j++) b.inv_bind_matrix[i][j] = uintBitsToFloat(all_bufs[nonuniformEXT(pc.bones_idx)].data[base + 48 + i*4 + j]);
+    b.bounding_radius = uintBitsToFloat(all_bufs[nonuniformEXT(pc.bones_idx)].data[base + 64]);
+    b.sdf_offset = all_bufs[nonuniformEXT(pc.bones_idx)].data[base + 65];
+    b.sdf_count = all_bufs[nonuniformEXT(pc.bones_idx)].data[base + 66];
+    return b;
+}
+
+SDFDescriptor get_sdf(uint idx) {
+    uint base = idx * 12;
+    SDFDescriptor s;
+    s.bone_index = all_bufs[nonuniformEXT(pc.sdfs_idx)].data[base + 0];
+    s.primitive_type = all_bufs[nonuniformEXT(pc.sdfs_idx)].data[base + 1];
+    s.id = all_bufs[nonuniformEXT(pc.sdfs_idx)].data[base + 2];
+    s.color_packed = all_bufs[nonuniformEXT(pc.sdfs_idx)].data[base + 3];
+    s.params = vec4(uintBitsToFloat(all_bufs[nonuniformEXT(pc.sdfs_idx)].data[base + 4]),
+                    uintBitsToFloat(all_bufs[nonuniformEXT(pc.sdfs_idx)].data[base + 5]),
+                    uintBitsToFloat(all_bufs[nonuniformEXT(pc.sdfs_idx)].data[base + 6]),
+                    uintBitsToFloat(all_bufs[nonuniformEXT(pc.sdfs_idx)].data[base + 7]));
+    s.local_offset = vec4(uintBitsToFloat(all_bufs[nonuniformEXT(pc.sdfs_idx)].data[base + 8]),
+                          uintBitsToFloat(all_bufs[nonuniformEXT(pc.sdfs_idx)].data[base + 9]),
+                          uintBitsToFloat(all_bufs[nonuniformEXT(pc.sdfs_idx)].data[base + 10]),
+                          uintBitsToFloat(all_bufs[nonuniformEXT(pc.sdfs_idx)].data[base + 11]));
+    return s;
+}
+
+float evaluate_sdf(vec3 pos) {
+    float min_dist = 1000.0;
+    uint closest_id = 0;
+    for (uint i = 0; i < pc.bone_count; i++) {
+        Bone b = get_bone(i);
+        vec3 local_p = (b.inv_world_matrix * vec4(pos, 1.0)).xyz;
+        if (length(local_p) > b.bounding_radius + 0.5) continue;
+        for (uint j = 0; j < b.sdf_count; j++) {
+            SDFDescriptor sdf = get_sdf(b.sdf_offset + j);
+            vec3 p = local_p - sdf.local_offset.xyz;
+            float d = 1000.0;
+            if (sdf.primitive_type == 0) d = sdSphere(p, sdf.params.x);
+            else if (sdf.primitive_type == 1) d = sdCapsule(p, vec3(0, sdf.params.y, 0), vec3(0, sdf.params.z, 0), sdf.params.x);
+            else if (sdf.primitive_type == 2) d = sdBox(p, sdf.params.xyz);
+            else if (sdf.primitive_type == 3) d = sdEllipsoid(p, sdf.params.xyz);
+            
+            bool is_first = (closest_id == 0);
+            bool should_blend = (sdf.id == closest_id) || is_first || (sdf.id < 50 && closest_id < 50);
+            if (d < min_dist) {
+                if (!is_first && should_blend) min_dist = opSmoothUnion(min_dist, d, 0.06);
+                else { min_dist = d; closest_id = sdf.id; }
+            } else if (!is_first && should_blend) min_dist = opSmoothUnion(min_dist, d, 0.06);
+        }
+    }
+    return min_dist;
+}
+
 uint get_grid_idx(uvec3 c) { 
     c = clamp(c, uvec3(0), pc.grid_size - 1);
     return c.x + c.y * pc.grid_size.x + c.z * pc.grid_size.x * pc.grid_size.y; 
@@ -127,11 +223,13 @@ void main() {
 
     vec3 pos = p_sum / float(max(1, p_count));
     
-    // Estimate normal from corner distances (trilinear gradient)
-    float nx = (d[1]-d[0] + d[3]-d[2] + d[5]-d[4] + d[7]-d[6]) * 0.25;
-    float ny = (d[2]-d[0] + d[3]-d[1] + d[6]-d[4] + d[7]-d[5]) * 0.25;
-    float nz = (d[4]-d[0] + d[5]-d[1] + d[6]-d[2] + d[7]-d[3]) * 0.25;
-    vec3 n = normalize(vec3(nx, ny, nz));
+    // Analytic Normal (SDF Gradient)
+    const float eps = 0.001;
+    vec3 n = normalize(vec3(
+        evaluate_sdf(pos + vec3(eps, 0, 0)) - evaluate_sdf(pos - vec3(eps, 0, 0)),
+        evaluate_sdf(pos + vec3(0, eps, 0)) - evaluate_sdf(pos - vec3(0, eps, 0)),
+        evaluate_sdf(pos + vec3(0, 0, eps)) - evaluate_sdf(pos - vec3(0, 0, eps))
+    ));
 
     GridNode best = get_grid(get_grid_idx(g_id + uvec3(best_corner&1, (best_corner>>1)&1, (best_corner>>2)&1)));
     Vertex v;

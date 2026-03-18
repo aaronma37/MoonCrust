@@ -28,9 +28,9 @@ local device, queue, graphics_family, sw, bindless_set
 local depth_img
 local bone_buffer, bone_data
 local sdf_buffer, sdf_data, sdf_count = 0
-local grid_buffer, vertex_buffer, index_buffer, counter_buffer, cell_buffer
-local field_pipe, vertex_pipe, index_pipe, graphics_pipe, reset_pipe
-local field_layout, vertex_layout, index_layout, graphics_layout
+local grid_buffer, vertex_buffer, index_buffer, counter_buffer, cell_buffer, floor_buffer
+local field_pipe, vertex_pipe, index_pipe, graphics_pipe, reset_pipe, outline_pipe, floor_pipe
+local field_layout, vertex_layout, index_layout, graphics_layout, floor_layout
 local graph, g_swImages, g_gridBuffer, g_vertexBuffer, g_indexBuffer, g_counterBuffer, g_cellBuffer = {}, {}, {}, {}, {}, {}, {}
 local frame_fences, image_available_sems, render_finished_sems = {}, {}, {}
 local current_frame, current_time = 0, 0
@@ -89,13 +89,14 @@ ffi.cdef[[
     typedef struct RenderPC {
         float projection[16];
         float view[16];
-        float cam_pos[3];
+        float cam_pos[4]; // vec4 for alignment
         uint32_t bone_count;
         uint32_t bones_idx;
         float outline_thickness;
         uint32_t outline_mode;
-        uint32_t debug_mode; // 0: Off, 1: Weights
-        uint32_t debug_bone; // Index of the bone to visualize
+        uint32_t debug_mode;
+        uint32_t debug_bone;
+        uint32_t padding[2];
     } RenderPC;
 
     typedef struct GPUVertex {
@@ -137,6 +138,18 @@ function M.init()
     counter_buffer = mc.gpu.buffer(64, "storage_transfer_indirect", nil, true) -- 20 bytes cmd + extra room
 
     depth_img = mc.gpu.image(sw.extent.width, sw.extent.height, vk.VK_FORMAT_D32_SFLOAT, "depth")
+
+    -- Floor Buffer (Simple Quad)
+    local floor_verts = ffi.new("float[12]", {
+        -1, 0, -1,
+         1, 0, -1,
+         1, 0,  1,
+        -1, 0,  1
+    })
+    local floor_indices = ffi.new("uint32_t[6]", { 0, 1, 2, 0, 2, 3 })
+    floor_buffer = mc.gpu.buffer(48 + 24, "vertex_index", nil, true)
+    ffi.copy(floor_buffer.allocation.ptr, floor_verts, 48)
+    ffi.copy(ffi.cast("char*", floor_buffer.allocation.ptr) + 48, floor_indices, 24)
 
     -- Fill SDFs and initial Bones
     generator.update_matrices(skeleton_tree, skeleton_order, bone_data, bone_map)
@@ -228,9 +241,31 @@ function M.init()
         vertex_attribute_count = 5,
         depth_test = true,
         depth_write = true,
+        depth_compare_op = vk.VK_COMPARE_OP_LESS_OR_EQUAL,
         depth_format = vk.VK_FORMAT_D32_SFLOAT,
         color_formats = {sw.format},
         cull_mode = vk.VK_CULL_MODE_FRONT_BIT -- CULL FRONT for inverted hull
+    })
+
+    -- Floor Pipe
+    local floor_pc_range = ffi.new("VkPushConstantRange[1]", {{ stageFlags = bit.bor(vk.VK_SHADER_STAGE_VERTEX_BIT, vk.VK_SHADER_STAGE_FRAGMENT_BIT), offset = 0, size = 140 }})
+    floor_layout = pipeline.create_layout(device, {}, floor_pc_range)
+    local floor_vert_src = io.open("examples/52_csg_dual_contouring/floor.vert"):read("*all")
+    local floor_frag_src = io.open("examples/52_csg_dual_contouring/floor.frag"):read("*all")
+    local floor_vert_mod = shader.create_module(device, shader.compile_glsl(floor_vert_src, vk.VK_SHADER_STAGE_VERTEX_BIT))
+    local floor_frag_mod = shader.create_module(device, shader.compile_glsl(floor_frag_src, vk.VK_SHADER_STAGE_FRAGMENT_BIT))
+    local floor_vi_bindings = ffi.new("VkVertexInputBindingDescription[1]", {{ binding = 0, stride = 12, inputRate = vk.VK_VERTEX_INPUT_RATE_VERTEX }})
+    local floor_vi_attrs = ffi.new("VkVertexInputAttributeDescription[1]", {{ location = 0, binding = 0, format = vk.VK_FORMAT_R32G32B32_SFLOAT, offset = 0 }})
+    
+    floor_pipe = pipeline.create_graphics_pipeline(device, floor_layout, floor_vert_mod, floor_frag_mod, {
+        vertex_binding = floor_vi_bindings,
+        vertex_attributes = floor_vi_attrs,
+        vertex_attribute_count = 1,
+        depth_test = true,
+        depth_write = false,
+        depth_format = vk.VK_FORMAT_D32_SFLOAT,
+        color_formats = {sw.format},
+        blend = true
     })
 
     -- 4. Graph & Cbs
@@ -467,17 +502,25 @@ function M.update()
     vk.vkCmdBindVertexBuffers(cb, 0, 1, ffi.new("VkBuffer[1]", {vertex_buffer.handle}), ffi.new("VkDeviceSize[1]", {0}))
     vk.vkCmdBindIndexBuffer(cb, index_buffer.handle, 0, vk.VK_INDEX_TYPE_UINT32)
 
-    -- PASS 1: Outline
+    -- PASS 1: Character
+    pc_render.outline_mode = 0
+    vk.vkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, graphics_pipe)
+    vk.vkCmdPushConstants(cb, graphics_layout, bit.bor(vk.VK_SHADER_STAGE_VERTEX_BIT, vk.VK_SHADER_STAGE_FRAGMENT_BIT), 0, ffi.sizeof("RenderPC"), pc_render)
+    vk.vkCmdDrawIndexedIndirect(cb, counter_buffer.handle, 0, 1, 20)
+
+    -- PASS 2: Outline
     pc_render.outline_mode = 1
     vk.vkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, outline_pipe)
     vk.vkCmdPushConstants(cb, graphics_layout, bit.bor(vk.VK_SHADER_STAGE_VERTEX_BIT, vk.VK_SHADER_STAGE_FRAGMENT_BIT), 0, ffi.sizeof("RenderPC"), pc_render)
     vk.vkCmdDrawIndexedIndirect(cb, counter_buffer.handle, 0, 1, 20)
 
-    -- PASS 2: Character
-    pc_render.outline_mode = 0
-    vk.vkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, graphics_pipe)
-    vk.vkCmdPushConstants(cb, graphics_layout, bit.bor(vk.VK_SHADER_STAGE_VERTEX_BIT, vk.VK_SHADER_STAGE_FRAGMENT_BIT), 0, ffi.sizeof("RenderPC"), pc_render)
-    vk.vkCmdDrawIndexedIndirect(cb, counter_buffer.handle, 0, 1, 20)
+    -- PASS 3: Floor
+    vk.vkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, floor_pipe)
+    vk.vkCmdBindVertexBuffers(cb, 0, 1, ffi.new("VkBuffer[1]", {floor_buffer.handle}), ffi.new("VkDeviceSize[1]", {0}))
+    vk.vkCmdBindIndexBuffer(cb, floor_buffer.handle, 48, vk.VK_INDEX_TYPE_UINT32)
+    -- Just reuse the first part of pc_render (proj, view, cam_pos)
+    vk.vkCmdPushConstants(cb, floor_layout, bit.bor(vk.VK_SHADER_STAGE_VERTEX_BIT, vk.VK_SHADER_STAGE_FRAGMENT_BIT), 0, 4*16 + 4*16 + 4*3, pc_render)
+    vk.vkCmdDrawIndexed(cb, 6, 1, 0, 0, 0)
 
     vk.vkCmdEndRendering(cb)
 

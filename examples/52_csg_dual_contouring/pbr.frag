@@ -13,7 +13,7 @@ layout(location = 0) out vec4 outFragColor;
 layout(push_constant) uniform PC {
     mat4 projection;
     mat4 view;
-    vec3 cam_pos;
+    vec4 cam_pos;
     uint bone_count;
     uint bones_idx;
     float outline_thickness;
@@ -58,7 +58,7 @@ void main() {
 
     vec3 N = normalize(inNormal);
     vec3 L = normalize(vec3(1.0, 1.0, 1.5)); // Main Directional Light
-    vec3 V = normalize(pc.cam_pos - inWorldPos);
+    vec3 V = normalize(pc.cam_pos.xyz - inWorldPos);
     vec3 H = normalize(L + V);
 
     // --- STEP-TONE DIFFUSE ---

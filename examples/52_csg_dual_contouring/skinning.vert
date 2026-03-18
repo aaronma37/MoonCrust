@@ -19,7 +19,7 @@ layout(set = 0, binding = 0, std430) buffer AllBuffers { uint data[]; } all_bufs
 layout(push_constant) uniform PC {
     mat4 projection;
     mat4 view;
-    vec3 cam_pos;
+    vec4 cam_pos;
     uint bone_count;
     uint bones_idx;
     float outline_thickness;
@@ -66,11 +66,12 @@ void main() {
     }
 
     vec4 worldPos = skinMat * localPos;
+    if (pc.outline_mode == 1) {
+        vec3 viewDir = normalize(worldPos.xyz - pc.cam_pos.xyz);
+        worldPos.xyz += viewDir * 0.002; // Push slightly away from camera
+    }
     outWorldPos = worldPos.xyz;
     outNormal = normalize(mat3(skinMat) * inNormal.xyz);
     
     gl_Position = pc.projection * pc.view * worldPos;
-    if (pc.outline_mode == 1) {
-        gl_Position.z += 0.0001; // Nudge outline slightly back in depth
-    }
 }
