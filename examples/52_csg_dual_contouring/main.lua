@@ -29,7 +29,7 @@ local depth_img
 local bone_buffer, bone_data
 local sdf_buffer, sdf_data, sdf_count = 0
 local grid_buffer, vertex_buffer, index_buffer, counter_buffer, cell_buffer
-local field_pipe, vertex_pipe, index_pipe, graphics_pipe
+local field_pipe, vertex_pipe, index_pipe, graphics_pipe, reset_pipe
 local field_layout, vertex_layout, index_layout, graphics_layout
 local graph, g_swImages, g_gridBuffer, g_vertexBuffer, g_indexBuffer, g_counterBuffer, g_cellBuffer = {}, {}, {}, {}, {}, {}, {}
 local frame_fences, image_available_sems, render_finished_sems = {}, {}, {}
@@ -41,6 +41,8 @@ local fps_timer = 0
 
 local animations = {"rest", "walk", "idle", "run", "wave"}
 local current_anim_idx = 1
+local debug_mode = 0
+local debug_bone = 0
 
 local cam_rot = {0, 0}
 local cam_dist = 5.0
@@ -92,6 +94,8 @@ ffi.cdef[[
         uint32_t bones_idx;
         float outline_thickness;
         uint32_t outline_mode;
+        uint32_t debug_mode; // 0: Off, 1: Weights
+        uint32_t debug_bone; // Index of the bone to visualize
     } RenderPC;
 
     typedef struct GPUVertex {
@@ -180,6 +184,7 @@ function M.init()
     field_pipe = create_compute("field.comp", field_layout)
     vertex_pipe = create_compute("vertex.comp", field_layout)
     index_pipe = create_compute("index.comp", field_layout)
+    reset_pipe = create_compute("reset.comp", field_layout)
 
     -- Graphics Pipe
     local pc_gfx_range = ffi.new("VkPushConstantRange[1]", {{ stageFlags = bit.bor(vk.VK_SHADER_STAGE_VERTEX_BIT, vk.VK_SHADER_STAGE_FRAGMENT_BIT), offset = 0, size = ffi.sizeof("RenderPC") }})
@@ -269,10 +274,20 @@ local function bake_mesh()
     
     local barrier = ffi.new("VkMemoryBarrier[1]", {{
         sType = vk.VK_STRUCTURE_TYPE_MEMORY_BARRIER,
-        srcAccessMask = vk.VK_ACCESS_TRANSFER_WRITE_BIT,
+        srcAccessMask = bit.bor(vk.VK_ACCESS_TRANSFER_WRITE_BIT, vk.VK_ACCESS_SHADER_WRITE_BIT),
         dstAccessMask = bit.bor(vk.VK_ACCESS_SHADER_READ_BIT, vk.VK_ACCESS_SHADER_WRITE_BIT)
     }})
-    vk.vkCmdPipelineBarrier(cb, vk.VK_PIPELINE_STAGE_TRANSFER_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, barrier, 0, nil, 0, nil)
+    vk.vkCmdPipelineBarrier(cb, bit.bor(vk.VK_PIPELINE_STAGE_TRANSFER_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT), vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, barrier, 0, nil, 0, nil)
+
+    -- Pass 0: Reset (Initialization)
+    vk.vkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_COMPUTE, reset_pipe)
+    vk.vkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_COMPUTE, field_layout, 0, 1, ffi.new("VkDescriptorSet[1]", {bindless_set}), 0, nil)
+    vk.vkCmdPushConstants(cb, field_layout, vk.VK_SHADER_STAGE_COMPUTE_BIT, 0, ffi.sizeof("FieldPC"), pc_field)
+    vk.vkCmdDispatch(cb, 1, 1, 1)
+
+    barrier[0].srcAccessMask = vk.VK_ACCESS_SHADER_WRITE_BIT
+    barrier[0].dstAccessMask = vk.VK_ACCESS_SHADER_READ_BIT
+    vk.vkCmdPipelineBarrier(cb, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, barrier, 0, nil, 0, nil)
 
     -- Field
     vk.vkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_COMPUTE, field_pipe)
@@ -329,6 +344,17 @@ function M.update()
         print("Switching to Animation: " .. animations[current_anim_idx])
     end
 
+    if input.key_pressed(input.SCANCODE_K) then
+        debug_mode = (debug_mode + 1) % 3
+        local modes = {"OFF", "SINGLE_BONE_HEATMAP", "ALL_BONES_MIX"}
+        print("Weight Debug Mode: " .. modes[debug_mode + 1])
+    end
+
+    if input.key_pressed(input.SCANCODE_L) then
+        debug_bone = (debug_bone + 1) % #skeleton_order
+        print(string.format("Visualizing Bone [%d]: %s", debug_bone, skeleton_order[debug_bone+1]))
+    end
+
     -- Orbit Controls
 	local dx, dy = input.mouse_delta()
 	if input.mouse_down(1) then -- Left Click Drag
@@ -380,6 +406,8 @@ function M.update()
     pc_render.bones_idx = 0
     pc_render.outline_thickness = 0.008
     pc_render.outline_mode = 1 -- Pass 1: Outline
+    pc_render.debug_mode = debug_mode
+    pc_render.debug_bone = debug_bone
 
     local cb = M.cbs[current_frame + 1]
     vk.vkResetCommandBuffer(cb, 0); vk.vkBeginCommandBuffer(cb, ffi.new("VkCommandBufferBeginInfo", { sType = vk.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO }))

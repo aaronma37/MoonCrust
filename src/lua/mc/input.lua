@@ -90,12 +90,12 @@ function M.key_down(scancode)
 end
 
 function M.key_pressed(scancode)
-    if not curr_keyboard or scancode < 0 or scancode >= num_keys then return false end
+    if not scancode or not curr_keyboard or scancode < 0 or scancode >= num_keys then return false end
     return curr_keyboard[scancode] ~= 0 and prev_keyboard[scancode] == 0
 end
 
 function M.key_released(scancode)
-    if not curr_keyboard or scancode < 0 or scancode >= num_keys then return false end
+    if not scancode or not curr_keyboard or scancode < 0 or scancode >= num_keys then return false end
     return curr_keyboard[scancode] == 0 and prev_keyboard[scancode] ~= 0
 end
 
@@ -104,6 +104,9 @@ M.SCANCODE_W = 26
 M.SCANCODE_A = 4
 M.SCANCODE_S = 22
 M.SCANCODE_D = 7
+M.SCANCODE_J = 13
+M.SCANCODE_K = 14
+M.SCANCODE_L = 15
 M.SCANCODE_N = 17
 M.SCANCODE_M = 16
 M.SCANCODE_R = 21

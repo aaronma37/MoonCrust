@@ -1,0 +1,35 @@
+#version 460
+#extension GL_EXT_nonuniform_qualifier : require
+
+layout(local_size_x = 1) in;
+
+layout(set = 0, binding = 0, std430) buffer AllBuffers { uint data[]; } all_bufs[];
+
+layout(push_constant) uniform PC {
+    vec3 bounds_min;
+    uint bone_count;
+    vec3 bounds_max;
+    uint sdf_count;
+    uvec3 grid_size;
+    uint padding;
+    uint bones_idx;
+    uint sdfs_idx;
+    uint grid_idx;
+    uint vertices_idx;
+    uint indices_idx;
+    uint counter_idx;
+    uint cell_idx;
+    uint vertex_counter_idx;
+} pc;
+
+void main() {
+    // VkDrawIndexedIndirectCommand
+    all_bufs[nonuniformEXT(pc.counter_idx)].data[0] = 0; // indexCount
+    all_bufs[nonuniformEXT(pc.counter_idx)].data[1] = 1; // instanceCount
+    all_bufs[nonuniformEXT(pc.counter_idx)].data[2] = 0; // firstIndex
+    all_bufs[nonuniformEXT(pc.counter_idx)].data[3] = 0; // vertexOffset
+    all_bufs[nonuniformEXT(pc.counter_idx)].data[4] = 0; // firstInstance
+    
+    // Internal Vertex Counter
+    all_bufs[nonuniformEXT(pc.vertex_counter_idx)].data[0] = 0;
+}

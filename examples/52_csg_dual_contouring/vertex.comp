@@ -85,15 +85,6 @@ void set_vertex(uint idx, Vertex v) {
 void main() {
     uvec3 g_id = gl_GlobalInvocationID;
     
-    if (g_id.x == 0 && g_id.y == 0 && g_id.z == 0) {
-        all_bufs[nonuniformEXT(pc.counter_idx)].data[0] = 0; // indexCount
-        all_bufs[nonuniformEXT(pc.counter_idx)].data[1] = 1; // instanceCount
-        all_bufs[nonuniformEXT(pc.counter_idx)].data[2] = 0; // firstIndex
-        all_bufs[nonuniformEXT(pc.counter_idx)].data[3] = 0; // vertexOffset
-        all_bufs[nonuniformEXT(pc.counter_idx)].data[4] = 0; // firstInstance
-        all_bufs[nonuniformEXT(pc.vertex_counter_idx)].data[0] = 0;
-    }
-
     if (g_id.x >= pc.grid_size.x - 1 || g_id.y >= pc.grid_size.y - 1 || g_id.z >= pc.grid_size.z - 1) {
         if (g_id.x < pc.grid_size.x && g_id.y < pc.grid_size.y && g_id.z < pc.grid_size.z) {
             all_bufs[nonuniformEXT(pc.cell_idx)].data[get_grid_idx(g_id)] = 0xFFFFFFFF;

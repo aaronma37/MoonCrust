@@ -5,6 +5,8 @@ layout(location = 0) in vec3 inNormal;
 layout(location = 1) flat in vec4 inColor;
 layout(location = 2) in vec3 inWorldPos;
 layout(location = 3) flat in uint inID;
+layout(location = 4) flat in uvec4 inBoneIds;
+layout(location = 5) in vec4 inBoneWeights;
 
 layout(location = 0) out vec4 outFragColor;
 
@@ -14,9 +16,46 @@ layout(push_constant) uniform PC {
     vec3 cam_pos;
     uint bone_count;
     uint bones_idx;
+    float outline_thickness;
+    uint outline_mode;
+    uint debug_mode;
+    uint debug_bone;
 } pc;
 
+vec3 hash_color(uint id) {
+    uint x = id * 123456789;
+    x = (x ^ (x >> 16)) * 0x7feb352d;
+    x = (x ^ (x >> 16)) * 0x846ca68b;
+    x = (x ^ (x >> 16));
+    return vec3(float(x & 0xFF) / 255.0, float((x >> 8) & 0xFF) / 255.0, float((x >> 16) & 0xFF) / 255.0);
+}
+
 void main() {
+    if (pc.debug_mode == 1) { // SINGLE BONE HEATMAP
+        float weight = 0.0;
+        if (inBoneIds.x == pc.debug_bone) weight += inBoneWeights.x;
+        if (inBoneIds.y == pc.debug_bone) weight += inBoneWeights.y;
+        if (inBoneIds.z == pc.debug_bone) weight += inBoneWeights.z;
+        if (inBoneIds.w == pc.debug_bone) weight += inBoneWeights.w;
+        
+        // Heatmap: Blue (0) -> Green (0.5) -> Red (1.0)
+        vec3 color = mix(vec3(0.0, 0.0, 1.0), vec3(0.0, 1.0, 0.0), smoothstep(0.0, 0.5, weight));
+        color = mix(color, vec3(1.0, 0.0, 0.0), smoothstep(0.5, 1.0, weight));
+        
+        outFragColor = vec4(color, 1.0);
+        return;
+    }
+    
+    if (pc.debug_mode == 2) { // MULTI-BONE WEIGHT VIZ
+        vec3 color = vec3(0.0);
+        color += hash_color(inBoneIds.x) * inBoneWeights.x;
+        color += hash_color(inBoneIds.y) * inBoneWeights.y;
+        color += hash_color(inBoneIds.z) * inBoneWeights.z;
+        color += hash_color(inBoneIds.w) * inBoneWeights.w;
+        outFragColor = vec4(color, 1.0);
+        return;
+    }
+
     vec3 N = normalize(inNormal);
     vec3 L = normalize(vec3(1.0, 1.0, 1.5)); // Main Directional Light
     vec3 V = normalize(pc.cam_pos - inWorldPos);
@@ -54,6 +93,14 @@ void main() {
         baseColor *= 1.1;
         final_spec = spec * 1.2;
         final_rim = rim * 0.5; // Brighter rim for metal
+    } else if (inID == 4) { // EYES
+        diff = 1.0; // Unlit / Constant brightness
+        baseColor *= 1.2;
+        // Static Eye Highlight
+        vec3 eye_dir = normalize(vec3(0.1, 0.2, 0.8));
+        float eye_spec = smoothstep(0.99, 1.0, dot(N, eye_dir));
+        final_spec = eye_spec * 1.5;
+        final_rim = 0.0;
     } else if (inID == 5) { // HAIR
         // Anisotropic-style sheen (Angel Ring)
         // For a horizontal halo, the tangent should be vertical (strand direction)

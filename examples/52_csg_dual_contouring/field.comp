@@ -192,7 +192,9 @@ void main() {
     vec4 weights = vec4(0.0);
     float sum = 0.0;
     for (int k = 0; k < 4; k++) {
-        float w = 1.0 / (best_bone_dists[k] * best_bone_dists[k] + 1e-4);
+        // Use exponential falloff for much smoother blending
+        // k factor (e.g., 20.0) controls the sharpness of the influence
+        float w = exp(-20.0 * best_bone_dists[k]);
         weights[k] = w; sum += w;
     }
     weights /= (sum + 1e-6);

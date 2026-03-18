@@ -264,6 +264,10 @@ function M.equip_character(tree, loadout, time)
 
 		-- COWLICK (Ahoge)
 		{ bone = "head", type = "ellipsoid", id = 5, color = hair_color, params = { 0.01, 0.08, 0.01, 0.01 }, offset = { 0.02, 0.15, 0.02 } },
+
+		-- EYES
+		{ bone = "head", type = "ellipsoid", id = 4, color = pack_color(0.2, 0.4, 0.8), params = { 0.015, 0.025, 0.01, 0.01 }, offset = { -0.04, -0.01, 0.085 } },
+		{ bone = "head", type = "ellipsoid", id = 4, color = pack_color(0.2, 0.4, 0.8), params = { 0.015, 0.025, 0.01, 0.01 }, offset = {  0.04, -0.01, 0.085 } },
 	})
 	add_sdfs("neck", {
 		{ bone = "neck", type = "capsule", id = 1, color = body_color, params = { 0.05, 0.0, 0.15, 0.03 } },

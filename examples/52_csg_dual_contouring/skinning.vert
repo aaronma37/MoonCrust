@@ -11,6 +11,8 @@ layout(location = 0) out vec3 outNormal;
 layout(location = 1) flat out vec4 outColor;
 layout(location = 2) out vec3 outWorldPos;
 layout(location = 3) flat out uint outID;
+layout(location = 4) flat out uvec4 outBoneIds;
+layout(location = 5) out vec4 outBoneWeights;
 
 layout(set = 0, binding = 0, std430) buffer AllBuffers { uint data[]; } all_bufs[];
 
@@ -22,6 +24,8 @@ layout(push_constant) uniform PC {
     uint bones_idx;
     float outline_thickness;
     uint outline_mode;
+    uint debug_mode;
+    uint debug_bone;
 } pc;
 
 mat4 get_bone_mat(uint bone_idx, uint offset) {
@@ -53,6 +57,8 @@ void main() {
 
     outID = floatBitsToUint(inColor.a);
     outColor = vec4(inColor.rgb, 1.0);
+    outBoneIds = inBoneIds;
+    outBoneWeights = inBoneWeights;
     
     vec4 localPos = vec4(inPos.xyz, 1.0);
     if (pc.outline_mode == 1) {
