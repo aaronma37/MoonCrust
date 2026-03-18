@@ -211,6 +211,11 @@ function M.update()
         local ps = {incoming[1] + dir[1], incoming[2] + dir[2], incoming[3] + dir[3]}
         local psl = math.sqrt(ps[1]^2 + ps[2]^2 + ps[3]^2); if psl > 0 then ps = {ps[1]/psl, ps[2]/psl, ps[3]/psl} else ps = dir end
         
+        -- HIPS BRANCH FUSION: Force all segments starting at Hips to use a stable vertical miter
+        if s.parent_name == "mixamorig_Hips" then
+            ps = {0, 1, 0} -- Force horizontal ring at the root
+        end
+
         local pe = {dir[1] + outgoing[1], dir[2] + outgoing[2], dir[3] + outgoing[3]}
         local pel = math.sqrt(pe[1]^2 + pe[2]^2 + pe[3]^2); if pel > 0 then pe = {pe[1]/pel, pe[2]/pel, pe[3]/pel} else pe = dir end
 

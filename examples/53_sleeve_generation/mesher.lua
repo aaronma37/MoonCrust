@@ -91,27 +91,36 @@ function M.create_params(num_bones, rings_per_bone, segments)
         local start_j = get_joint(seg.parent_name)
         local end_j = get_joint(seg.child_name)
 
-        -- Determine Tapering Profile
-        local taper_pow = 1.0
-        local s_push, e_push = 0.0, 0.0
-
-        if seg.parent_name == "mixamorig_Spine2" and seg.child_name == "mixamorig_Neck" then
-            taper_pow = 5.0 -- STEEP CHEST SHELF
-            s_push = 0.4
-        end
-
-        -- Socket Logic: Special cases for branching limbs
+        -- SOCKET LOGIC & PELVIS FUSION
         local s_r, e_r = start_j.r, end_j.r
-        if seg.parent_name == "mixamorig_Hips" and seg.child_name:find("Leg") then
-            s_r = 0.6 -- Leg Socket
+        local s_push, e_push = 0.0, 0.0
+        local taper_pow = 1.0
+
+        -- LEG FUSION: Start legs at hip-width, then cinch smoothly
+        if seg.parent_name == "mixamorig_Hips" then
+            s_r = 1.2 
+            s_oval = 0.4
+            if seg.child_name:find("Leg") then
+                taper_pow = 1.0 -- LINEAR CINCH: Smooth muscular transition
+                e_r = 0.7 -- WIDER THIGH
+            end
         end
+
+        -- SHOULDER SOCKET: Keep these as sockets for now to prevent chest-mess
         if seg.parent_name == "mixamorig_Spine2" and (seg.child_name:find("Shoulder") or seg.child_name:find("Arm")) then
-            s_r = 0.5 -- Shoulder Socket
+            s_r = 0.5 
+        end
+
+        -- CHEST SHELF
+        if seg.parent_name == "mixamorig_Spine2" and seg.child_name == "mixamorig_Neck" then
+            taper_pow = 5.0
+            s_push = 0.4
         end
 
         for r = 0, rings_per_bone - 1 do
             local p = params[b * rings_per_bone + r]
             local rt = r / (rings_per_bone - 1)
+            -- Apply the taper power to the progression
             local t = math.pow(rt, taper_pow)
             
             local cur_r = s_r + (e_r - s_r) * t
@@ -119,21 +128,24 @@ function M.create_params(num_bones, rings_per_bone, segments)
             
             p.coeffs[0] = cur_r
             p.coeffs[3] = cur_oval * cur_r
-            p.coeffs[2] = (s_push * (1.0 - t) + e_push * t) -- Chest Push
+            p.coeffs[2] = (s_push * (1.0 - rt) + e_push * rt) -- Linear push along segment
         end
     end
 
-    -- 2. ROBUST VERTICAL WELDING: Close the gaps between vertical segments
+    -- 2. ROBUST BRANCH WELDING: Ensure parent end matches child start perfectly
     for b = 0, num_bones - 1 do
         local curr = segments[b+1]
         for prev_idx = 0, num_bones - 1 do
             local prev = segments[prev_idx+1]
+            -- If current segment starts where prev ends
             if prev.end_pos[4] == curr.start_pos[4] then
-                -- If they share a joint, force the child's start to parent's end
-                local p_last = params[prev_idx * rings_per_bone + (rings_per_bone-1)]
-                local c_first = params[b * rings_per_bone]
-                for i=0,7 do c_first.coeffs[i] = p_last.coeffs[i] end
-                break
+                -- WELDER RULE: Only weld if both are "Torso" or both are "Limb"
+                local function is_torso(name) return name:find("Spine") or name:find("Hips") or name:find("Neck") end
+                if is_torso(prev.child_name) == is_torso(curr.child_name) then
+                    local p_last = params[prev_idx * rings_per_bone + (rings_per_bone-1)]
+                    local c_first = params[b * rings_per_bone]
+                    for i=0,7 do c_first.coeffs[i] = p_last.coeffs[i] end
+                end
             end
         end
     end
