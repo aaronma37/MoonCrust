@@ -8,28 +8,25 @@ layout(push_constant) uniform PC {
     mat4 mvp;
     mat4 model;
     vec2 mouse_pos;
+    float outline_width;
 } pc;
-
-layout(std430, set = 0, binding = 4) buffer PickBuffer {
-    uint pick_id;
-};
 
 layout(location = 0) out vec4 outColor;
 
 void main() {
-    // 1. GPU PICKING
-    if (abs(gl_FragCoord.x - pc.mouse_pos.x) < 1.0 && abs(gl_FragCoord.y - pc.mouse_pos.y) < 1.0) {
-        pick_id = inBoneId;
+    // INVERTED HULL: Render solid black for the outline pass
+    if (pc.outline_width > 0.0) {
+        outColor = vec4(0.0, 0.0, 0.0, 1.0);
+        return;
     }
 
-    // 2. CEL SHADING
-    vec3 lightDir = normalize(vec3(0.5, 1.0, 0.5));
     vec3 normal = normalize(inNormal);
+    vec3 lightDir = normalize(vec3(10, 10, 10));
     float diff = max(dot(normal, lightDir), 0.0);
     
-    if (diff > 0.8) diff = 1.0;
-    else if (diff > 0.4) diff = 0.6;
-    else diff = 0.3;
+    // ANIME CEL SHADING
+    if (diff > 0.4) diff = 0.7;
+    else diff = 0.45;
     
     vec3 viewDir = normalize(vec3(0, 5, 15) - inWorldPos);
     float rim = pow(1.0 - max(dot(viewDir, normal), 0.0), 3.0) * 0.4;

@@ -75,11 +75,8 @@ function M.create_params(num_bones, rings_per_bone, segments)
         mixamorig_Spine2 = { r = 1.2, oval = 0.4 },
         mixamorig_Neck = { r = 0.35, oval = 0.1 },
         mixamorig_Head = { r = 0.35, oval = 0.1 },
-        virtual_Forehead = { r = 0.9, oval = 0.3 },
-        virtual_Crown = { r = 0.9, oval = 0.3, taper = 1.0 },
-        virtual_Jaw = { r = 0.5, oval = 0.4 },
-        virtual_Chin = { r = 0.15, oval = 0.6, taper = 1.0, sharp = 3.0 },
-        virtual_Nose = { r = 0.1, oval = 0.0, taper = 1.0, sharp = 2.0 },
+        virtual_Skull = { r = 0.85, oval = 0.2, taper = 1.0 },
+        virtual_Face = { r = 0.4, oval = 0.2, taper = 1.0, sharp = 2.0 },
         -- Limbs
         mixamorig_LeftArm = { r = 0.35, oval = 0.1 },
         mixamorig_RightArm = { r = 0.35, oval = 0.1 },
@@ -116,9 +113,37 @@ function M.create_params(num_bones, rings_per_bone, segments)
             local cur_taper = (start_j.taper or 0.0) * (1.0 - rt) + (end_j.taper or 0.0) * rt
             
             p.coeffs[0] = cur_r
+            p.coeffs[1] = 0 -- Forward/Back (Reset)
             p.coeffs[3] = cur_oval * cur_r
             p.coeffs[5] = cur_sharp
             p.coeffs[7] = cur_taper
+
+            -- VERTICAL FACE SCULPTING (rt=0 is Top, rt=1.0 is Chin)
+            if seg.child_name == "virtual_Face" then
+                -- Define nose bridge, mouth, and chin protrusion
+                local face_r = 0.4
+                local fwd_push = 0.0
+                
+                if rt < 0.2 then -- Forehead
+                    face_r = 0.8
+                    fwd_push = 0.2
+                elseif rt < 0.5 then -- Nose Bridge
+                    face_r = 0.6 + (rt-0.2) * 0.5
+                    fwd_push = 0.2 + (rt-0.2) * 3.0
+                elseif rt < 0.7 then -- Mouth
+                    face_r = 0.75 - (rt-0.5) * 1.0
+                    fwd_push = 1.1 - (rt-0.5) * 1.5
+                else -- Chin
+                    face_r = 0.55 - (rt-0.7) * 0.5
+                    fwd_push = 0.65 + (rt-0.7) * 1.0
+                end
+                
+                p.coeffs[0] = face_r
+                p.coeffs[1] = 0 -- NO SIDE PUSH
+                p.coeffs[2] = fwd_push -- PUSH FORWARD (n=1, sin axis is depth now that spiral is fixed)
+                p.coeffs[3] = 0.4 * face_r -- Wide ear-to-ear ovality
+                p.coeffs[5] = 2.0 -- Smooth chiseled
+            end
         end
     end
 

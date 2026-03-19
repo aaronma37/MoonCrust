@@ -48,12 +48,16 @@ void main() {
     
     vec3 ring_normal = normalize(mix(b.plane_start.xyz, b.plane_end.xyz, t));
     
-    // RESTORE STABLE BASIS
-    vec3 ref = vec3(0, 0, 1);
-    if (abs(dot(ref, ring_normal)) > 0.9) ref = vec3(0, 1, 0);
-    vec3 u = normalize(cross(ref, ring_normal));
-    vec3 v = cross(ring_normal, u);
-    u *= b.plane_end.w; 
+    // BULLETPROOF BASIS: Stable orthogonal projection
+    vec3 u_ref = vec3(0, 0, 1); // Primary: World Forward (Makes U point Right/Left)
+    // If bone is pointing exactly forward/backward (Z-aligned), switch to World Right
+    if (abs(dot(u_ref, ring_normal)) > 0.9) u_ref = vec3(1, 0, 0);
+    
+    vec3 u = normalize(cross(u_ref, ring_normal));
+    vec3 v = normalize(cross(ring_normal, u));
+    
+    // Apply symmetry flip ONLY for non-virtual bones to keep face stable
+    if (b.start_pos.w < 50.0) u *= b.plane_end.w; 
     
     float flex = b.plane_start.w;
     float bulge = flex * 0.4 * sin(t * 3.14159);
@@ -61,35 +65,31 @@ void main() {
     RingParams rp = params[bone_idx * rings_per_bone + ring_idx];
     float r = rp.coeffs[0] * (1.0 + bulge);
     
-    // 1. SIMPLE HARMONICS
+    // Fourier Harmonics
     r += rp.coeffs[1] * cos(theta) + rp.coeffs[2] * sin(theta);
-    
-    // Sharpness-aware Ovality (n=2)
     float sharpness = max(1.0, rp.coeffs[5]);
     float h2 = cos(2.0 * theta);
     r += rp.coeffs[3] * sign(h2) * pow(abs(h2), sharpness);
     
     r = max(0.01, r);
 
-    // 2. DOME CAP ROUNDING
+    // TAPER
     if (rp.coeffs[7] > 0.0) {
         float taper_t = clamp(t, 0.0, 1.0);
-        r *= sqrt(1.0 - taper_t * taper_t);
-        r *= smoothstep(1.0, 0.95, t); // Watertight point
+        r *= pow(1.0 - taper_t, rp.coeffs[7]) * smoothstep(1.0, 0.95, t);
     }
     
     vec3 offset = (u * cos(theta) + v * sin(theta)) * r;
     uint v_idx = bone_idx * (rings_per_bone * verts_per_ring) + ring_idx * verts_per_ring + theta_idx;
     
     vertices[v_idx].pos = vec4(pos_center + offset, 1.0);
-    vertices[v_idx].normal = vec4(normalize(offset), 0.0);
+    vertices[v_idx].normal = vec4(normalize(offset), b.plane_end.w);
     
     if (diagnostic_mode == 1) {
-        // Restore Bone-ID Diagnostic
-        float r_hash = fract(sin(float(bone_idx) * 12.9898) * 43758.5453);
-        float g_hash = fract(sin(float(bone_idx) * 78.233) * 43758.5453);
-        float b_hash = fract(sin(float(bone_idx) * 45.164) * 43758.5453);
-        vertices[v_idx].color = vec4(r_hash, g_hash, b_hash, 1.0);
+        float r_h = fract(sin(float(bone_idx) * 12.9898) * 43758.5453);
+        float g_h = fract(sin(float(bone_idx) * 78.233) * 43758.5453);
+        float b_h = fract(sin(float(bone_idx) * 45.164) * 43758.5453);
+        vertices[v_idx].color = vec4(r_h, g_h, b_h, 1.0);
     } else {
         vec3 skin_col = vec3(0.8, 0.75, 0.7);
         vec3 flex_col = vec3(1.0, 0.1, 0.1);
