@@ -22,7 +22,7 @@ local M = {
     target_pos = {0, 8, 0},
     time = 0,
     anim_state = "rest",
-    gravity_mode = 1, -- 1: Normal, 2: Heavy, 3: Inverted
+    gravity_mode = 1,
     last_frame_time = 0
 }
 
@@ -67,11 +67,11 @@ function M.init()
     -- SOFT BODY SETUP
     M.soft_bodies = {
         -- Breasts (Attached to Spine2)
-        { name = "breast_L", bone = "mixamorig_Spine2", local_anchor = { 0.75, 0.4, 0.9 }, radius = 0.6, k = 1.0, vel = {0,0,0}, pos = {0,0,0} },
-        { name = "breast_R", bone = "mixamorig_Spine2", local_anchor = { -0.75, 0.4, 0.9 }, radius = 0.6, k = 1.0, vel = {0,0,0}, pos = {0,0,0} },
+        { name = "breast_L", bone = "mixamorig_Spine2", local_anchor = { 0.65, 0.5, 1.0 }, radius = 0.45, k = 1.5, vel = {0,0,0}, pos = {0,0,0}, side = 1 },
+        { name = "breast_R", bone = "mixamorig_Spine2", local_anchor = { -0.65, 0.5, 1.0 }, radius = 0.45, k = 1.5, vel = {0,0,0}, pos = {0,0,0}, side = -1 },
         -- Glutes (Attached to Hips)
-        { name = "butt_L", bone = "mixamorig_Hips", local_anchor = { 1.0, -1.0, -1.2 }, radius = 1.0, k = 1.0, vel = {0,0,0}, pos = {0,0,0} },
-        { name = "butt_R", bone = "mixamorig_Hips", local_anchor = { -1.0, -1.0, -1.2 }, radius = 1.0, k = 1.0, vel = {0,0,0}, pos = {0,0,0} },
+        { name = "butt_L", bone = "mixamorig_Hips", local_anchor = { 1.0, -1.0, -1.2 }, radius = 1.0, k = 1.0, vel = {0,0,0}, pos = {0,0,0}, side = 1 },
+        { name = "butt_R", bone = "mixamorig_Hips", local_anchor = { -1.0, -1.0, -1.2 }, radius = 1.0, k = 1.0, vel = {0,0,0}, pos = {0,0,0}, side = -1 },
     }
     M.soft_body_buf = mc.gpu.buffer(#M.soft_bodies * ffi.sizeof("SoftBody"), "storage", nil, true)
 
@@ -106,11 +106,11 @@ function M.init()
     graphics_pipe = pipeline.create_graphics_pipeline(device, pipe_layout, shader.create_module(device, shader.compile_glsl(v_src, vk.VK_SHADER_STAGE_VERTEX_BIT)), shader.create_module(device, shader.compile_glsl(f_src, vk.VK_SHADER_STAGE_FRAGMENT_BIT)), { 
         vertex_binding = ffi.new("VkVertexInputBindingDescription[1]", {{ binding = 0, stride = ffi.sizeof("MeshVertex"), inputRate = vk.VK_VERTEX_INPUT_RATE_VERTEX }}),
         vertex_attributes = ffi.new("VkVertexInputAttributeDescription[5]", {
-            { location = 0, binding = 0, format = vk.VK_FORMAT_R32G32B32A32_SFLOAT, offset = 0 },
-            { location = 1, binding = 0, format = vk.VK_FORMAT_R32G32B32A32_SFLOAT, offset = 16 },
-            { location = 2, binding = 0, format = vk.VK_FORMAT_R32G32B32A32_SFLOAT, offset = 32 },
-            { location = 3, binding = 0, format = vk.VK_FORMAT_R32G32B32A32_SFLOAT, offset = 48 },
-            { location = 4, binding = 0, format = vk.VK_FORMAT_R32G32B32A32_UINT, offset = 64 }
+            { location = 0, binding = 0, format = vk.VK_FORMAT_R32G32B32_SFLOAT, offset = 0 },
+            { location = 1, binding = 0, format = vk.VK_FORMAT_R32G32B32_SFLOAT, offset = 16 },
+            { location = 2, binding = 0, format = vk.VK_FORMAT_R32G32B32_SFLOAT, offset = 32 },
+            { location = 3, binding = 0, format = vk.VK_FORMAT_R32G32B32_SFLOAT, offset = 48 },
+            { location = 4, binding = 0, format = vk.VK_FORMAT_R32G32B32_UINT, offset = 64 }
         }),
         vertex_attribute_count = 5, depth_test = true, depth_write = true, depth_format = depth_format, cull_mode = vk.VK_CULL_MODE_NONE
     })
@@ -202,7 +202,9 @@ function M.update()
     -- 0. JIGGLE PHYSICS
     local soft_body_data = ffi.new("SoftBody[?]", #M.soft_bodies)
     for i, sb in ipairs(M.soft_bodies) do
-        local bone_id = nil; for _, b in ipairs(bones) do if b.name == sb.bone then bone_id = b.id; break end end
+        -- FAILSAFE MATCHING: Use string.find to handle prefixed bone names
+        local bone_id = nil; for _, b in ipairs(bones) do if b.name:find(sb.bone) then bone_id = b.id; break end end
+        
         if bone_id and bone_globals[bone_id] then
             local m = bone_globals[bone_id]
             -- Calculate world anchor from local anchor
@@ -214,12 +216,12 @@ function M.update()
             if sb.pos[1] == 0 and sb.pos[2] == 0 then sb.pos = {ax, ay, az} end
 
             -- Spring physics (Mass-Spring-Damper)
-            local k_spring = 800.0 -- Ultra stiff
-            local d_damp = 50.0    -- Ultra damped
+            local k_spring = 400.0 -- Stable stiffness
+            local d_damp = 30.0    -- Stable damping
             local grav_vals = {-30.0, -150.0, 50.0}
             local gravity = grav_vals[M.gravity_mode]
             
-            local dx, dy, dz = sb.pos[1] - ax, sb.pos[2] - ay, sb.pos[3] - az
+            local dx, dy, dz = sb.pos[1] - (ax + m.m[8]*0.5), sb.pos[2] - (ay + m.m[9]*0.5), sb.pos[3] - (az + m.m[10]*0.5)
             local fx = -k_spring * dx - d_damp * sb.vel[1]
             local fy = -k_spring * dy - d_damp * sb.vel[2] + gravity
             local fz = -k_spring * dz - d_damp * sb.vel[3]
@@ -232,28 +234,45 @@ function M.update()
             sb.pos[3] = sb.pos[3] + sb.vel[3] * dt
 
             local target_bone_idx = 0
-            for j, s in ipairs(segments) do if s.parent_name == sb.bone then target_bone_idx = j - 1; break end end
+            for j, s in ipairs(segments) do if s.parent_name:find(sb.bone) then target_bone_idx = j - 1; break end end
 
-            -- DYNAMIC BASIS: Point the ellipsoid along the anchor-to-center vector
+            -- DYNAMIC BASIS: Pure Geometric Look-At (World Reference)
             local fwd_x, fwd_y, fwd_z = sb.pos[1] - ax, sb.pos[2] - ay, sb.pos[3] - az
+            
+            -- FORCED TILT MODE (Mode 2: HEAVY)
+            if M.gravity_mode == 2 then
+                -- Force pointing almost straight down in world space (80 degrees)
+                fwd_x, fwd_y, fwd_z = 0, -0.98, 0.17 
+            end
+
             local fwd_l = math.sqrt(fwd_x^2 + fwd_y^2 + fwd_z^2)
             if fwd_l > 0.001 then fwd_x, fwd_y, fwd_z = fwd_x/fwd_l, fwd_y/fwd_l, fwd_z/fwd_l else fwd_z = 1.0 end
             
-            -- Use bone's own Up-vector (basis_y) as reference for stability
-            local up_ref_x, up_ref_y, up_ref_z = m.m[4], m.m[5], m.m[6]
+            -- PURE WORLD REFERENCE: Use hardcoded World-Up (0,1,0)
+            local up_ref_x, up_ref_y, up_ref_z = 0, 1, 0
+            if math.abs(fwd_y) > 0.9 then up_ref_z = 1.0; up_ref_y = 0.0 end -- Handle parallel case
             
-            -- Right = Cross(Fwd, Up-Ref)
-            local rx, ry, rz = fwd_y * up_ref_z - fwd_z * up_ref_y, fwd_z * up_ref_x - fwd_x * up_ref_z, fwd_x * up_ref_y - fwd_y * up_ref_x
+            -- Right = Cross(Up-Ref, Forward)
+            local rx, ry, rz = up_ref_y * fwd_z - up_ref_z * fwd_y, up_ref_z * fwd_x - up_ref_x * fwd_z, up_ref_x * fwd_y - up_ref_y * fwd_x
             local rl = math.sqrt(rx^2 + ry^2 + rz^2); if rl > 0 then rx, ry, rz = rx/rl, ry/rl, rz/rl else rx = 1.0 end
             
-            -- Up = Cross(Right, Fwd)
-            local ux, uy, uz = ry * fwd_z - rz * fwd_y, rz * fwd_x - rx * fwd_z, rx * fwd_y - ry * fwd_x
+            -- Up = Cross(Forward, Right)
+            local ux, uy, uz = fwd_y * rz - fwd_z * ry, fwd_z * rx - fwd_x * rz, fwd_x * ry - fwd_y * rx
 
-            -- Calculate droop bias based on Y-displacement from anchor
-            local grav_bias = math.max(0, (ay - sb.pos[2]) * 2.0)
+            -- CENTER OFFSET: Near-Side shell logic
+            local cx, cy, cz = sb.pos[1], sb.pos[2], sb.pos[3]
 
-            soft_body_data[i-1].pos = {sb.pos[1], sb.pos[2], sb.pos[3], sb.radius}
-            soft_body_data[i-1].params = {sb.k, target_bone_idx, (sb.name:find("breast") and 0 or 1), grav_bias}
+            -- ANATOMICAL SKEW: Calculate grav_bias from pitch
+            local pitch = math.asin(-fwd_y)
+            local grav_bias = math.sin(pitch) * 1.5 -- Sensitivity multiplier
+
+            -- DEBUG: Print Absolute World Pitch
+            if M.diagnostic and i == 1 then
+                print(string.format("BREAST %s WORLD PITCH: %.2f (deg), BIAS: %.2f", sb.name, math.deg(pitch), grav_bias))
+            end
+
+            soft_body_data[i-1].pos = {cx, cy, cz, sb.radius}
+            soft_body_data[i-1].params = {sb.k, bone_id-1, (sb.name:find("breast") and 0 or 1), grav_bias}
             soft_body_data[i-1].basis_x = {rx, ry, rz, 0}
             soft_body_data[i-1].basis_y = {ux, uy, uz, 0}
             soft_body_data[i-1].basis_z = {fwd_x, fwd_y, fwd_z, 0}
@@ -294,7 +313,7 @@ function M.update()
         local psl = math.sqrt(ps[1]^2 + ps[2]^2 + ps[3]^2); if psl > 0 then ps = {ps[1]/psl, ps[2]/psl, ps[3]/psl} else ps = dir end
         
         -- HIPS BRANCH FUSION: Force all segments starting at Hips to use a stable vertical miter
-        if s.parent_name == "mixamorig_Hips" then
+        if s.parent_name:find("Hips") then
             ps = {0, 1, 0} -- Force horizontal ring at the root
         end
 

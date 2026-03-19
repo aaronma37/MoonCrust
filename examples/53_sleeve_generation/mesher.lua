@@ -77,17 +77,17 @@ function M.create_params(num_bones, rings_per_bone, segments)
     
     -- 1. SIMPLE JOINT REPOSITORY (Exact matching only)
     local joints = {
-        mixamorig_Hips = { r = 1.2, oval = 0.45 }, -- WIDER HIPS
-        mixamorig_Spine = { r = 0.9, oval = 0.3 },
-        mixamorig_Spine1 = { r = 0.75, oval = 0.25 },
-        mixamorig_Spine2 = { r = 0.85, oval = 0.35 }, -- MUCH NARROWER CHEST
+        mixamorig_Hips = { r = 1.3, oval = 0.5 }, -- WIDER HIPS
+        mixamorig_Spine = { r = 0.85, oval = 0.4 },
+        mixamorig_Spine1 = { r = 0.75, oval = 0.35 },
+        mixamorig_Spine2 = { r = 0.75, oval = 0.5 }, -- NARROWER/FLATTER CHEST
         mixamorig_Neck = { r = 0.45, oval = 0.1 },
         mixamorig_Head = { r = 0.8, oval = 0.0 },
         -- Limbs
         mixamorig_LeftArm = { r = 0.35, oval = 0.1 },
         mixamorig_RightArm = { r = 0.35, oval = 0.1 },
-        mixamorig_LeftUpLeg = { r = 0.7, oval = 0.25 }, -- STRONGER THIGHS
-        mixamorig_RightUpLeg = { r = 0.7, oval = 0.25 },
+        mixamorig_LeftUpLeg = { r = 0.75, oval = 0.3 }, -- THICKER THIGHS
+        mixamorig_RightUpLeg = { r = 0.75, oval = 0.3 },
     }
 
     local function get_joint(name)
