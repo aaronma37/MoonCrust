@@ -6,9 +6,9 @@ local M = {}
 
 ffi.cdef[[
     typedef struct MeshVertex {
-        float pos[3]; float pad1;
-        float normal[3]; float pad2;
-        float color[3]; float pad3;
+        float pos[4];
+        float normal[4];
+        float color[4];
         float weights[4];
         uint32_t bone_ids[4];
     } MeshVertex;
@@ -23,32 +23,23 @@ ffi.cdef[[
     typedef struct MeshRingParams {
         float coeffs[8];
     } MeshRingParams;
-
-    typedef struct SoftBody {
-        float pos[4];    // xyz = world pos, w = radius
-        float params[4]; // x = smax k, y = bone_id, z = type, w = gravity_bias
-        float basis_x[4];
-        float basis_y[4];
-        float basis_z[4];
-    } SoftBody;
 ]]
 
 function M.calculate_bone_segments(skeleton_bones)
     local segments = {}
     local bone_map = {}
-    for i, b in ipairs(skeleton_bones) do bone_map[b.id] = b end
-    for i, b in ipairs(skeleton_bones) do
+    for _, b in ipairs(skeleton_bones) do bone_map[b.id] = b end
+
+    for _, b in ipairs(skeleton_bones) do
         if b.parent_id ~= 0 then
             local parent = bone_map[b.parent_id]
-            if parent then
-                table.insert(segments, {
-                    start_pos = {parent.pos[1], parent.pos[2], parent.pos[3], parent.id - 1},
-                    end_pos = {b.pos[1], b.pos[2], b.pos[3], b.id - 1},
-                    name = parent.name .. "_to_" .. b.name,
-                    parent_name = parent.name,
-                    child_name = b.name
-                })
-            end
+            table.insert(segments, {
+                name = parent.name .. "_to_" .. b.name,
+                parent_name = parent.name,
+                child_name = b.name,
+                start_pos = {parent.pos[1], parent.pos[2], parent.pos[3], parent.id-1},
+                end_pos = {b.pos[1], b.pos[2], b.pos[3], b.id-1}
+            })
         end
     end
     return segments
@@ -60,12 +51,18 @@ function M.generate_indices(num_bones, rings_per_bone, verts_per_ring)
         for r = 0, rings_per_bone - 2 do
             for v = 0, verts_per_ring - 1 do
                 local next_v = (v + 1) % verts_per_ring
-                local v0 = b * (rings_per_bone * verts_per_ring) + r * verts_per_ring + v
-                local v1 = b * (rings_per_bone * verts_per_ring) + (r + 1) * verts_per_ring + v
-                local v2 = b * (rings_per_bone * verts_per_ring) + r * verts_per_ring + next_v
-                local v3 = b * (rings_per_bone * verts_per_ring) + (r + 1) * verts_per_ring + next_v
-                table.insert(indices, v0); table.insert(indices, v1); table.insert(indices, v2)
-                table.insert(indices, v2); table.insert(indices, v1); table.insert(indices, v3)
+                local i0 = b * (rings_per_bone * verts_per_ring) + r * verts_per_ring + v
+                local i1 = b * (rings_per_bone * verts_per_ring) + r * verts_per_ring + next_v
+                local i2 = b * (rings_per_bone * verts_per_ring) + (r + 1) * verts_per_ring + v
+                local i3 = b * (rings_per_bone * verts_per_ring) + (r + 1) * verts_per_ring + next_v
+                
+                table.insert(indices, i0)
+                table.insert(indices, i2)
+                table.insert(indices, i1)
+                
+                table.insert(indices, i1)
+                table.insert(indices, i2)
+                table.insert(indices, i3)
             end
         end
     end
@@ -75,27 +72,26 @@ end
 function M.create_params(num_bones, rings_per_bone, segments)
     local params = ffi.new("MeshRingParams[?]", num_bones * rings_per_bone)
     
-    -- 1. SIMPLE JOINT REPOSITORY (Exact matching only)
     local joints = {
         mixamorig_Hips = { r = 1.2, oval = 0.35 },
         mixamorig_Spine = { r = 1.0, oval = 0.3 },
         mixamorig_Spine1 = { r = 0.7, oval = 0.2 },
-        mixamorig_Spine2 = { r = 1.2, oval = 0.4 }, -- NARROWER CHEST
+        mixamorig_Spine2 = { r = 1.2, oval = 0.4 },
         mixamorig_Neck = { r = 0.45, oval = 0.1 },
-        mixamorig_Head = { r = 0.7, oval = 0.1, taper = 1.0 }, -- ADD TAPER
+        mixamorig_Head = { r = 0.75, oval = 0.1 },
+        virtual_Skull = { r = 0.85, oval = 0.1, taper = 1.0 }, -- ROUNDER
         virtual_Chin = { r = 0.3, oval = 0.4 },
- -- Narrower for jaw tip
-        virtual_Nose = { r = 0.1, oval = 0.0 }, -- Pointed tip
-        -- Limbs
 
+        virtual_Nose = { r = 0.1, oval = 0.0 },
+        -- Limbs
         mixamorig_LeftArm = { r = 0.35, oval = 0.1 },
         mixamorig_RightArm = { r = 0.35, oval = 0.1 },
-        mixamorig_LeftUpLeg = { r = 0.75, oval = 0.3 }, -- THICKER THIGHS
+        mixamorig_LeftUpLeg = { r = 0.75, oval = 0.3 },
         mixamorig_RightUpLeg = { r = 0.75, oval = 0.3 },
     }
 
     local function get_joint(name)
-        return joints[name] or { r = 0.4, oval = 0.2 }
+        return joints[name] or { r = 0.4, oval = 0.2, taper = 0.0 }
     end
 
     for b = 0, num_bones - 1 do
@@ -103,27 +99,22 @@ function M.create_params(num_bones, rings_per_bone, segments)
         local start_j = get_joint(seg.parent_name)
         local end_j = get_joint(seg.child_name)
 
-        -- SOCKET LOGIC & PELVIS FUSION
         local s_r, e_r = start_j.r, end_j.r
         local s_push, e_push = 0.0, 0.0
         local taper_pow = 1.0
 
-        -- LEG FUSION: Start legs at hip-width, then cinch smoothly
         if seg.parent_name == "mixamorig_Hips" then
             s_r = 1.2 
-            s_oval = 0.4
             if seg.child_name:find("Leg") then
-                taper_pow = 1.0 -- LINEAR CINCH: Smooth muscular transition
-                e_r = 0.7 -- WIDER THIGH
+                taper_pow = 1.0
+                e_r = 0.7
             end
         end
 
-        -- SHOULDER SOCKET: Keep these as sockets for now to prevent chest-mess
         if seg.parent_name == "mixamorig_Spine2" and (seg.child_name:find("Shoulder") or seg.child_name:find("Arm")) then
             s_r = 0.5 
         end
 
-        -- CHEST SHELF
         if seg.parent_name == "mixamorig_Spine2" and seg.child_name == "mixamorig_Neck" then
             taper_pow = 5.0
             s_push = 0.4
@@ -132,26 +123,25 @@ function M.create_params(num_bones, rings_per_bone, segments)
         for r = 0, rings_per_bone - 1 do
             local p = params[b * rings_per_bone + r]
             local rt = r / (rings_per_bone - 1)
-            -- Apply the taper power to the progression
             local t = math.pow(rt, taper_pow)
             
             local cur_r = s_r + (e_r - s_r) * t
-            local cur_oval = start_j.oval + (end_j.oval - start_j.oval) * t
+            local cur_oval = (start_j.oval or 0.2) * (1.0 - t) + (end_j.oval or 0.2) * t
+            local cur_taper = (start_j.taper or 0.0) * (1.0 - rt) + (end_j.taper or 0.0) * rt
             
             p.coeffs[0] = cur_r
             p.coeffs[3] = cur_oval * cur_r
-            p.coeffs[2] = (s_push * (1.0 - rt) + e_push * rt) -- Linear push along segment
+            p.coeffs[2] = (s_push * (1.0 - rt) + e_push * rt)
+            p.coeffs[7] = cur_taper
         end
     end
 
-    -- 2. ROBUST BRANCH WELDING: Ensure parent end matches child start perfectly
+    -- 2. ROBUST BRANCH WELDING
     for b = 0, num_bones - 1 do
         local curr = segments[b+1]
         for prev_idx = 0, num_bones - 1 do
             local prev = segments[prev_idx+1]
-            -- If current segment starts where prev ends
             if prev.end_pos[4] == curr.start_pos[4] then
-                -- WELDER RULE: Only weld if both are "Torso" or both are "Limb"
                 local function is_torso(name) 
                     return name:find("Spine") or name:find("Hips") or name:find("Neck") or name:find("Head") or name:find("virtual") 
                 end

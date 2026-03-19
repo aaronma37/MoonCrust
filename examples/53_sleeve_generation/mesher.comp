@@ -67,6 +67,12 @@ void main() {
     RingParams rp = params[bone_idx * rings_per_bone + ring_idx];
     float r = rp.coeffs[0] * (1.0 + bulge);
     
+    // DOME CAP ROUNDING (Skull/Hemi-sphere behavior)
+    if (rp.coeffs[7] > 0.0) {
+        float taper_t = clamp(t, 0.0, 1.0); // Start rounding immediately
+        r *= sqrt(1.0 - taper_t * taper_t); // Circular profile for a perfect dome
+    }
+
     r += rp.coeffs[1] * cos(theta) + rp.coeffs[2] * sin(theta);
     r += rp.coeffs[3] * cos(2.0 * theta) + rp.coeffs[4] * sin(2.0 * theta);
     r += rp.coeffs[5] * cos(3.0 * theta) + rp.coeffs[6] * sin(3.0 * theta);

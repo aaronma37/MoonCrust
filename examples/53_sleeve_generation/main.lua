@@ -57,22 +57,36 @@ function M.init()
     local head = nil
     for _, b in ipairs(bones) do if b.name:find("Head") then head = b; break end end
     if head then
-        local chin = {
+        -- SHORTEN THE HEAD BONE: Move the nexus to the jaw/ear level
+        head.local_matrix[12] = head.local_matrix[12] * 0.5
+        head.local_matrix[13] = head.local_matrix[13] * 0.5
+        head.local_matrix[14] = head.local_matrix[14] * 0.5
+
+        local skull = {
             id = #bones + 1,
+            name = "virtual_Skull",
+            parent_id = head.id,
+            pos = { head.pos[1], head.pos[2] + 0.8, head.pos[3] },
+            local_matrix = { 1,0,0,0, 0,1,0,8, 0,0,1,0, 0,0,0,1 }, -- Shorter (8 units)
+            global_mat = head.global_mat
+        }
+        local chin = {
+            id = #bones + 2,
             name = "virtual_Chin",
             parent_id = head.id,
-            pos = { head.pos[1], head.pos[2] - 1.5, head.pos[3] + 1.0 }, -- Approx world pos
-            local_matrix = { 1,0,0,0, 0,1,0,-15, 0,0,1,10, 0,0,0,1 }, -- Row-Major: tx=0, ty=-15, tz=10 (scaled by 0.1 later)
+            pos = { head.pos[1], head.pos[2] - 1.5, head.pos[3] + 1.0 },
+            local_matrix = { 1,0,0,0, 0,1,0,-15, 0,0,1,10, 0,0,0,1 }, -- Point DOWN/FORWARD
             global_mat = head.global_mat
         }
         local nose = {
-            id = #bones + 2,
+            id = #bones + 3,
             name = "virtual_Nose",
             parent_id = head.id,
             pos = { head.pos[1], head.pos[2] - 0.5, head.pos[3] + 1.2 },
-            local_matrix = { 1,0,0,0, 0,1,0,-5, 0,0,1,12, 0,0,0,1 },
+            local_matrix = { 1,0,0,0, 0,1,0,-5, 0,0,1,12, 0,0,0,1 }, -- Point FORWARD
             global_mat = head.global_mat
         }
+        table.insert(bones, skull)
         table.insert(bones, chin)
         table.insert(bones, nose)
     end
