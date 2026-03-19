@@ -77,13 +77,17 @@ function M.create_params(num_bones, rings_per_bone, segments)
     
     -- 1. SIMPLE JOINT REPOSITORY (Exact matching only)
     local joints = {
-        mixamorig_Hips = { r = 1.3, oval = 0.5 }, -- WIDER HIPS
-        mixamorig_Spine = { r = 0.85, oval = 0.4 },
-        mixamorig_Spine1 = { r = 0.75, oval = 0.35 },
-        mixamorig_Spine2 = { r = 0.75, oval = 0.5 }, -- NARROWER/FLATTER CHEST
+        mixamorig_Hips = { r = 1.2, oval = 0.35 },
+        mixamorig_Spine = { r = 1.0, oval = 0.3 },
+        mixamorig_Spine1 = { r = 0.7, oval = 0.2 },
+        mixamorig_Spine2 = { r = 1.2, oval = 0.4 }, -- NARROWER CHEST
         mixamorig_Neck = { r = 0.45, oval = 0.1 },
-        mixamorig_Head = { r = 0.8, oval = 0.0 },
+        mixamorig_Head = { r = 0.7, oval = 0.1, taper = 1.0 }, -- ADD TAPER
+        virtual_Chin = { r = 0.3, oval = 0.4 },
+ -- Narrower for jaw tip
+        virtual_Nose = { r = 0.1, oval = 0.0 }, -- Pointed tip
         -- Limbs
+
         mixamorig_LeftArm = { r = 0.35, oval = 0.1 },
         mixamorig_RightArm = { r = 0.35, oval = 0.1 },
         mixamorig_LeftUpLeg = { r = 0.75, oval = 0.3 }, -- THICKER THIGHS
@@ -148,7 +152,9 @@ function M.create_params(num_bones, rings_per_bone, segments)
             -- If current segment starts where prev ends
             if prev.end_pos[4] == curr.start_pos[4] then
                 -- WELDER RULE: Only weld if both are "Torso" or both are "Limb"
-                local function is_torso(name) return name:find("Spine") or name:find("Hips") or name:find("Neck") end
+                local function is_torso(name) 
+                    return name:find("Spine") or name:find("Hips") or name:find("Neck") or name:find("Head") or name:find("virtual") 
+                end
                 if is_torso(prev.child_name) == is_torso(curr.child_name) then
                     local p_last = params[prev_idx * rings_per_bone + (rings_per_bone-1)]
                     local c_first = params[b * rings_per_bone]

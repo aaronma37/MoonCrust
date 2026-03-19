@@ -52,6 +52,31 @@ function M.init()
     depth_img = mc.gpu.image(sw.extent.width, sw.extent.height, depth_format, "depth")
 
     bones = skeleton.get_bone_list()
+    
+    -- INJECT VIRTUAL FACIAL BONES
+    local head = nil
+    for _, b in ipairs(bones) do if b.name:find("Head") then head = b; break end end
+    if head then
+        local chin = {
+            id = #bones + 1,
+            name = "virtual_Chin",
+            parent_id = head.id,
+            pos = { head.pos[1], head.pos[2] - 1.5, head.pos[3] + 1.0 }, -- Approx world pos
+            local_matrix = { 1,0,0,0, 0,1,0,-15, 0,0,1,10, 0,0,0,1 }, -- Row-Major: tx=0, ty=-15, tz=10 (scaled by 0.1 later)
+            global_mat = head.global_mat
+        }
+        local nose = {
+            id = #bones + 2,
+            name = "virtual_Nose",
+            parent_id = head.id,
+            pos = { head.pos[1], head.pos[2] - 0.5, head.pos[3] + 1.2 },
+            local_matrix = { 1,0,0,0, 0,1,0,-5, 0,0,1,12, 0,0,0,1 },
+            global_mat = head.global_mat
+        }
+        table.insert(bones, chin)
+        table.insert(bones, nose)
+    end
+
     segments = mesher.calculate_bone_segments(bones)
     idx_count = #mesher.generate_indices(#segments, RINGS_PER_BONE, VERTS_PER_RING)
 
@@ -171,6 +196,17 @@ function M.update()
         local dx, dy = input.mouse_delta()
         M.orbit_yaw, M.orbit_pitch = M.orbit_yaw - dx * 0.01, math.max(-math.pi/2+0.1, math.min(math.pi/2-0.1, M.orbit_pitch + dy * 0.01))
     end
+    if _G._MOUSE_M then
+        local dx, dy = input.mouse_delta()
+        -- Calculate pan vectors based on orbit
+        local side_x, side_z = math.cos(M.orbit_yaw), -math.sin(M.orbit_yaw)
+        local up_x, up_y, up_z = 0, 1, 0 -- Simple world up for now
+        
+        local pan_speed = 0.05
+        M.target_pos[1] = M.target_pos[1] - side_x * dx * pan_speed
+        M.target_pos[3] = M.target_pos[3] - side_z * dx * pan_speed
+        M.target_pos[2] = M.target_pos[2] + dy * pan_speed
+    end
     local cam_x = M.target_pos[1] + math.sin(M.orbit_yaw) * math.cos(M.orbit_pitch) * M.orbit_radius
     local cam_y = M.target_pos[2] + math.sin(M.orbit_pitch) * M.orbit_radius
     local cam_z = M.target_pos[3] + math.cos(M.orbit_yaw) * math.cos(M.orbit_pitch) * M.orbit_radius
@@ -190,6 +226,15 @@ function M.update()
     end
     local root = nil; for _, b in ipairs(bones) do if b.parent_id == 0 then root = b; break end end
     if root then calc_globals(root, mc.mat4_identity()) end
+
+    if input.key_pressed(input.SCANCODE_H) then
+        local head_id = nil; for _, b in ipairs(bones) do if b.name:find("Head") then head_id = b.id; break end end
+        if head_id and bone_globals[head_id] then
+            local m = bone_globals[head_id]
+            M.target_pos = {m.m[12], m.m[13], m.m[14]}
+            M.orbit_radius = 5.0
+        end
+    end
 
     -- 1. Pre-calculate directions for all segments
     local segment_dirs = {}
