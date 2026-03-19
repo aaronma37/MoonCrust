@@ -22,7 +22,6 @@ local M = {
     target_pos = {0, 8, 0},
     time = 0,
     anim_state = "rest",
-    gravity_mode = 1,
     last_frame_time = 0
 }
 
@@ -33,8 +32,8 @@ local bone_buf, param_buf, ds_pool
 local cbs, image_available_sem, frame_fence
 
 local bones, segments
-local RINGS_PER_BONE = 16
-local VERTS_PER_RING = 32
+local RINGS_PER_BONE = 8
+local VERTS_PER_RING = 16
 
 local animations = {}
 
@@ -64,17 +63,6 @@ function M.init()
     bone_buf = mc.gpu.buffer(#segments * ffi.sizeof("MeshBone"), "storage", nil, true)
     param_buf = mc.gpu.buffer(#segments * RINGS_PER_BONE * ffi.sizeof("MeshRingParams"), "storage", mesher.create_params(#segments, RINGS_PER_BONE, segments), true)
     
-    -- SOFT BODY SETUP
-    M.soft_bodies = {
-        -- Breasts (Attached to Spine2)
-        { name = "breast_L", bone = "mixamorig_Spine2", local_anchor = { 0.65, 0.5, 1.0 }, radius = 0.45, k = 1.5, vel = {0,0,0}, pos = {0,0,0}, side = 1 },
-        { name = "breast_R", bone = "mixamorig_Spine2", local_anchor = { -0.65, 0.5, 1.0 }, radius = 0.45, k = 1.5, vel = {0,0,0}, pos = {0,0,0}, side = -1 },
-        -- Glutes (Attached to Hips)
-        { name = "butt_L", bone = "mixamorig_Hips", local_anchor = { 1.0, -1.0, -1.2 }, radius = 1.0, k = 1.0, vel = {0,0,0}, pos = {0,0,0}, side = 1 },
-        { name = "butt_R", bone = "mixamorig_Hips", local_anchor = { -1.0, -1.0, -1.2 }, radius = 1.0, k = 1.0, vel = {0,0,0}, pos = {0,0,0}, side = -1 },
-    }
-    M.soft_body_buf = mc.gpu.buffer(#M.soft_bodies * ffi.sizeof("SoftBody"), "storage", nil, true)
-
     -- GPU PICKING BUFFER (Host visible for easy reading)
     pick_buf = mc.gpu.buffer(4, "storage", nil, true)
     local clear_id = ffi.new("uint32_t[1]", {0xFFFFFFFF})
@@ -86,11 +74,10 @@ function M.init()
     local c_bindings = {
         { binding = 0, type = vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, stages = vk.VK_SHADER_STAGE_COMPUTE_BIT },
         { binding = 1, type = vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, stages = vk.VK_SHADER_STAGE_COMPUTE_BIT },
-        { binding = 2, type = vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, stages = vk.VK_SHADER_STAGE_COMPUTE_BIT },
-        { binding = 3, type = vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, stages = vk.VK_SHADER_STAGE_COMPUTE_BIT }
+        { binding = 2, type = vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, stages = vk.VK_SHADER_STAGE_COMPUTE_BIT }
     }
     local c_ds_layout = descriptors.create_layout(device, c_bindings)
-    compute_layout = pipeline.create_layout(device, {c_ds_layout}, { { stageFlags = vk.VK_SHADER_STAGE_COMPUTE_BIT, offset = 0, size = 20 } })
+    compute_layout = pipeline.create_layout(device, {c_ds_layout}, { { stageFlags = vk.VK_SHADER_STAGE_COMPUTE_BIT, offset = 0, size = 16 } })
     local c_src = io.open(get_dir().."mesher.comp"):read("*all")
     compute_pipe = pipeline.create_compute_pipeline(device, compute_layout, shader.create_module(device, shader.compile_glsl(c_src, vk.VK_SHADER_STAGE_COMPUTE_BIT)))
 
@@ -120,7 +107,6 @@ function M.init()
     descriptors.update_buffer_set(device, M.c_ds, 0, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, vbuf.handle, 0, v_size)
     descriptors.update_buffer_set(device, M.c_ds, 1, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, bone_buf.handle, 0, #segments * ffi.sizeof("MeshBone"))
     descriptors.update_buffer_set(device, M.c_ds, 2, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, param_buf.handle, 0, #segments * RINGS_PER_BONE * ffi.sizeof("MeshRingParams"))
-    descriptors.update_buffer_set(device, M.c_ds, 3, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, M.soft_body_buf.handle, 0, #M.soft_bodies * ffi.sizeof("SoftBody"))
     descriptors.update_buffer_set(device, M.g_ds, 4, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, pick_buf.handle, 0, 4)
 
     cbs = command.allocate_buffers(device, command.create_pool(device, family), sw.image_count)
@@ -164,12 +150,6 @@ function M.update()
     if input.key_pressed(input.SCANCODE_2) then M.anim_state = "walking" end
     if input.key_pressed(input.SCANCODE_3) then M.diagnostic = not M.diagnostic end
 
-    if input.key_pressed(input.SCANCODE_G) then
-        M.gravity_mode = (M.gravity_mode % 3) + 1
-        local modes = {"NORMAL (-30)", "HEAVY (-150)", "INVERTED (+50)"}
-        print("GRAVITY MODE: " .. modes[M.gravity_mode])
-    end
-
     vk.vkWaitForFences(device, 1, ffi.new("VkFence[1]", {frame_fence}), vk.VK_TRUE, 0xFFFFFFFFFFFFFFFFULL)
     vk.vkResetFences(device, 1, ffi.new("VkFence[1]", {frame_fence}))
     local idx = sw:acquire_next_image(image_available_sem)
@@ -198,87 +178,6 @@ function M.update()
     end
     local root = nil; for _, b in ipairs(bones) do if b.parent_id == 0 then root = b; break end end
     if root then calc_globals(root, mc.mat4_identity()) end
-
-    -- 0. JIGGLE PHYSICS
-    local soft_body_data = ffi.new("SoftBody[?]", #M.soft_bodies)
-    for i, sb in ipairs(M.soft_bodies) do
-        -- FAILSAFE MATCHING: Use string.find to handle prefixed bone names
-        local bone_id = nil; for _, b in ipairs(bones) do if b.name:find(sb.bone) then bone_id = b.id; break end end
-        
-        if bone_id and bone_globals[bone_id] then
-            local m = bone_globals[bone_id]
-            -- Calculate world anchor from local anchor
-            local ax = sb.local_anchor[1] * m.m[0] + sb.local_anchor[2] * m.m[4] + sb.local_anchor[3] * m.m[8] + m.m[12]
-            local ay = sb.local_anchor[1] * m.m[1] + sb.local_anchor[2] * m.m[5] + sb.local_anchor[3] * m.m[9] + m.m[13]
-            local az = sb.local_anchor[1] * m.m[2] + sb.local_anchor[2] * m.m[6] + sb.local_anchor[3] * m.m[10] + m.m[14]
-
-            -- Initialize pos if needed
-            if sb.pos[1] == 0 and sb.pos[2] == 0 then sb.pos = {ax, ay, az} end
-
-            -- Spring physics (Mass-Spring-Damper)
-            local k_spring = 400.0 -- Stable stiffness
-            local d_damp = 30.0    -- Stable damping
-            local grav_vals = {-30.0, -150.0, 50.0}
-            local gravity = grav_vals[M.gravity_mode]
-            
-            local dx, dy, dz = sb.pos[1] - (ax + m.m[8]*0.5), sb.pos[2] - (ay + m.m[9]*0.5), sb.pos[3] - (az + m.m[10]*0.5)
-            local fx = -k_spring * dx - d_damp * sb.vel[1]
-            local fy = -k_spring * dy - d_damp * sb.vel[2] + gravity
-            local fz = -k_spring * dz - d_damp * sb.vel[3]
-
-            sb.vel[1] = sb.vel[1] + fx * dt
-            sb.vel[2] = sb.vel[2] + fy * dt
-            sb.vel[3] = sb.vel[3] + fz * dt
-            sb.pos[1] = sb.pos[1] + sb.vel[1] * dt
-            sb.pos[2] = sb.pos[2] + sb.vel[2] * dt
-            sb.pos[3] = sb.pos[3] + sb.vel[3] * dt
-
-            local target_bone_idx = 0
-            for j, s in ipairs(segments) do if s.parent_name:find(sb.bone) then target_bone_idx = j - 1; break end end
-
-            -- DYNAMIC BASIS: Pure Geometric Look-At (World Reference)
-            local fwd_x, fwd_y, fwd_z = sb.pos[1] - ax, sb.pos[2] - ay, sb.pos[3] - az
-            
-            -- FORCED TILT MODE (Mode 2: HEAVY)
-            if M.gravity_mode == 2 then
-                -- Force pointing almost straight down in world space (80 degrees)
-                fwd_x, fwd_y, fwd_z = 0, -0.98, 0.17 
-            end
-
-            local fwd_l = math.sqrt(fwd_x^2 + fwd_y^2 + fwd_z^2)
-            if fwd_l > 0.001 then fwd_x, fwd_y, fwd_z = fwd_x/fwd_l, fwd_y/fwd_l, fwd_z/fwd_l else fwd_z = 1.0 end
-            
-            -- PURE WORLD REFERENCE: Use hardcoded World-Up (0,1,0)
-            local up_ref_x, up_ref_y, up_ref_z = 0, 1, 0
-            if math.abs(fwd_y) > 0.9 then up_ref_z = 1.0; up_ref_y = 0.0 end -- Handle parallel case
-            
-            -- Right = Cross(Up-Ref, Forward)
-            local rx, ry, rz = up_ref_y * fwd_z - up_ref_z * fwd_y, up_ref_z * fwd_x - up_ref_x * fwd_z, up_ref_x * fwd_y - up_ref_y * fwd_x
-            local rl = math.sqrt(rx^2 + ry^2 + rz^2); if rl > 0 then rx, ry, rz = rx/rl, ry/rl, rz/rl else rx = 1.0 end
-            
-            -- Up = Cross(Forward, Right)
-            local ux, uy, uz = fwd_y * rz - fwd_z * ry, fwd_z * rx - fwd_x * rz, fwd_x * ry - fwd_y * rx
-
-            -- CENTER OFFSET: Near-Side shell logic
-            local cx, cy, cz = sb.pos[1], sb.pos[2], sb.pos[3]
-
-            -- ANATOMICAL SKEW: Calculate grav_bias from pitch
-            local pitch = math.asin(-fwd_y)
-            local grav_bias = math.sin(pitch) * 1.5 -- Sensitivity multiplier
-
-            -- DEBUG: Print Absolute World Pitch
-            if M.diagnostic and i == 1 then
-                print(string.format("BREAST %s WORLD PITCH: %.2f (deg), BIAS: %.2f", sb.name, math.deg(pitch), grav_bias))
-            end
-
-            soft_body_data[i-1].pos = {cx, cy, cz, sb.radius}
-            soft_body_data[i-1].params = {sb.k, bone_id-1, (sb.name:find("breast") and 0 or 1), grav_bias}
-            soft_body_data[i-1].basis_x = {rx, ry, rz, 0}
-            soft_body_data[i-1].basis_y = {ux, uy, uz, 0}
-            soft_body_data[i-1].basis_z = {fwd_x, fwd_y, fwd_z, 0}
-        end
-    end
-    M.soft_body_buf:upload(soft_body_data)
 
     -- 1. Pre-calculate directions for all segments
     local segment_dirs = {}
@@ -313,7 +212,7 @@ function M.update()
         local psl = math.sqrt(ps[1]^2 + ps[2]^2 + ps[3]^2); if psl > 0 then ps = {ps[1]/psl, ps[2]/psl, ps[3]/psl} else ps = dir end
         
         -- HIPS BRANCH FUSION: Force all segments starting at Hips to use a stable vertical miter
-        if s.parent_name:find("Hips") then
+        if s.parent_name == "mixamorig_Hips" then
             ps = {0, 1, 0} -- Force horizontal ring at the root
         end
 
@@ -336,8 +235,8 @@ function M.update()
     vk.vkResetCommandBuffer(cb, 0); vk.vkBeginCommandBuffer(cb, ffi.new("VkCommandBufferBeginInfo", { sType = vk.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO }))
     vk.vkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_COMPUTE, compute_pipe)
     vk.vkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_COMPUTE, compute_layout, 0, 1, ffi.new("VkDescriptorSet[1]", {M.c_ds}), 0, nil)
-    vk.vkCmdPushConstants(cb, compute_layout, vk.VK_SHADER_STAGE_COMPUTE_BIT, 0, 20, ffi.new("uint32_t[5]", { #segments, RINGS_PER_BONE, VERTS_PER_RING, M.diagnostic and 1 or 0, #M.soft_bodies }))
-    vk.vkCmdDispatch(cb, VERTS_PER_RING/16, RINGS_PER_BONE/8, #segments)
+    vk.vkCmdPushConstants(cb, compute_layout, vk.VK_SHADER_STAGE_COMPUTE_BIT, 0, 16, ffi.new("uint32_t[4]", { #segments, RINGS_PER_BONE, VERTS_PER_RING, M.diagnostic and 1 or 0 }))
+    vk.vkCmdDispatch(cb, 1, 1, #segments)
     local v_barrier = ffi.new("VkBufferMemoryBarrier[1]", {{ sType = vk.VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER, srcAccessMask = vk.VK_ACCESS_SHADER_WRITE_BIT, dstAccessMask = vk.VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT, buffer = vbuf.handle, offset = 0, size = vbuf.size }})
     vk.vkCmdPipelineBarrier(cb, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, vk.VK_PIPELINE_STAGE_VERTEX_INPUT_BIT, 0, 0, nil, 1, v_barrier, 0, nil)
 
