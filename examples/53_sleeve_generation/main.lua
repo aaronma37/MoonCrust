@@ -27,6 +27,7 @@ local M = {
 
 local device, queue, sw, graphics_pipe, pipe_layout
 local compute_pipe, compute_layout
+local debug_pipe, debug_layout, skeleton_vbuf
 local depth_img, vbuf, ibuf, idx_count, pick_buf
 local bone_buf, param_buf, ds_pool
 local cbs, image_available_sem, frame_fence
@@ -86,6 +87,17 @@ function M.init()
     }
     local g_ds_layout = descriptors.create_layout(device, g_bindings)
     pipe_layout = pipeline.create_layout(device, {g_ds_layout}, { { stageFlags = bit.bor(vk.VK_SHADER_STAGE_VERTEX_BIT, vk.VK_SHADER_STAGE_FRAGMENT_BIT), offset = 0, size = 144 } })
+
+    -- DEBUG PIPELINE
+    debug_layout = pipeline.create_layout(device, {}, { { stageFlags = vk.VK_SHADER_STAGE_VERTEX_BIT, offset = 0, size = 64 } })
+    local dv_src = io.open(get_dir().."debug.vert"):read("*all")
+    local df_src = io.open(get_dir().."debug.frag"):read("*all")
+    debug_pipe = pipeline.create_graphics_pipeline(device, debug_layout, shader.create_module(device, shader.compile_glsl(dv_src, vk.VK_SHADER_STAGE_VERTEX_BIT)), shader.create_module(device, shader.compile_glsl(df_src, vk.VK_SHADER_STAGE_FRAGMENT_BIT)), { 
+        vertex_binding = ffi.new("VkVertexInputBindingDescription[1]", {{ binding = 0, stride = 12, inputRate = vk.VK_VERTEX_INPUT_RATE_VERTEX }}),
+        vertex_attributes = ffi.new("VkVertexInputAttributeDescription[1]", { { location = 0, binding = 0, format = vk.VK_FORMAT_R32G32B32_SFLOAT, offset = 0 } }),
+        vertex_attribute_count = 1, depth_test = false, topology = vk.VK_PRIMITIVE_TOPOLOGY_LINE_LIST, depth_format = depth_format
+    })
+    skeleton_vbuf = mc.gpu.buffer(#segments * 2 * 12, "vertex", nil, true)
 
     ffi.cdef[[ typedef struct PC { float mvp[16]; float model[16]; float mouse_pos[2]; } PC; ]]
     local v_src = io.open(get_dir().."render.vert"):read("*all")
@@ -272,6 +284,24 @@ function M.update()
     vk.vkCmdBindVertexBuffers(cb, 0, 1, ffi.new("VkBuffer[1]", {vbuf.handle}), ffi.new("VkDeviceSize[1]", {0}))
     vk.vkCmdBindIndexBuffer(cb, ibuf.handle, 0, vk.VK_INDEX_TYPE_UINT32)
     vk.vkCmdDrawIndexed(cb, idx_count, 1, 0, 0, 0)
+
+    -- RENDER SKELETON DEBUG
+    if M.diagnostic then
+        local skel_data = ffi.new("float[?]", #segments * 2 * 3)
+        for i, s in ipairs(segments) do
+            local m_start = bone_globals[s.start_pos[4] + 1]
+            local m_end = bone_globals[s.end_pos[4] + 1]
+            skel_data[(i-1)*6 + 0], skel_data[(i-1)*6 + 1], skel_data[(i-1)*6 + 2] = m_start.m[12], m_start.m[13], m_start.m[14]
+            skel_data[(i-1)*6 + 3], skel_data[(i-1)*6 + 4], skel_data[(i-1)*6 + 5] = m_end.m[12], m_end.m[13], m_end.m[14]
+        end
+        skeleton_vbuf:upload(skel_data)
+        
+        vk.vkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, debug_pipe)
+        vk.vkCmdPushConstants(cb, debug_layout, vk.VK_SHADER_STAGE_VERTEX_BIT, 0, 64, pc.mvp)
+        vk.vkCmdBindVertexBuffers(cb, 0, 1, ffi.new("VkBuffer[1]", {skeleton_vbuf.handle}), ffi.new("VkDeviceSize[1]", {0}))
+        vk.vkCmdDraw(cb, #segments * 2, 1, 0, 0)
+    end
+
     vk.vkCmdEndRendering(cb)
 
     -- READBACK PICKING
