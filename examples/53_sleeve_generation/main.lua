@@ -58,32 +58,33 @@ function M.init()
     for _, b in ipairs(bones) do if b.name:find("Head") then head = b; break end end
     if head then
         -- SHORTEN THE HEAD BONE: Move the nexus to the jaw/ear level
+        -- Row-major translation column is 4, 8, 12
+        head.local_matrix[4] = head.local_matrix[4] * 0.5
+        head.local_matrix[8] = head.local_matrix[8] * 0.5
         head.local_matrix[12] = head.local_matrix[12] * 0.5
-        head.local_matrix[13] = head.local_matrix[13] * 0.5
-        head.local_matrix[14] = head.local_matrix[14] * 0.5
 
         local skull = {
             id = #bones + 1,
             name = "virtual_Skull",
             parent_id = head.id,
-            pos = { head.pos[1], head.pos[2] + 0.8, head.pos[3] },
-            local_matrix = { 1,0,0,0, 0,1,0,8, 0,0,1,0, 0,0,0,1 }, -- Shorter (8 units)
+            pos = { head.pos[1], head.pos[2] + 1.5, head.pos[3] },
+            local_matrix = { 1,0,0,0, 0,1,0,15, 0,0,1,0, 0,0,0,1 }, -- Increased to 15
             global_mat = head.global_mat
         }
         local chin = {
             id = #bones + 2,
             name = "virtual_Chin",
             parent_id = head.id,
-            pos = { head.pos[1], head.pos[2] - 1.5, head.pos[3] + 1.0 },
-            local_matrix = { 1,0,0,0, 0,1,0,-15, 0,0,1,10, 0,0,0,1 }, -- Point DOWN/FORWARD
+            pos = { head.pos[1], head.pos[2] - 0.5, head.pos[3] + 0.7 },
+            local_matrix = { 1,0,0,0, 0,1,0,-5, 0,0,1,7, 0,0,0,1 }, -- Tilted UP (~15 deg shift)
             global_mat = head.global_mat
         }
         local nose = {
             id = #bones + 3,
             name = "virtual_Nose",
             parent_id = head.id,
-            pos = { head.pos[1], head.pos[2] - 0.5, head.pos[3] + 1.2 },
-            local_matrix = { 1,0,0,0, 0,1,0,-5, 0,0,1,12, 0,0,0,1 }, -- Point FORWARD
+            pos = { head.pos[1], head.pos[2] - 0.2, head.pos[3] + 0.8 },
+            local_matrix = { 1,0,0,0, 0,1,0,-2, 0,0,1,8, 0,0,0,1 }, -- Tilted UP (~5 deg shift)
             global_mat = head.global_mat
         }
         table.insert(bones, skull)
@@ -95,6 +96,7 @@ function M.init()
     idx_count = #mesher.generate_indices(#segments, RINGS_PER_BONE, VERTS_PER_RING)
 
     animations.walking = dae.load_animations("examples/53_sleeve_generation/Walking.dae")
+    animations.slash = dae.load_animations("examples/53_sleeve_generation/Great Sword Slash.dae")
 
     local v_size = #segments * RINGS_PER_BONE * VERTS_PER_RING * ffi.sizeof("MeshVertex")
     local i_size = idx_count * 4
@@ -132,11 +134,14 @@ function M.init()
     local dv_src = io.open(get_dir().."debug.vert"):read("*all")
     local df_src = io.open(get_dir().."debug.frag"):read("*all")
     debug_pipe = pipeline.create_graphics_pipeline(device, debug_layout, shader.create_module(device, shader.compile_glsl(dv_src, vk.VK_SHADER_STAGE_VERTEX_BIT)), shader.create_module(device, shader.compile_glsl(df_src, vk.VK_SHADER_STAGE_FRAGMENT_BIT)), { 
-        vertex_binding = ffi.new("VkVertexInputBindingDescription[1]", {{ binding = 0, stride = 12, inputRate = vk.VK_VERTEX_INPUT_RATE_VERTEX }}),
-        vertex_attributes = ffi.new("VkVertexInputAttributeDescription[1]", { { location = 0, binding = 0, format = vk.VK_FORMAT_R32G32B32_SFLOAT, offset = 0 } }),
-        vertex_attribute_count = 1, depth_test = false, topology = vk.VK_PRIMITIVE_TOPOLOGY_LINE_LIST, depth_format = depth_format
+        vertex_binding = ffi.new("VkVertexInputBindingDescription[1]", {{ binding = 0, stride = 24, inputRate = vk.VK_VERTEX_INPUT_RATE_VERTEX }}),
+        vertex_attributes = ffi.new("VkVertexInputAttributeDescription[2]", { 
+            { location = 0, binding = 0, format = vk.VK_FORMAT_R32G32B32_SFLOAT, offset = 0 },
+            { location = 1, binding = 0, format = vk.VK_FORMAT_R32G32B32_SFLOAT, offset = 12 }
+        }),
+        vertex_attribute_count = 2, depth_test = false, topology = vk.VK_PRIMITIVE_TOPOLOGY_LINE_LIST, depth_format = depth_format
     })
-    skeleton_vbuf = mc.gpu.buffer(#segments * 2 * 12, "vertex", nil, true)
+    skeleton_vbuf = mc.gpu.buffer(#segments * 2 * 24, "vertex", nil, true)
 
     ffi.cdef[[ typedef struct PC { float mvp[16]; float model[16]; float mouse_pos[2]; } PC; ]]
     local v_src = io.open(get_dir().."render.vert"):read("*all")
@@ -199,6 +204,7 @@ function M.update()
     
     if input.key_pressed(input.SCANCODE_1) then M.anim_state = "rest" end
     if input.key_pressed(input.SCANCODE_2) then M.anim_state = "walking" end
+    if input.key_pressed(input.SCANCODE_4) then M.anim_state = "slash" end
     if input.key_pressed(input.SCANCODE_3) then M.diagnostic = not M.diagnostic end
 
     vk.vkWaitForFences(device, 1, ffi.new("VkFence[1]", {frame_fence}), vk.VK_TRUE, 0xFFFFFFFFFFFFFFFFULL)
@@ -231,7 +237,7 @@ function M.update()
     local bone_globals = {}
     local function calc_globals(bone, parent_global)
         local local_m = mc.mat4_identity()
-        local vals = (M.anim_state == "walking" and get_animated_matrix(bone.name, animations.walking, M.time)) or bone.local_matrix
+        local vals = (animations[M.anim_state] and get_animated_matrix(bone.name, animations[M.anim_state], M.time)) or bone.local_matrix
         if vals then for row=0,3 do for col=0,3 do local_m.m[col*4 + row] = vals[row*4 + col + 1] end end end
         local_m.m[12], local_m.m[13], local_m.m[14] = local_m.m[12]*0.1, local_m.m[13]*0.1, local_m.m[14]*0.1
         local global_m = mc.mat4_multiply(parent_global, local_m)
@@ -346,12 +352,18 @@ function M.update()
 
     -- RENDER SKELETON DEBUG
     if M.diagnostic then
-        local skel_data = ffi.new("float[?]", #segments * 2 * 3)
+        local skel_data = ffi.new("float[?]", #segments * 2 * 6)
         for i, s in ipairs(segments) do
             local m_start = bone_globals[s.start_pos[4] + 1]
             local m_end = bone_globals[s.end_pos[4] + 1]
-            skel_data[(i-1)*6 + 0], skel_data[(i-1)*6 + 1], skel_data[(i-1)*6 + 2] = m_start.m[12], m_start.m[13], m_start.m[14]
-            skel_data[(i-1)*6 + 3], skel_data[(i-1)*6 + 4], skel_data[(i-1)*6 + 5] = m_end.m[12], m_end.m[13], m_end.m[14]
+            local is_virtual = s.name:find("virtual")
+            local r, g, b = 1.0, 1.0, 1.0
+            if is_virtual then r, g, b = 0.0, 1.0, 1.0 end
+
+            skel_data[(i-1)*12 + 0], skel_data[(i-1)*12 + 1], skel_data[(i-1)*12 + 2] = m_start.m[12], m_start.m[13], m_start.m[14]
+            skel_data[(i-1)*12 + 3], skel_data[(i-1)*12 + 4], skel_data[(i-1)*12 + 5] = r, g, b
+            skel_data[(i-1)*12 + 6], skel_data[(i-1)*12 + 7], skel_data[(i-1)*12 + 8] = m_end.m[12], m_end.m[13], m_end.m[14]
+            skel_data[(i-1)*12 + 9], skel_data[(i-1)*12 + 10], skel_data[(i-1)*12 + 11] = r, g, b
         end
         skeleton_vbuf:upload(skel_data)
         

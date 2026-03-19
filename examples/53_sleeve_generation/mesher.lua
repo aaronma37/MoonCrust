@@ -33,13 +33,17 @@ function M.calculate_bone_segments(skeleton_bones)
     for _, b in ipairs(skeleton_bones) do
         if b.parent_id ~= 0 then
             local parent = bone_map[b.parent_id]
-            table.insert(segments, {
-                name = parent.name .. "_to_" .. b.name,
-                parent_name = parent.name,
-                child_name = b.name,
-                start_pos = {parent.pos[1], parent.pos[2], parent.pos[3], parent.id-1},
-                end_pos = {b.pos[1], b.pos[2], b.pos[3], b.id-1}
-            })
+            
+            -- SEGMENT PRUNING: Completely ignore the original over-long head top
+            if not b.name:find("HeadTop_End") then
+                table.insert(segments, {
+                    name = parent.name .. "_to_" .. b.name,
+                    parent_name = parent.name,
+                    child_name = b.name,
+                    start_pos = {parent.pos[1], parent.pos[2], parent.pos[3], parent.id-1},
+                    end_pos = {b.pos[1], b.pos[2], b.pos[3], b.id-1}
+                })
+            end
         end
     end
     return segments
@@ -77,12 +81,12 @@ function M.create_params(num_bones, rings_per_bone, segments)
         mixamorig_Spine = { r = 1.0, oval = 0.3 },
         mixamorig_Spine1 = { r = 0.7, oval = 0.2 },
         mixamorig_Spine2 = { r = 1.2, oval = 0.4 },
-        mixamorig_Neck = { r = 0.45, oval = 0.1 },
-        mixamorig_Head = { r = 0.75, oval = 0.1 },
-        virtual_Skull = { r = 0.85, oval = 0.1, taper = 1.0 }, -- ROUNDER
-        virtual_Chin = { r = 0.3, oval = 0.4 },
-
-        virtual_Nose = { r = 0.1, oval = 0.0 },
+        mixamorig_Neck = { r = 0.4, oval = 0.1 },
+        mixamorig_Head = { r = 0.4, oval = 0.1 },
+        mixamorig_HeadTop_End = { r = 0.0, oval = 0.0 }, -- GHOST THIS
+        virtual_Skull = { r = 1.0, oval = 0.3, taper = 1.0 },
+        virtual_Chin = { r = 0.3, oval = 0.4, taper = 1.0 },
+        virtual_Nose = { r = 0.1, oval = 0.0, taper = 1.0 },
         -- Limbs
         mixamorig_LeftArm = { r = 0.35, oval = 0.1 },
         mixamorig_RightArm = { r = 0.35, oval = 0.1 },
