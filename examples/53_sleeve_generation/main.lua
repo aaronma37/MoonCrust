@@ -23,10 +23,11 @@ local M = {
     time = 0,
     anim_state = "rest",
     gravity_mode = 1,
-    last_frame_time = 0
+    last_frame_time = 0,
+    wireframe = false
 }
 
-local device, queue, sw, graphics_pipe, outline_pipe, pipe_layout
+local device, queue, sw, graphics_pipe, outline_pipe, wire_pipe, pipe_layout
 local compute_pipe, compute_layout
 local debug_pipe, debug_layout, skeleton_vbuf
 local depth_img, vbuf, ibuf, idx_count, pick_buf
@@ -54,30 +55,19 @@ function M.init()
 
     bones = skeleton.get_bone_list()
     
-    -- INJECT MINIMALIST VIRTUAL BONES
-    local head = nil
-    for _, b in ipairs(bones) do if b.name:find("Head") then head = b; break end end
-    if head then
-        -- Keep original neck height
-        -- 1. Skull (Forehead Core) - Points UP
-        local skull = {
-            id = #bones + 1,
-            name = "virtual_Skull",
-            parent_id = head.id,
-            pos = { head.pos[1], head.pos[2] + 1.0, head.pos[3] },
-            local_matrix = { 1,0,0,0, 0,1,0,10, 0,0,1,0, 0,0,0,1 }, -- 10 units up
-            global_mat = head.global_mat
-        }
-        -- 2. Face (Vertical Canvas) - Branches from the TOP of the Skull
+    -- ONE BONE HEAD ARCHITECTURE (Neck Anchored)
+    local neck = nil
+    for _, b in ipairs(bones) do if b.name:find("Neck") then neck = b; break end end
+    if neck then
         local face = {
-            id = #bones + 2,
+            id = #bones + 1,
             name = "virtual_Face",
-            parent_id = skull.id, -- ANCHORED TO FOREHEAD
-            pos = { head.pos[1], head.pos[2], head.pos[3] + 0.2 },
-            local_matrix = { 1,0,0,0, 0,1,0,-15, 0,0,1,2, 0,0,0,1 }, -- Points straight DOWN and slightly forward
-            global_mat = skull.global_mat
+            parent_id = neck.id,
+            pos = { neck.pos[1], neck.pos[2], neck.pos[3] },
+            -- Point straight UP from the neck to the crown
+            local_matrix = { 1,0,0,0, 0,1,0,25, 0,0,1,0, 0,0,0,1 }, 
+            global_mat = neck.global_mat
         }
-        table.insert(bones, skull)
         table.insert(bones, face)
     end
 
@@ -131,7 +121,7 @@ function M.init()
     })
     skeleton_vbuf = mc.gpu.buffer(#segments * 2 * 24, "vertex", nil, true)
 
-    ffi.cdef[[ typedef struct PC { float mvp[16]; float model[16]; float mouse_pos[2]; float outline_width; float pad; } PC; ]]
+    ffi.cdef[[ typedef struct PC { float mvp[16]; float model[16]; float mouse_pos[2]; float outline_width; float wireframe_mode; float pad; } PC; ]]
     local v_src = io.open(get_dir().."render.vert"):read("*all")
     local f_src = io.open(get_dir().."render.frag"):read("*all")
     
@@ -140,8 +130,8 @@ function M.init()
         { location = 0, binding = 0, format = vk.VK_FORMAT_R32G32B32_SFLOAT, offset = 0 },
         { location = 1, binding = 0, format = vk.VK_FORMAT_R32G32B32_SFLOAT, offset = 16 },
         { location = 2, binding = 0, format = vk.VK_FORMAT_R32G32B32_SFLOAT, offset = 32 },
-        { location = 3, binding = 0, format = vk.VK_FORMAT_R32G32B32_SFLOAT, offset = 48 },
-        { location = 4, binding = 0, format = vk.VK_FORMAT_R32G32B32_UINT, offset = 64 }
+        { location = 3, binding = 0, format = vk.VK_FORMAT_R32G32B32A32_SFLOAT, offset = 48 }, -- Weights (vec4)
+        { location = 4, binding = 0, format = vk.VK_FORMAT_R32G32B32A32_UINT, offset = 64 }   -- Bone IDs (uvec4)
     })
 
     graphics_pipe = pipeline.create_graphics_pipeline(device, pipe_layout, shader.create_module(device, shader.compile_glsl(v_src, vk.VK_SHADER_STAGE_VERTEX_BIT)), shader.create_module(device, shader.compile_glsl(f_src, vk.VK_SHADER_STAGE_FRAGMENT_BIT)), { 
@@ -152,6 +142,12 @@ function M.init()
     outline_pipe = pipeline.create_graphics_pipeline(device, pipe_layout, shader.create_module(device, shader.compile_glsl(v_src, vk.VK_SHADER_STAGE_VERTEX_BIT)), shader.create_module(device, shader.compile_glsl(f_src, vk.VK_SHADER_STAGE_FRAGMENT_BIT)), { 
         vertex_binding = vertex_binding, vertex_attributes = vertex_attributes, vertex_attribute_count = 5, 
         depth_test = true, depth_write = false, depth_format = depth_format, cull_mode = vk.VK_CULL_MODE_FRONT_BIT
+    })
+
+    wire_pipe = pipeline.create_graphics_pipeline(device, pipe_layout, shader.create_module(device, shader.compile_glsl(v_src, vk.VK_SHADER_STAGE_VERTEX_BIT)), shader.create_module(device, shader.compile_glsl(f_src, vk.VK_SHADER_STAGE_FRAGMENT_BIT)), { 
+        vertex_binding = vertex_binding, vertex_attributes = vertex_attributes, vertex_attribute_count = 5, 
+        depth_test = true, depth_write = true, depth_format = depth_format, cull_mode = vk.VK_CULL_MODE_NONE,
+        polygon_mode = vk.VK_POLYGON_MODE_LINE
     })
 
     M.c_ds = descriptors.allocate_sets(device, ds_pool, {c_ds_layout})[1]
@@ -202,6 +198,10 @@ function M.update()
     if input.key_pressed(input.SCANCODE_2) then M.anim_state = "walking" end
     if input.key_pressed(input.SCANCODE_4) then M.anim_state = "slash" end
     if input.key_pressed(input.SCANCODE_3) then M.diagnostic = not M.diagnostic end
+    if input.key_pressed(input.SCANCODE_5) or input.key_pressed(input.SCANCODE_Z) then 
+        M.wireframe = not M.wireframe 
+        print("WIRE_TOGGLE: " .. tostring(M.wireframe))
+    end
 
     vk.vkWaitForFences(device, 1, ffi.new("VkFence[1]", {frame_fence}), vk.VK_TRUE, 0xFFFFFFFFFFFFFFFFULL)
     vk.vkResetFences(device, 1, ffi.new("VkFence[1]", {frame_fence}))
@@ -267,6 +267,7 @@ function M.update()
         for j, ps in ipairs(segments) do if ps.end_pos[4] == s.start_pos[4] then incoming = segment_dirs[j]; break end end
         local outgoing = dir
         for j, cs in ipairs(segments) do if cs.start_pos[4] == s.end_pos[4] then outgoing = segment_dirs[j]; break end end
+        
         local dot_in = dir[1]*incoming[1] + dir[2]*incoming[2] + dir[3]*incoming[3]
         local is_sharp_bend = dot_in < 0.0
         
@@ -280,9 +281,11 @@ function M.update()
         if s.parent_name:find("Hips") then ps = {0, 1, 0} end
         local pe = {dir[1] + outgoing[1], dir[2] + outgoing[2], dir[3] + outgoing[3]}
         local pel = math.sqrt(pe[1]^2 + pe[2]^2 + pe[3]^2); if pel > 0 then pe = {pe[1]/pel, pe[2]/pel, pe[3]/pel} else pe = dir end
-        local dot = dir[1]*incoming[1] + dir[2]*incoming[2] + dir[3]*incoming[3]
-        local flex = math.max(0, 1.0 - dot) * 0.5
+        local dot_out = dir[1]*outgoing[1] + dir[2]*outgoing[2] + dir[3]*outgoing[3]
+        local flex = math.max(0, 1.0 - dot_out) * 0.5
         local side = (s.name:find("Right") and -1 or 1)
+        if not s.name:find("Left") and not s.name:find("Right") then side = 0.0 end
+        
         bone_data[i-1].start_pos = {m_start.m[12], m_start.m[13], m_start.m[14], s.start_pos[4]}
         bone_data[i-1].end_pos = {m_end.m[12], m_end.m[13], m_end.m[14], s.end_pos[4]}
         bone_data[i-1].plane_start = {ps[1], ps[2], ps[3], flex}
@@ -325,19 +328,27 @@ function M.update()
     for i=0,15 do pc.mvp[i], pc.model[i] = mvp.m[i], model.m[i] end
     local mx, my = input.mouse_pos(); pc.mouse_pos[0], pc.mouse_pos[1] = mx, my
 
+    local active_pipe = graphics_pipe
+
     -- PASS 1: Outline
-    pc.outline_width = 0.015
-    vk.vkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, outline_pipe)
+    if not M.wireframe then
+        pc.outline_width = 0.015
+        vk.vkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, outline_pipe)
+        vk.vkCmdPushConstants(cb, pipe_layout, bit.bor(vk.VK_SHADER_STAGE_VERTEX_BIT, vk.VK_SHADER_STAGE_FRAGMENT_BIT), 0, ffi.sizeof("PC"), pc)
+        vk.vkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe_layout, 0, 1, ffi.new("VkDescriptorSet[1]", {M.g_ds}), 0, nil)
+        vk.vkCmdBindVertexBuffers(cb, 0, 1, ffi.new("VkBuffer[1]", {vbuf.handle}), ffi.new("VkDeviceSize[1]", {0}))
+        vk.vkCmdBindIndexBuffer(cb, ibuf.handle, 0, vk.VK_INDEX_TYPE_UINT32)
+        vk.vkCmdDrawIndexed(cb, idx_count, 1, 0, 0, 0)
+    end
+
+    -- PASS 2: Body
+    pc.outline_width = 0.0
+    pc.wireframe_mode = M.wireframe and 1.0 or 0.0
+    vk.vkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, active_pipe)
     vk.vkCmdPushConstants(cb, pipe_layout, bit.bor(vk.VK_SHADER_STAGE_VERTEX_BIT, vk.VK_SHADER_STAGE_FRAGMENT_BIT), 0, ffi.sizeof("PC"), pc)
     vk.vkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe_layout, 0, 1, ffi.new("VkDescriptorSet[1]", {M.g_ds}), 0, nil)
     vk.vkCmdBindVertexBuffers(cb, 0, 1, ffi.new("VkBuffer[1]", {vbuf.handle}), ffi.new("VkDeviceSize[1]", {0}))
     vk.vkCmdBindIndexBuffer(cb, ibuf.handle, 0, vk.VK_INDEX_TYPE_UINT32)
-    vk.vkCmdDrawIndexed(cb, idx_count, 1, 0, 0, 0)
-
-    -- PASS 2: Body
-    pc.outline_width = 0.0
-    vk.vkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, graphics_pipe)
-    vk.vkCmdPushConstants(cb, pipe_layout, bit.bor(vk.VK_SHADER_STAGE_VERTEX_BIT, vk.VK_SHADER_STAGE_FRAGMENT_BIT), 0, ffi.sizeof("PC"), pc)
     vk.vkCmdDrawIndexed(cb, idx_count, 1, 0, 0, 0)
 
     if M.diagnostic then

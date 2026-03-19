@@ -21,7 +21,7 @@ ffi.cdef[[
     } MeshBone;
 
     typedef struct MeshRingParams {
-        float coeffs[8];
+        float pins[8];
     } MeshRingParams;
 ]]
 
@@ -69,14 +69,13 @@ function M.create_params(num_bones, rings_per_bone, segments)
     local params = ffi.new("MeshRingParams[?]", num_bones * rings_per_bone)
     
     local joints = {
-        mixamorig_Hips = { r = 1.2, oval = 0.35 },
+        mixamorig_Hips = { r = 1.2, oval = 0.3 },
         mixamorig_Spine = { r = 1.0, oval = 0.3 },
         mixamorig_Spine1 = { r = 0.7, oval = 0.2 },
         mixamorig_Spine2 = { r = 1.2, oval = 0.4 },
         mixamorig_Neck = { r = 0.35, oval = 0.1 },
-        mixamorig_Head = { r = 0.35, oval = 0.1 },
-        virtual_Skull = { r = 0.85, oval = 0.2, taper = 1.0 },
-        virtual_Face = { r = 0.4, oval = 0.2, taper = 1.0, sharp = 2.0 },
+        mixamorig_Head = { r = 0.05, oval = 0.0 },
+        virtual_Face = { r = 0.1, oval = 0.0 },
         -- Limbs
         mixamorig_LeftArm = { r = 0.35, oval = 0.1 },
         mixamorig_RightArm = { r = 0.35, oval = 0.1 },
@@ -85,7 +84,7 @@ function M.create_params(num_bones, rings_per_bone, segments)
     }
 
     local function get_joint(name)
-        return joints[name] or { r = 0.4, oval = 0.2, taper = 0.0, sharp = 1.0 }
+        return joints[name] or { r = 0.4, oval = 0.2 }
     end
 
     for b = 0, num_bones - 1 do
@@ -93,61 +92,52 @@ function M.create_params(num_bones, rings_per_bone, segments)
         local start_j = get_joint(seg.parent_name)
         local end_j = get_joint(seg.child_name)
         local s_r, e_r = start_j.r, end_j.r
-        local taper_pow = 1.0
-
-        if seg.parent_name == "mixamorig_Hips" then
-            s_r = 1.2 
-            if seg.child_name:find("Leg") then e_r = 0.7 end
-        end
-        if seg.parent_name == "mixamorig_Spine2" and (seg.child_name:find("Shoulder") or seg.child_name:find("Arm")) then s_r = 0.5 end
-        if seg.parent_name == "mixamorig_Spine2" and seg.child_name == "mixamorig_Neck" then taper_pow = 5.0 end
 
         for r = 0, rings_per_bone - 1 do
             local p = params[b * rings_per_bone + r]
             local rt = r / (rings_per_bone - 1)
-            local t = math.pow(rt, taper_pow)
             
-            local cur_r = s_r + (e_r - s_r) * t
-            local cur_oval = (start_j.oval or 0.2) * (1.0 - t) + (end_j.oval or 0.2) * t
-            local cur_sharp = (start_j.sharp or 1.0) * (1.0 - rt) + (end_j.sharp or 1.0) * rt
-            local cur_taper = (start_j.taper or 0.0) * (1.0 - rt) + (end_j.taper or 0.0) * rt
+            local cur_r = s_r + (e_r - s_r) * rt
+            local cur_oval = (start_j.oval or 0.2) * (1.0 - rt) + (end_j.oval or 0.2) * rt
             
-            p.coeffs[0] = cur_r
-            p.coeffs[1] = 0 -- Forward/Back (Reset)
-            p.coeffs[3] = cur_oval * cur_r
-            p.coeffs[5] = cur_sharp
-            p.coeffs[7] = cur_taper
+            for i = 0, 7 do
+                local angle = (i / 8.0) * 6.283185
+                local side_factor = math.abs(math.sin(angle))
+                local r_final = cur_r * (1.0 + cur_oval * side_factor)
+                p.pins[i] = r_final
+            end
 
-            -- VERTICAL FACE SCULPTING (rt=0 is Top, rt=1.0 is Chin)
+            -- TOTAL HEAD SCULPTING (UP Bone)
             if seg.child_name == "virtual_Face" then
-                -- Define nose bridge, mouth, and chin protrusion
-                local face_r = 0.4
-                local fwd_push = 0.0
+                -- Global Profile Recess
+                p.pins[3], p.pins[4], p.pins[5] = 0.5, 0.5, 0.5 
                 
-                if rt < 0.2 then -- Forehead
-                    face_r = 0.8
-                    fwd_push = 0.2
-                elseif rt < 0.5 then -- Nose Bridge
-                    face_r = 0.6 + (rt-0.2) * 0.5
-                    fwd_push = 0.2 + (rt-0.2) * 3.0
-                elseif rt < 0.7 then -- Mouth
-                    face_r = 0.75 - (rt-0.5) * 1.0
-                    fwd_push = 1.1 - (rt-0.5) * 1.5
-                else -- Chin
-                    face_r = 0.55 - (rt-0.7) * 0.5
-                    fwd_push = 0.65 + (rt-0.7) * 1.0
+                if rt < 0.25 then -- Neck -> Chin
+                    local cap = math.pow(rt / 0.25, 0.5)
+                    p.pins[0] = 0.45 * cap
+                    p.pins[2], p.pins[6] = 0.4 * cap, 0.4 * cap
+                elseif rt < 0.45 then -- Jaw / Mouth
+                    p.pins[0] = 0.5 
+                    p.pins[2], p.pins[6] = 0.8, 0.8
+                elseif rt < 0.65 then -- Nose Bridge
+                    local nose_out = 0.5 + (rt-0.45) * 4.0
+                    p.pins[0] = nose_out
+                    p.pins[1], p.pins[7] = 0.6, 0.6 -- WIDER bridge base
+                    p.pins[2], p.pins[6] = 0.7, 0.7 -- Temples
+                elseif rt < 0.85 then -- Forehead
+                    p.pins[0] = 0.7 
+                    p.pins[2], p.pins[6] = 0.7, 0.7
+                else -- Crown
+                    local cap = math.pow(1.0 - (rt-0.85)/0.15, 0.5)
+                    p.pins[0] = 0.6 * cap
+                    p.pins[2], p.pins[6] = 0.6 * cap, 0.6 * cap
+                    p.pins[4] = 0.3 * cap
                 end
-                
-                p.coeffs[0] = face_r
-                p.coeffs[1] = 0 -- NO SIDE PUSH
-                p.coeffs[2] = fwd_push -- PUSH FORWARD (n=1, sin axis is depth now that spiral is fixed)
-                p.coeffs[3] = 0.4 * face_r -- Wide ear-to-ear ovality
-                p.coeffs[5] = 2.0 -- Smooth chiseled
             end
         end
     end
 
-    -- 2. ROBUST BRANCH WELDING
+    -- 2. BRANCH WELDING
     for b = 0, num_bones - 1 do
         local curr = segments[b+1]
         for prev_idx = 0, num_bones - 1 do
@@ -156,10 +146,10 @@ function M.create_params(num_bones, rings_per_bone, segments)
                 local function is_torso(name) 
                     return name:find("Spine") or name:find("Hips") or name:find("Neck") or name:find("Head") or name:find("virtual") 
                 end
-                if is_torso(prev.child_name) == is_torso(curr.child_name) then
+                if is_torso(prev.child_name) and is_torso(curr.child_name) then
                     local p_last = params[prev_idx * rings_per_bone + (rings_per_bone-1)]
                     local c_first = params[b * rings_per_bone]
-                    for i=0,7 do c_first.coeffs[i] = p_last.coeffs[i] end
+                    for i=0,7 do c_first.pins[i] = p_last.pins[i] end
                 end
             end
         end
