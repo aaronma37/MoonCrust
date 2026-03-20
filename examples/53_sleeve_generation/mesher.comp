@@ -24,6 +24,15 @@ layout(std430, set = 0, binding = 0) buffer VertexBuffer { Vertex vertices[]; };
 layout(std430, set = 0, binding = 1) readonly buffer BoneBuffer { Bone bones[]; };
 layout(std430, set = 0, binding = 2) readonly buffer ParamBuffer { RingParams params[]; };
 
+struct DrawIndexedIndirectCommand {
+    uint indexCount;
+    uint instanceCount;
+    uint firstIndex;
+    int  vertexOffset;
+    uint firstInstance;
+};
+layout(std430, set = 0, binding = 3) buffer IndirectBuffer { DrawIndexedIndirectCommand cmd; };
+
 layout(push_constant) uniform PC {
     uint num_bones;
     uint rings_per_bone;
@@ -32,6 +41,14 @@ layout(push_constant) uniform PC {
 };
 
 void main() {
+    if (gl_GlobalInvocationID.x == 0 && gl_GlobalInvocationID.y == 0 && gl_GlobalInvocationID.z == 0) {
+        cmd.indexCount = num_bones * (rings_per_bone - 1) * verts_per_ring * 6;
+        cmd.instanceCount = 1;
+        cmd.firstIndex = 0;
+        cmd.vertexOffset = 0;
+        cmd.firstInstance = 0;
+    }
+
     uint theta_idx = gl_GlobalInvocationID.x;
     uint ring_idx = gl_GlobalInvocationID.y;
     uint bone_idx = gl_GlobalInvocationID.z;
