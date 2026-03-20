@@ -219,8 +219,9 @@ function M.update()
     -- Debug SDF Head Counts
     if M.sdf_head then
         local ptr = ffi.cast("uint32_t*", M.sdf_head.counter_buf.allocation.ptr)
+        local i_ptr = ffi.cast("uint32_t*", M.sdf_head.indirect_buf.allocation.ptr)
         if M.time % 1.0 < 0.02 then
-            print(string.format("SDF Head Stats | Indices: %d | Vertices: %d", ptr[0], ptr[6]))
+            print(string.format("SDF Head Stats | Indices: %d | Vertices: %d | IndirectIdx: %d | Inst: %d", ptr[0], ptr[6], i_ptr[0], i_ptr[1]))
         end
     end
 

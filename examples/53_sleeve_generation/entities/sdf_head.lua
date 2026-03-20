@@ -63,6 +63,7 @@ function SDFHead.new(device, ds_pool, char_entity)
     self.vertex_pipe = load_comp("vertex")
     self.index_pipe = load_comp("index")
     self.reset_pipe = load_comp("reset")
+    self.finalize_pipe = load_comp("finalize")
 
     self.is_baked = false
     return self
@@ -74,8 +75,7 @@ function SDFHead:update(dt, time, state)
 end
 
 function SDFHead:record_compute(cb, state)
-    -- Allow per-frame baking for now to debug transforms/SDF
-    -- if self.is_baked then return end 
+    if self.is_baked then return end 
 
     vk.vkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_COMPUTE, self.pipe_layout, 0, 1, ffi.new("VkDescriptorSet[1]", {self.ds}), 0, nil)
     
@@ -105,6 +105,12 @@ function SDFHead:record_compute(cb, state)
     -- 4. Index
     vk.vkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_COMPUTE, self.index_pipe)
     vk.vkCmdDispatch(cb, self.grid_size[1]/8, self.grid_size[2]/8, self.grid_size[3]/8)
+    
+    vk.vkCmdPipelineBarrier(cb, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, barrier, 0, nil, 0, nil)
+
+    -- 5. Finalize
+    vk.vkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_COMPUTE, self.finalize_pipe)
+    vk.vkCmdDispatch(cb, 1, 1, 1)
 
     local v_barriers = ffi.new("VkBufferMemoryBarrier[3]", {
         { sType = vk.VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER, srcAccessMask = vk.VK_ACCESS_SHADER_WRITE_BIT, dstAccessMask = vk.VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT, buffer = self.vbuf.handle, offset = 0, size = self.vbuf.size },
@@ -135,13 +141,7 @@ function SDFHead:record_draw(cb, pipe_layout, is_wireframe)
     vk.vkCmdBindVertexBuffers(cb, 0, 1, ffi.new("VkBuffer[1]", {self.vbuf.handle}), ffi.new("VkDeviceSize[1]", {0}))
     vk.vkCmdBindIndexBuffer(cb, self.ibuf.handle, 0, vk.VK_INDEX_TYPE_UINT32)
     
-    -- DIRECT DRAW: Use the count we see in logs (around 13000)
-    -- We can fetch the actual count from the mapped counter buffer if needed
-    local ptr = ffi.cast("uint32_t*", self.counter_buf.allocation.ptr)
-    local count = ptr[0]
-    if count > 0 then
-        vk.vkCmdDrawIndexed(cb, count, 1, 0, 0, 0)
-    end
+    vk.vkCmdDrawIndexedIndirect(cb, self.indirect_buf.handle, 0, 1, 0)
 
     -- Restore identity matrix
     local identity = mc.mat4_identity()

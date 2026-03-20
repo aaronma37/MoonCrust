@@ -1,0 +1,24 @@
+#version 460
+
+layout(local_size_x = 1) in;
+
+struct DrawIndexedIndirectCommand {
+    uint indexCount;
+    uint instanceCount;
+    uint firstIndex;
+    int  vertexOffset;
+    uint firstInstance;
+};
+
+layout(std430, set = 0, binding = 4) buffer CounterBuffer { uint counts[]; };
+layout(std430, set = 0, binding = 5) buffer IndirectBuffer { DrawIndexedIndirectCommand cmd; };
+
+void main() {
+    // This runs in a separate pass AFTER all index generation is done.
+    // It copies the final atomic result into the indirect draw command.
+    cmd.indexCount = counts[0];
+    cmd.instanceCount = 1;
+    cmd.firstIndex = 0;
+    cmd.vertexOffset = 0;
+    cmd.firstInstance = 0;
+}
