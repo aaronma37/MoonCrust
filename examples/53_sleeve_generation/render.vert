@@ -12,7 +12,7 @@ layout(location = 3) out flat uint outBoneId;
 layout(location = 4) out vec2 outUV; // theta, ring_idx
 
 layout(push_constant) uniform PC {
-    mat4 mvp;
+    mat4 projection_view;
     mat4 model;
     vec2 mouse_pos;
     float outline_width;
@@ -27,10 +27,12 @@ void main() {
         pos += inNormal * pc.outline_width;
     }
 
-    gl_Position = pc.mvp * vec4(pos, 1.0);
-    outNormal = mat3(pc.model) * inNormal;
+    vec4 world_pos = pc.model * vec4(pos, 1.0);
+    gl_Position = pc.projection_view * world_pos;
+    
+    outNormal = normalize(mat3(pc.model) * inNormal);
     outColor = inColor;
-    outWorldPos = (pc.model * vec4(pos, 1.0)).xyz;
+    outWorldPos = world_pos.xyz;
     outBoneId = inBoneIds.x;
     outUV = inWeights.zw;
 }

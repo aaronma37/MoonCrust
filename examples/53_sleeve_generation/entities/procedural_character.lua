@@ -21,22 +21,16 @@ function Character.new(device, ds_pool, g_ds_layout)
 
     self.bones = skeleton.get_bone_list()
     
-    -- ONE BONE HEAD ARCHITECTURE (Neck Anchored)
-    local neck = nil
-    for _, b in ipairs(self.bones) do if b.name:find("Neck") then neck = b; break end end
-    if neck then
-        local face = {
-            id = #self.bones + 1,
-            name = "virtual_Face",
-            parent_id = neck.id,
-            pos = { neck.pos[1], neck.pos[2], neck.pos[3] },
-            local_matrix = { 1,0,0,0, 0,1,0,25, 0,0,1,0, 0,0,0,1 }, 
-            global_mat = neck.global_mat
-        }
-        table.insert(self.bones, face)
-    end
-
     self.segments = mesher.calculate_bone_segments(self.bones)
+    -- Filter out segments that connect TO the Head or virtual_Face
+    local filtered = {}
+    for _, s in ipairs(self.segments) do
+        if not s.child_name:find("Head") and not s.child_name:find("virtual") then
+            table.insert(filtered, s)
+        end
+    end
+    self.segments = filtered
+
     self.idx_count = #mesher.generate_indices(#self.segments, self.RINGS_PER_BONE, self.VERTS_PER_RING)
 
     self.animations = {
@@ -206,9 +200,15 @@ function Character:check_picking()
 end
 
 function Character:get_head_matrix()
-    local head_id = nil; for _, b in ipairs(self.bones) do if b.name:find("Head") then head_id = b.id; break end end
-    if head_id and self.bone_globals and self.bone_globals[head_id] then
-        return self.bone_globals[head_id]
+    local target_id = nil
+    -- Try to find Head bone first, then fallback to Neck
+    for _, b in ipairs(self.bones) do if b.name:find("Head") then target_id = b.id; break end end
+    if not target_id then
+        for _, b in ipairs(self.bones) do if b.name:find("Neck") then target_id = b.id; break end end
+    end
+    
+    if target_id and self.bone_globals and self.bone_globals[target_id] then
+        return self.bone_globals[target_id]
     end
     return nil
 end

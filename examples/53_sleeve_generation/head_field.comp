@@ -1,0 +1,34 @@
+#version 460
+// SDF_INSERT_POINT
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 8) in;
+
+struct GridNode {
+    float dist;
+    uint  id;
+    vec3  normal;
+    vec3  pos;
+};
+
+layout(std430, set = 0, binding = 0) buffer GridBuffer { GridNode nodes[]; };
+layout(std430, set = 0, binding = 4) buffer CounterBuffer { uint counts[]; };
+
+void main() {
+    uvec3 id = gl_GlobalInvocationID;
+    if (id.x >= 32 || id.y >= 32 || id.z >= 32) return;
+    
+    // Sane scale: 32 units = 2.0 world units (-1.0 to 1.0)
+    // 2.0 units = 20cm box.
+    vec3 p = (vec3(id) / 31.0) * 2.0 - 1.0;
+    
+    uint idx = id.z * 32 * 32 + id.y * 32 + id.x;
+    nodes[idx].dist = sdScene(p);
+    nodes[idx].pos = p;
+    
+    const float h = 0.005;
+    nodes[idx].normal = normalize(vec3(
+        sdScene(p + vec3(h, 0, 0)) - sdScene(p - vec3(h, 0, 0)),
+        sdScene(p + vec3(0, h, 0)) - sdScene(p - vec3(0, h, 0)),
+        sdScene(p + vec3(0, 0, h)) - sdScene(p - vec3(0, 0, h))
+    ));
+}

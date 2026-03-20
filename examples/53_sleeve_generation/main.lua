@@ -13,6 +13,7 @@ local descriptors = require("vulkan.descriptors")
 
 local scene = require("examples.53_sleeve_generation.scene")
 local Character = require("examples.53_sleeve_generation.entities.procedural_character")
+local SDFHead = require("examples.53_sleeve_generation.entities.sdf_head")
 
 local M = { 
     orbit_radius = 25,
@@ -53,7 +54,7 @@ function M.init()
         { binding = 4, type = vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, stages = vk.VK_SHADER_STAGE_FRAGMENT_BIT }
     }
     local g_ds_layout = descriptors.create_layout(device, g_bindings)
-    pipe_layout = pipeline.create_layout(device, {g_ds_layout}, { { stageFlags = bit.bor(vk.VK_SHADER_STAGE_VERTEX_BIT, vk.VK_SHADER_STAGE_FRAGMENT_BIT), offset = 0, size = 144 } })
+    pipe_layout = pipeline.create_layout(device, {g_ds_layout}, { { stageFlags = bit.bor(vk.VK_SHADER_STAGE_VERTEX_BIT, vk.VK_SHADER_STAGE_FRAGMENT_BIT), offset = 0, size = 160 } })
 
     -- DEBUG PIPELINE
     debug_layout = pipeline.create_layout(device, {}, { { stageFlags = vk.VK_SHADER_STAGE_VERTEX_BIT, offset = 0, size = 64 } })
@@ -68,7 +69,7 @@ function M.init()
         vertex_attribute_count = 2, depth_test = false, topology = vk.VK_PRIMITIVE_TOPOLOGY_LINE_LIST, depth_format = depth_format
     })
 
-    ffi.cdef[[ typedef struct PC { float mvp[16]; float model[16]; float mouse_pos[2]; float outline_width; float wireframe_mode; float pad; } PC; ]]
+    ffi.cdef[[ typedef struct Example53PC { float projection_view[16]; float model[16]; float mouse_pos[2]; float outline_width; float wireframe_mode; float pad; } Example53PC; ]]
     local v_src = io.open(get_dir().."render.vert"):read("*all")
     local f_src = io.open(get_dir().."render.frag"):read("*all")
     
@@ -100,6 +101,10 @@ function M.init()
     -- Add Character Entity
     M.character = Character.new(device, ds_pool, g_ds_layout)
     scene.add_entity(M.character)
+
+    -- Add SDF Head Entity
+    M.sdf_head = SDFHead.new(device, ds_pool, M.character)
+    scene.add_entity(M.sdf_head)
 
     cbs = command.allocate_buffers(device, command.create_pool(device, family), sw.image_count)
     frame_fence = ffi.new("VkFence[1]"); vk.vkCreateFence(device, ffi.new("VkFenceCreateInfo", {sType=vk.VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, flags=vk.VK_FENCE_CREATE_SIGNALED_BIT}), nil, frame_fence); frame_fence = frame_fence[0]
@@ -183,10 +188,9 @@ function M.update()
     vk.vkCmdSetViewport(cb, 0, 1, ffi.new("VkViewport", { x=0, y=0, width=sw.extent.width, height=sw.extent.height, minDepth=0, maxDepth=1 }))
     vk.vkCmdSetScissor(cb, 0, 1, ffi.new("VkRect2D", { extent=sw.extent }))
 
-    local pc = ffi.new("PC")
+    local pc = ffi.new("Example53PC")
     local model = mc.mat4_identity()
-    local mvp = mc.mat4_multiply(vp, model)
-    for i=0,15 do pc.mvp[i], pc.model[i] = mvp.m[i], model.m[i] end
+    for i=0,15 do pc.projection_view[i], pc.model[i] = vp.m[i], model.m[i] end
     local mx, my = input.mouse_pos(); pc.mouse_pos[0], pc.mouse_pos[1] = mx, my
 
     local active_pipe = M.state.wireframe and wire_pipe or graphics_pipe
@@ -194,23 +198,31 @@ function M.update()
     if not M.state.wireframe then
         pc.outline_width = 0.015
         vk.vkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, outline_pipe)
-        vk.vkCmdPushConstants(cb, pipe_layout, bit.bor(vk.VK_SHADER_STAGE_VERTEX_BIT, vk.VK_SHADER_STAGE_FRAGMENT_BIT), 0, ffi.sizeof("PC"), pc)
+        vk.vkCmdPushConstants(cb, pipe_layout, bit.bor(vk.VK_SHADER_STAGE_VERTEX_BIT, vk.VK_SHADER_STAGE_FRAGMENT_BIT), 0, ffi.sizeof("Example53PC"), pc)
         scene.record_draw(cb, pipe_layout, M.state.wireframe)
     end
 
     pc.outline_width = 0.0
     pc.wireframe_mode = M.state.wireframe and 1.0 or 0.0
     vk.vkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, active_pipe)
-    vk.vkCmdPushConstants(cb, pipe_layout, bit.bor(vk.VK_SHADER_STAGE_VERTEX_BIT, vk.VK_SHADER_STAGE_FRAGMENT_BIT), 0, ffi.sizeof("PC"), pc)
+    vk.vkCmdPushConstants(cb, pipe_layout, bit.bor(vk.VK_SHADER_STAGE_VERTEX_BIT, vk.VK_SHADER_STAGE_FRAGMENT_BIT), 0, ffi.sizeof("Example53PC"), pc)
     scene.record_draw(cb, pipe_layout, M.state.wireframe)
 
     if M.state.diagnostic then
-        vk.vkCmdPushConstants(cb, debug_layout, vk.VK_SHADER_STAGE_VERTEX_BIT, 0, 64, pc.mvp)
+        vk.vkCmdPushConstants(cb, debug_layout, vk.VK_SHADER_STAGE_VERTEX_BIT, 0, 64, pc.projection_view)
         scene.record_debug_draw(cb, debug_pipe, debug_layout)
     end
     vk.vkCmdEndRendering(cb)
 
     scene.check_picking()
+
+    -- Debug SDF Head Counts
+    if M.sdf_head then
+        local ptr = ffi.cast("uint32_t*", M.sdf_head.counter_buf.allocation.ptr)
+        if M.time % 1.0 < 0.02 then
+            print(string.format("SDF Head Stats | Indices: %d | Vertices: %d", ptr[0], ptr[6]))
+        end
+    end
 
     local present_bar = ffi.new("VkImageMemoryBarrier[1]", {{ sType=vk.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, oldLayout=vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, newLayout=vk.VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, image=ffi.cast("VkImage", sw.images[idx]), subresourceRange={ aspectMask=vk.VK_IMAGE_ASPECT_COLOR_BIT, levelCount=1, layerCount=1 }, srcAccessMask=vk.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, dstAccessMask=0 }})
     vk.vkCmdPipelineBarrier(cb, vk.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, vk.VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nil, 0, nil, 1, present_bar)

@@ -1,0 +1,98 @@
+#version 460
+// SDF_INSERT_POINT
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 8) in;
+
+struct GridNode {
+    float dist;
+    uint  id;
+    vec3  normal;
+    vec3  pos;
+};
+
+struct DrawIndexedIndirectCommand {
+    uint indexCount;
+    uint instanceCount;
+    uint firstIndex;
+    int  vertexOffset;
+    uint firstInstance;
+};
+
+layout(std430, set = 0, binding = 0) buffer GridBuffer { GridNode nodes[]; };
+layout(std430, set = 0, binding = 2) buffer IndexBuffer { uint indices[]; };
+layout(std430, set = 0, binding = 3) buffer CellBuffer { uint cell_vertex_idx[]; };
+layout(std430, set = 0, binding = 4) buffer CounterBuffer { uint counts[]; };
+layout(std430, set = 0, binding = 5) buffer IndirectBuffer { DrawIndexedIndirectCommand cmd; };
+
+uint get_grid_idx(uvec3 c) { 
+    return c.z * 32 * 32 + c.y * 32 + c.x; 
+}
+
+uint get_v_idx(uvec3 c) { 
+    return cell_vertex_idx[get_grid_idx(c)]; 
+}
+
+float get_dist(uvec3 c) {
+    return nodes[get_grid_idx(c)].dist;
+}
+
+void emit_quad(uint v1, uint v2, uint v3, uint v4, bool flip) {
+    if (v1 == 0xFFFFFFFF || v2 == 0xFFFFFFFF || v3 == 0xFFFFFFFF || v4 == 0xFFFFFFFF) return;
+    
+    uint i_idx = atomicAdd(counts[0], 6);
+    
+    if (flip) {
+        indices[i_idx + 0] = v1; indices[i_idx + 1] = v2; indices[i_idx + 2] = v3;
+        indices[i_idx + 3] = v1; indices[i_idx + 4] = v3; indices[i_idx + 5] = v4;
+    } else {
+        indices[i_idx + 0] = v1; indices[i_idx + 1] = v4; indices[i_idx + 2] = v3;
+        indices[i_idx + 3] = v1; indices[i_idx + 4] = v3; indices[i_idx + 5] = v2;
+    }
+}
+
+void main() {
+    uvec3 g_id = gl_GlobalInvocationID;
+
+    // MANDATORY: Command Buffer Initialization must happen even if we early return later
+    if (g_id.x == 0 && g_id.y == 0 && g_id.z == 0) {
+        cmd.instanceCount = 1;
+        cmd.firstIndex = 0;
+        cmd.vertexOffset = 0;
+        cmd.firstInstance = 0;
+    }
+
+    if (g_id.x >= 31 || g_id.y >= 31 || g_id.z >= 31) return;
+    if (g_id.x == 0 || g_id.y == 0 || g_id.z == 0) return;
+
+    float d0 = get_dist(g_id);
+    
+    // X-axis edge
+    if ((d0 < 0.0) != (get_dist(g_id + uvec3(1,0,0)) < 0.0)) {
+        uint v1 = get_v_idx(g_id);
+        uint v2 = get_v_idx(g_id - uvec3(0,1,0));
+        uint v3 = get_v_idx(g_id - uvec3(0,1,1));
+        uint v4 = get_v_idx(g_id - uvec3(0,0,1));
+        emit_quad(v1, v2, v3, v4, d0 < 0.0);
+    }
+    // Y-axis edge
+    if ((d0 < 0.0) != (get_dist(g_id + uvec3(0,1,0)) < 0.0)) {
+        uint v1 = get_v_idx(g_id);
+        uint v2 = get_v_idx(g_id - uvec3(0,0,1));
+        uint v3 = get_v_idx(g_id - uvec3(1,0,1));
+        uint v4 = get_v_idx(g_id - uvec3(1,0,0));
+        emit_quad(v1, v2, v3, v4, d0 < 0.0);
+    }
+    // Z-axis edge
+    if ((d0 < 0.0) != (get_dist(g_id + uvec3(0,0,1)) < 0.0)) {
+        uint v1 = get_v_idx(g_id);
+        uint v2 = get_v_idx(g_id - uvec3(1,0,0));
+        uint v3 = get_v_idx(g_id - uvec3(1,1,0));
+        uint v4 = get_v_idx(g_id - uvec3(0,1,0));
+        emit_quad(v1, v2, v3, v4, d0 < 0.0);
+    }
+
+    memoryBarrierBuffer();
+    if (g_id.x == 0 && g_id.y == 0 && g_id.z == 0) {
+        cmd.indexCount = counts[0];
+    }
+}
