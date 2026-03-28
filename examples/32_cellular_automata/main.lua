@@ -142,7 +142,7 @@ function M.init()
     
     local pool = command.create_pool(device, family)
     local gcb = command.allocate_buffers(device, pool, 1)[1]
-    vk.vkBeginCommandBuffer(gcb, ffi.new("VkCommandBufferBeginInfo", { sType = vk.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO }))
+    vk.vkBeginCommandBuffer(gcb, ffi.new("VkCommandBufferBeginInfo", { flags = 0 }))
     local bar = ffi.new("VkImageMemoryBarrier[2]")
     bar[0].sType, bar[0].oldLayout, bar[0].newLayout, bar[0].image, bar[0].srcAccessMask, bar[0].dstAccessMask = vk.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, vk.VK_IMAGE_LAYOUT_UNDEFINED, vk.VK_IMAGE_LAYOUT_GENERAL, accum_img.handle, 0, vk.VK_ACCESS_SHADER_WRITE_BIT
     bar[0].subresourceRange = { aspectMask = vk.VK_IMAGE_ASPECT_COLOR_BIT, levelCount = 1, layerCount = 1 }

@@ -7,6 +7,7 @@ local image = require("vulkan.image")
 local pipeline = require("vulkan.pipeline")
 local descriptors = require("vulkan.descriptors")
 local staging = require("vulkan.staging")
+local linter = require("vulkan.linter")
 
 local M = {}
 
@@ -70,6 +71,7 @@ function M.buffer(size, usage_type, initial_data, host_visible)
         usage = usage,
         sharingMode = vk.VK_SHARING_MODE_EXCLUSIVE
     })
+    linter.check("VkBufferCreateInfo", info)
     
     local pB = ffi.new("VkBuffer[1]")
     vk.vkCreateBuffer(d, info, nil, pB)

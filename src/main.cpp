@@ -64,6 +64,7 @@ static void setup_embedded_loader(lua_State *L) {
 
 int main(int argc, char* argv[]) {
     bool enableValidation = false;
+    bool headless = false;
     const char* envVal = std::getenv("MOONCRUST_VALIDATION");
     if (envVal && (strcmp(envVal, "1") == 0 || strcmp(envVal, "true") == 0)) {
         enableValidation = true;
@@ -71,7 +72,9 @@ int main(int argc, char* argv[]) {
     for (int i = 1; i < argc; ++i) {
         if (strcmp(argv[i], "--validation") == 0) {
             enableValidation = true;
-            break;
+        }
+        if (strcmp(argv[i], "--lint") == 0 || strcmp(argv[i], "--headless") == 0) {
+            headless = true;
         }
     }
 
@@ -80,14 +83,16 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS | SDL_INIT_AUDIO)) {
-        std::cerr << "SDL_Init failed: " << SDL_GetError() << std::endl;
-        return 1;
-    }
+    if (!headless) {
+        if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS | SDL_INIT_AUDIO)) {
+            std::cerr << "SDL_Init failed: " << SDL_GetError() << std::endl;
+            return 1;
+        }
 
-    if (!SDL_Vulkan_LoadLibrary(nullptr)) {
-        std::cerr << "SDL_Vulkan_LoadLibrary failed: " << SDL_GetError() << std::endl;
-        return 1;
+        if (!SDL_Vulkan_LoadLibrary(nullptr)) {
+            std::cerr << "SDL_Vulkan_LoadLibrary failed: " << SDL_GetError() << std::endl;
+            return 1;
+        }
     }
 
     lua_State* L = luaL_newstate();
@@ -96,15 +101,24 @@ int main(int argc, char* argv[]) {
     lua_pushboolean(L, enableValidation);
     lua_setglobal(L, "_VALIDATION_ENABLED");
 
-    SDL_Window* window = SDL_CreateWindow("MoonCrust", 1280, 720, SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE);
-    if (!window) {
-        std::cerr << "SDL_CreateWindow failed: " << SDL_GetError() << std::endl;
-        return 1;
+    SDL_Window* window = nullptr;
+    if (!headless) {
+        window = SDL_CreateWindow("MoonCrust", 1280, 720, SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE);
+        if (!window) {
+            std::cerr << "SDL_CreateWindow failed: " << SDL_GetError() << std::endl;
+            return 1;
+        }
     }
 
-    uint32_t sdlExtCount;
-    const char* const* sdlExtensions = SDL_Vulkan_GetInstanceExtensions(&sdlExtCount);
-    std::vector<const char*> extensions(sdlExtensions, sdlExtensions + sdlExtCount);
+    uint32_t sdlExtCount = 0;
+    const char* const* sdlExtensions = nullptr;
+    if (!headless) {
+        sdlExtensions = SDL_Vulkan_GetInstanceExtensions(&sdlExtCount);
+    }
+    std::vector<const char*> extensions;
+    if (sdlExtensions) {
+        for (uint32_t i = 0; i < sdlExtCount; i++) extensions.push_back(sdlExtensions[i]);
+    }
     
     VkApplicationInfo appInfo = { VK_STRUCTURE_TYPE_APPLICATION_INFO };
     appInfo.pApplicationName = "MoonCrust";
@@ -250,9 +264,11 @@ int main(int argc, char* argv[]) {
     VkQueue queue;
     vkGetDeviceQueue(device, graphicsFamily, 0, &queue);
 
-    lua_pushlightuserdata(L, window); lua_setglobal(L, "_SDL_WINDOW");
-    lua_pushinteger(L, SDL_WINDOW_VULKAN); lua_setglobal(L, "_SDL_WINDOW_VULKAN");
-    lua_pushinteger(L, SDL_WINDOW_RESIZABLE); lua_setglobal(L, "_SDL_WINDOW_RESIZABLE");
+    if (!headless) {
+        lua_pushlightuserdata(L, window); lua_setglobal(L, "_SDL_WINDOW");
+        lua_pushinteger(L, SDL_WINDOW_VULKAN); lua_setglobal(L, "_SDL_WINDOW_VULKAN");
+        lua_pushinteger(L, SDL_WINDOW_RESIZABLE); lua_setglobal(L, "_SDL_WINDOW_RESIZABLE");
+    }
     lua_pushlightuserdata(L, instance); lua_setglobal(L, "_VK_INSTANCE");
     lua_pushlightuserdata(L, physicalDevice); lua_setglobal(L, "_VK_PHYSICAL_DEVICE");
     lua_pushlightuserdata(L, device); lua_setglobal(L, "_VK_DEVICE");
@@ -268,85 +284,14 @@ int main(int argc, char* argv[]) {
     }
     lua_setglobal(L, "_ARGS");
 
-    std::string startup_script;
-    if (argc > 1) {
-        lua_pushstring(L, argv[1]); lua_setglobal(L, "_STARTUP_ARG");
-        // If the argument is a directory, append /main.lua
-        std::string arg1 = argv[1];
-        std::string base_dir;
-        
-        if (arg1.find(".lua") == std::string::npos) {
-            if (arg1.back() != '/' && arg1.back() != '\\') {
-                arg1 += "/";
-            }
-            startup_script = arg1 + "main.lua";
-            base_dir = arg1;
-        } else {
-            startup_script = arg1;
-            size_t last_slash = arg1.find_last_of("/\\");
-            if (last_slash != std::string::npos) {
-                base_dir = arg1.substr(0, last_slash + 1);
-            } else {
-                base_dir = "./";
-            }
-        }
-        
-        // Add the base_dir to package.path
-        lua_getglobal(L, "package");
-        lua_getfield(L, -1, "path");
-        std::string current_path = lua_tostring(L, -1);
-        lua_pop(L, 1);
-        std::string new_path = base_dir + "?.lua;" + base_dir + "?/init.lua;./src/lua/?.lua;./src/lua/?/init.lua;" + current_path;
-        lua_pushstring(L, new_path.c_str());
-        lua_setfield(L, -2, "path");
-        lua_pop(L, 1);
-        
-        // Inject globals that normally `src/lua/init.lua` injects so standalone runs match expected environment.
-        luaL_dostring(L, "local vulkan = require('vulkan')\n_G.vulkan = vulkan\n_G.mc = require('mc')");
-        
-    } else {
-        // Fallback to embedded init.lua if no arguments are passed
-        startup_script = "embedded_init";
+    // Always load the embedded init.lua to setup the environment
+    if (luaL_dostring(L, "require('init')")) {
+        std::cerr << "Lua Error in init: " << lua_tostring(L, -1) << std::endl;
+        return 1;
     }
 
-    if (startup_script == "embedded_init") {
-        if (luaL_dostring(L, "require('init')")) {
-            std::cerr << "Lua Error: " << lua_tostring(L, -1) << std::endl;
-            return 1;
-        }
-    } else {
-        if (luaL_dofile(L, startup_script.c_str())) {
-            std::cerr << "Lua Error: " << lua_tostring(L, -1) << std::endl;
-            return 1;
-        }
-        
-        // If the script returned a module table, call init() and setup update()
-        if (lua_istable(L, -1)) {
-            // Check for init
-            lua_getfield(L, -1, "init");
-            if (lua_isfunction(L, -1)) {
-                if (lua_pcall(L, 0, 0, 0) != 0) {
-                    std::cerr << "Init Error: " << lua_tostring(L, -1) << std::endl;
-                    lua_pop(L, 1);
-                }
-            } else {
-                lua_pop(L, 1); // pop non-function
-            }
-            
-            // Check for update
-            lua_getfield(L, -1, "update");
-            if (lua_isfunction(L, -1)) {
-                lua_setglobal(L, "_USER_UPDATE");
-                luaL_dostring(L, 
-                    "function mooncrust_update()\n"
-                    "    if mc and mc.tick then mc.tick() end\n"
-                    "    _USER_UPDATE()\n"
-                    "end"
-                );
-            } else {
-                lua_pop(L, 1); // pop non-function
-            }
-        }
+    if (headless) {
+        return 0;
     }
 
     bool running = true;

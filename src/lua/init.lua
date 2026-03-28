@@ -5,6 +5,23 @@ local vk = require("vulkan.ffi")
 local vulkan = require("vulkan")
 _G.vulkan = vulkan
 _G.mc = require("mc")
+local linter = require("vulkan.linter")
+
+-- Handle --lint CLI arg
+local should_lint = false
+if _ARGS then
+    for i=0, #_ARGS do
+        if _ARGS[i] == "--lint" then should_lint = true end
+    end
+end
+
+if should_lint then
+    print("[VULKAN LINTER] Startup scan enabled.")
+    -- We can scan the core library and the target example
+    linter.lint_file("src/lua/mc/gpu.lua")
+    linter.lint_file("src/lua/vulkan/pipeline.lua")
+    linter.lint_file("src/lua/vulkan/graph.lua")
+end
 
 -- Example Registry
 local examples = {
@@ -53,11 +70,20 @@ local examples = {
 }
 
 -- Default to the flagship if no arg provided
-local target_key = _STARTUP_ARG or "32"
+local startup_arg = _ARGS and _ARGS[1]
+local target_key = startup_arg or "32"
 local target_path = examples[target_key]
 
+-- If not a key, assume it's a direct path
+if not target_path and startup_arg then
+    target_path = startup_arg
+    -- Update package.path to include the directory of the target path
+    local base_dir = target_path:match("(.*[/\\])") or "./"
+    package.path = base_dir .. "?.lua;" .. base_dir .. "?/init.lua;" .. package.path
+end
+
 if not target_path then
-    print("Error: Unknown example '" .. tostring(target_key) .. "'")
+    print("Error: Unknown example or path '" .. tostring(target_key) .. "'")
     print("Available Examples:")
     for k, v in pairs(examples) do
         print("  " .. k .. " -> " .. v)
@@ -68,7 +94,26 @@ if not target_path then
 end
 
 print("Loading: " .. target_path)
-local example = require(target_path)
+if should_lint then
+    local path = target_path:gsub("%.", "/")
+    if not path:find("%.lua$") then path = path .. ".lua" end
+    linter.lint_file(path)
+end
+
+local example
+if target_path:find("%.lua$") then
+    local chunk, err = loadfile(target_path)
+    if not chunk then error(err) end
+    example = chunk()
+else
+    -- Convert path.to.module to require-able string if needed
+    example = require(target_path)
+end
+
+if type(example) ~= "table" then
+    -- Handle scripts that don't return a table
+    example = { init = function() end, update = function() end }
+end
 
 function mooncrust_update()
     mc.tick()

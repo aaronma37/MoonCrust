@@ -17,6 +17,17 @@ function M.new(instance, physical_device, device, window, old_swapchain, use_srg
     local self = setmetatable({}, M)
     self.device = device
 
+    if not window then
+        -- Headless mock
+        self.extent = { width = 1280, height = 720 }
+        self.format = vk.VK_FORMAT_B8G8R8A8_SRGB
+        self.image_count = 3
+        self.images = ffi.new("VkImage[3]")
+        self.views = ffi.new("VkImageView[3]")
+        self.semaphores = ffi.new("VkSemaphore[3]")
+        return self
+    end
+
     local surface_ptr = ffi.new("void*[1]")
     if not ffi.C.SDL_Vulkan_CreateSurface(window, instance, nil, surface_ptr) then
         error("Failed to create surface: " .. ffi.string(ffi.C.SDL_GetError()))
@@ -114,6 +125,7 @@ function M.new(instance, physical_device, device, window, old_swapchain, use_srg
 end
 
 function M:acquire_next_image(semaphore, fence)
+    if not self.handle then return 0, vk.VK_SUCCESS end
     local pIndex = ffi.new("uint32_t[1]")
     local res = vk.vkAcquireNextImageKHR(self.device, self.handle, 0xFFFFFFFFFFFFFFFFULL, semaphore, fence or nil, pIndex)
     if res == vk.VK_SUCCESS or res == vk.VK_SUBOPTIMAL_KHR then
@@ -123,6 +135,7 @@ function M:acquire_next_image(semaphore, fence)
 end
 
 function M:present(queue, image_index, wait_semaphore)
+    if not self.handle then return vk.VK_SUCCESS end
     static.image_indices[0] = image_index
     static.swapchains[0] = self.handle
     static.semaphores[0] = wait_semaphore

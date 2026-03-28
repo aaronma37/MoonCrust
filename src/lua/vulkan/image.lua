@@ -1,5 +1,6 @@
 local ffi = require("ffi")
 local vk = require("vulkan.ffi")
+local linter = require("vulkan.linter")
 
 local M = {}
 
@@ -33,6 +34,7 @@ function M.create_2d(device, width, height, format, usage, mip_levels)
         sharingMode = vk.VK_SHARING_MODE_EXCLUSIVE,
         initialLayout = vk.VK_IMAGE_LAYOUT_UNDEFINED
     })
+    linter.check("VkImageCreateInfo", info)
 
     local pImage = ffi.new("VkImage[1]")
     local result = vk.vkCreateImage(device, info, nil, pImage)
@@ -54,6 +56,7 @@ function M.create_3d(device, width, height, depth, format, usage)
         sharingMode = vk.VK_SHARING_MODE_EXCLUSIVE,
         initialLayout = vk.VK_IMAGE_LAYOUT_UNDEFINED
     })
+    linter.check("VkImageCreateInfo", info)
 
     local pImage = ffi.new("VkImage[1]")
     local result = vk.vkCreateImage(device, info, nil, pImage)
@@ -76,6 +79,7 @@ function M.create_view(device, image, format, aspect, is_3d, mip_levels)
             layerCount = 1
         }
     })
+    linter.check("VkImageViewCreateInfo", info)
 
     local pView = ffi.new("VkImageView[1]")
     local result = vk.vkCreateImageView(device, info, nil, pView)
@@ -102,6 +106,7 @@ function M.create_sampler(device, filter, address_mode)
         minLod = 0.0,
         maxLod = 16.0
     })
+    linter.check("VkSamplerCreateInfo", info)
 
     local pSampler = ffi.new("VkSampler[1]")
     local result = vk.vkCreateSampler(device, info, nil, pSampler)
