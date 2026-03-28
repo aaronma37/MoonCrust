@@ -24,13 +24,6 @@ const vec3 normals[6] = {
     vec3(1,0,0), vec3(-1,0,0), vec3(0,1,0), vec3(0,-1,0), vec3(0,0,1), vec3(0,0,-1)
 };
 
-const vec3 colors[4] = {
-    vec3(0.3, 0.4, 0.2), // Empty? (Not used)
-    vec3(0.2, 0.8, 0.3), // Grass
-    vec3(0.5, 0.3, 0.1), // Dirt
-    vec3(0.9, 0.9, 0.9)  // Snow
-};
-
 void main() {
     uint packed = world[nonuniformEXT(pc.v_buf)].data[gl_VertexIndex];
     vec3 pos = vec3(packed & 255, (packed >> 8) & 255, (packed >> 16) & 255);
@@ -42,5 +35,8 @@ void main() {
 
     gl_Position = pc.mvp * vec4(world_pos, 1.0);
     out_norm = normals[norm_idx];
-    out_col = colors[clamp(type, 0, 3)];
+    
+    // Color based on height + variation
+    vec3 base_col = mix(vec3(0.2, 0.7, 0.3), vec3(0.8, 0.9, 1.0), pos.y / 128.0);
+    out_col = base_col;
 }

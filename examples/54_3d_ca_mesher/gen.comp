@@ -10,15 +10,13 @@ layout(push_constant) uniform PushConstants {
     float seed;
 } pc;
 
-float rand(vec3 co) {
-    return fract(sin(dot(co, vec3(12.9898, 78.233, 45.164))) * 43758.5453);
-}
-
 void main() {
     ivec3 pos = ivec3(gl_GlobalInvocationID.xyz);
     if (any(greaterThanEqual(pos, ivec3(pc.grid_res)))) return;
 
-    uint val = 0;
-    if (all(greaterThanEqual(pos, ivec3(32))) && all(lessThan(pos, ivec3(96)))) val = 1;
+    // Sphere seed
+    float d = length(vec3(pos) - vec3(pc.grid_res/2));
+    uint val = (d < 32.0) ? 1 : 0;
+    
     imageStore(all_storage_images[nonuniformEXT(pc.out_img)], pos, uvec4(val, 0, 0, 0));
 }

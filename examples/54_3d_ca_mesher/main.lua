@@ -10,7 +10,7 @@ local input = require("mc.input")
 
 local M = { 
     current_time = 0,
-    cam_pos = {64, 80, -140},
+    cam_pos = {64, 80, -160},
     cam_yaw = 0,
     grid_res = 128
 }
@@ -40,7 +40,6 @@ function M.init()
     dirty_buf = mc.gpu.buffer(num_chunks * 4, "storage", nil, true)
     v_buf = mc.gpu.buffer(num_chunks * 98304 * 4, "storage", nil, false)
     indirect_buf = mc.gpu.buffer(num_chunks * 20, "indirect", nil, true)
-    debug_buf = mc.gpu.buffer(1024 * 4, "storage", nil, true)
     depth_img = mc.gpu.image(sw.extent.width, sw.extent.height, vk.VK_FORMAT_D32_SFLOAT, "depth")
     
     local indices_per_chunk = 24576 * 6
@@ -60,7 +59,6 @@ function M.init()
     res_v_buf = rg:register_resource("v_buf", graph.TYPE_BUFFER, v_buf.handle)
     res_indirect = rg:register_resource("indirect", graph.TYPE_BUFFER, indirect_buf.handle)
     res_depth = rg:register_resource("depth", graph.TYPE_IMAGE, depth_img.handle, { layout = vk.VK_IMAGE_LAYOUT_UNDEFINED, access = 0, stage = vk.VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT })
-    res_debug = rg:register_resource("debug", graph.TYPE_BUFFER, debug_buf.handle)
 
     -- 2. Bindless Updates
     bindless_set = mc.gpu.get_bindless_set()
@@ -70,7 +68,6 @@ function M.init()
     descriptors.update_buffer_set(device, bindless_set, 0, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, dirty_buf.handle, 0, dirty_buf.size, 0)
     descriptors.update_buffer_set(device, bindless_set, 0, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, v_buf.handle, 0, v_buf.size, 1)
     descriptors.update_buffer_set(device, bindless_set, 0, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, indirect_buf.handle, 0, indirect_buf.size, 2)
-    descriptors.update_buffer_set(device, bindless_set, 0, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, debug_buf.handle, 0, debug_buf.size, 5)
 
     ffi.cdef[[ typedef struct RenderPC { float mvp[16]; uint32_t v_buf_off; } RenderPC; ]]
 
@@ -98,6 +95,7 @@ function M.init()
     end
     vk.vkCmdPipelineBarrier(gcb, vk.VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nil, 0, nil, 2, vol_bar)
     vk.vkCmdFillBuffer(gcb, dirty_buf.handle, 0, dirty_buf.size, 1)
+    vk.vkCmdFillBuffer(gcb, v_buf.handle, 0, v_buf.size, 0)
     vk.vkCmdFillBuffer(gcb, indirect_buf.handle, 0, indirect_buf.size, 0)
     vk.vkCmdBindPipeline(gcb, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_gen.handle)
     vk.vkCmdBindDescriptorSets(gcb, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_gen.layout, 0, 1, ffi.new("VkDescriptorSet[1]", {bindless_set}), 0, nil)
@@ -128,14 +126,10 @@ function M.update()
     
     if frame_count % 60 == 0 then
         local ptr = ffi.cast("uint32_t*", indirect_buf.allocation.ptr)
-        local center_indices = ptr[292*5]
-        local d_ptr = ffi.cast("uint32_t*", dirty_buf.allocation.ptr)
-        local dirty_count = 0
+        local total_indices = 0
         local num_chunks = (M.grid_res/16)^3
-        for i=0, num_chunks-1 do if d_ptr[i] > 0 then dirty_count = dirty_count + 1 end end
-        
-        local dbg_ptr = ffi.cast("uint32_t*", debug_buf.allocation.ptr)
-        print(string.format("FPS: 60 | Cam: %.1f, %.1f, %.1f | Dirty: %d | CenterIndices: %d | DBG: %d %d %d %d", M.cam_pos[1], M.cam_pos[2], M.cam_pos[3], dirty_count, center_indices, dbg_ptr[0], dbg_ptr[1], dbg_ptr[2], dbg_ptr[3]))
+        for i=0, num_chunks-1 do total_indices = total_indices + ptr[i*5] end
+        print(string.format("FPS: 60 | Cam: %.1f, %.1f, %.1f | Total Indices: %d", M.cam_pos[1], M.cam_pos[2], M.cam_pos[3], total_indices))
     end
     
     if input.key_down(input.SCANCODE_W) then M.cam_pos[3] = M.cam_pos[3] + 1.5 end
@@ -165,7 +159,6 @@ function M.update()
     end):using(vol_in_res, vk.VK_ACCESS_SHADER_READ_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, vk.VK_IMAGE_LAYOUT_GENERAL)
        :using(vol_out_res, vk.VK_ACCESS_SHADER_WRITE_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, vk.VK_IMAGE_LAYOUT_GENERAL)
        :using(res_dirty, vk.VK_ACCESS_SHADER_WRITE_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT)
-       :using(res_debug, vk.VK_ACCESS_SHADER_WRITE_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT)
 
     rg:add_pass("Mesher", function(cb)
         vk.vkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_mesh.handle)
@@ -177,12 +170,12 @@ function M.update()
        :using(res_v_buf, vk.VK_ACCESS_SHADER_WRITE_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT)
        :using(res_indirect, vk.VK_ACCESS_SHADER_WRITE_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT)
 
-    local num_chunks = (M.grid_res/16)^3
+    local chunks = (M.grid_res/16)^3
     rg:add_pass("Render", function(cb)
         local bar = ffi.new("VkImageMemoryBarrier[1]", {{ sType=vk.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, oldLayout=vk.VK_IMAGE_LAYOUT_UNDEFINED, newLayout=vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, image=ffi.cast("VkImage", sw.images[img_idx]), subresourceRange={aspectMask=vk.VK_IMAGE_ASPECT_COLOR_BIT, levelCount=1, layerCount=1}, dstAccessMask=vk.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT }})
         vk.vkCmdPipelineBarrier(cb, vk.VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, vk.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, nil, 0, nil, 1, bar)
         local color_attach, depth_attach = ffi.new("VkRenderingAttachmentInfo[1]"), ffi.new("VkRenderingAttachmentInfo[1]")
-        color_attach[0].sType, color_attach[0].imageView, color_attach[0].imageLayout, color_attach[0].loadOp, color_attach[0].storeOp, color_attach[0].clearValue.color.float32 = vk.VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, ffi.cast("VkImageView", sw.views[img_idx]), vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, vk.VK_ATTACHMENT_LOAD_OP_CLEAR, vk.VK_ATTACHMENT_STORE_OP_STORE, {0.1, 0.1, 0.15, 1.0}
+        color_attach[0].sType, color_attach[0].imageView, color_attach[0].imageLayout, color_attach[0].loadOp, color_attach[0].storeOp, color_attach[0].clearValue.color.float32 = vk.VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, ffi.cast("VkImageView", sw.views[img_idx]), vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, vk.VK_ATTACHMENT_LOAD_OP_CLEAR, vk.VK_ATTACHMENT_STORE_OP_STORE, {0.05, 0.05, 0.1, 1.0}
         depth_attach[0].sType, depth_attach[0].imageView, depth_attach[0].imageLayout, depth_attach[0].loadOp, depth_attach[0].storeOp, depth_attach[0].clearValue.depthStencil = vk.VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, ffi.cast("VkImageView", depth_img.view), vk.VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, vk.VK_ATTACHMENT_LOAD_OP_CLEAR, vk.VK_ATTACHMENT_STORE_OP_STORE, {depth=1, stencil=0}
         vk.vkCmdBeginRendering(cb, ffi.new("VkRenderingInfo", { sType=vk.VK_STRUCTURE_TYPE_RENDERING_INFO, renderArea={extent=sw.extent}, layerCount=1, colorAttachmentCount=1, pColorAttachments=color_attach, pDepthAttachment=depth_attach }))
         vk.vkCmdSetViewport(cb, 0, 1, ffi.new("VkViewport", { width=sw.extent.width, height=sw.extent.height, maxDepth=1 }))
@@ -192,7 +185,7 @@ function M.update()
         local pc = ffi.new("RenderPC"); for i=1,16 do pc.mvp[i-1] = mvp.m[i-1] end; pc.v_buf_off = 1
         vk.vkCmdPushConstants(cb, render_layout, vk.VK_SHADER_STAGE_VERTEX_BIT, 0, 68, pc)
         vk.vkCmdBindIndexBuffer(cb, index_buf.handle, 0, vk.VK_INDEX_TYPE_UINT16)
-        vk.vkCmdDrawIndexedIndirect(cb, indirect_buf.handle, 0, num_chunks, 20)
+        vk.vkCmdDrawIndexedIndirect(cb, indirect_buf.handle, 0, chunks, 20)
         vk.vkCmdEndRendering(cb)
         bar[0].oldLayout, bar[0].newLayout, bar[0].srcAccessMask = vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, vk.VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, vk.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT
         vk.vkCmdPipelineBarrier(cb, vk.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, vk.VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nil, 0, nil, 1, bar)
