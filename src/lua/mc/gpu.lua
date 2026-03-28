@@ -204,6 +204,35 @@ function M.image_3d(width, height, depth, format, usage_type)
             resource.free(self.view, resource.TYPE_VIEW)
             resource.free(self.handle, resource.TYPE_IMAGE)
             M.heaps.device:free(self.allocation)
+        end,
+        upload = function(self, data)
+            local size = width * height * depth -- Assume 1 byte per pixel for R8_UINT
+            local st = staging.new(pd, d, M.heaps.host, size + 1024)
+            ffi.copy(st.alloc.ptr, data, size)
+            
+            local pool = command.create_pool(d, family)
+            local cb = command.allocate_buffers(d, pool, 1)[1]
+            command.encode(cb, function(cmd)
+                local barrier = ffi.new("VkImageMemoryBarrier[1]")
+                barrier[0].sType = vk.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER
+                barrier[0].oldLayout = vk.VK_IMAGE_LAYOUT_UNDEFINED
+                barrier[0].newLayout = vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL
+                barrier[0].image = self.handle
+                barrier[0].subresourceRange = { aspectMask = vk.VK_IMAGE_ASPECT_COLOR_BIT, baseMipLevel = 0, levelCount = 1, baseArrayLayer = 0, layerCount = 1 }
+                vk.vkCmdPipelineBarrier(cmd.buffer, vk.VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, vk.VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nil, 0, nil, 1, barrier)
+
+                local region = ffi.new("VkBufferImageCopy", {
+                    imageSubresource = { aspectMask = vk.VK_IMAGE_ASPECT_COLOR_BIT, layerCount = 1 },
+                    imageExtent = { width = self.width, height = self.height, depth = self.depth }
+                })
+                vk.vkCmdCopyBufferToImage(cmd.buffer, st.buffer, self.handle, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, region)
+
+                barrier[0].oldLayout = vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL
+                barrier[0].newLayout = vk.VK_IMAGE_LAYOUT_GENERAL
+                vk.vkCmdPipelineBarrier(cmd.buffer, vk.VK_PIPELINE_STAGE_TRANSFER_BIT, vk.VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nil, 0, nil, 1, barrier)
+            end)
+            command.end_and_submit(cb, q, d)
+            vk.vkDestroyCommandPool(d, pool, nil)
         end
     }
     return track(obj)
