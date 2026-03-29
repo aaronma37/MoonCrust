@@ -1,0 +1,77 @@
+#version 450
+#extension GL_EXT_nonuniform_qualifier : require
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 8) in;
+
+layout(set = 0, binding = 2, r32ui) uniform uimage3D all_storage_images[];
+layout(set = 0, binding = 0) buffer GlobalBuffers { uint data[]; } world[];
+
+layout(push_constant) uniform PushConstants {
+    uint in_img;
+    uint dirty_buf;
+    uint v_buf;
+    uint indirect_buf;
+    uint grid_res;
+} pc;
+
+shared uint local_vertex_count;
+
+uint pack_vertex(ivec3 p, uint norm, uint col) {
+    return (uint(p.x) & 255) | ((uint(p.y) & 255) << 8) | ((uint(p.z) & 255) << 16) | ((norm & 7) << 24) | ((col & 15) << 27);
+}
+
+void main() {
+    uint chunk_res = pc.grid_res / 16;
+    uint chunk_idx = gl_WorkGroupID.x + gl_WorkGroupID.y * chunk_res + gl_WorkGroupID.z * chunk_res * chunk_res;
+    
+    if (world[nonuniformEXT(pc.dirty_buf)].data[chunk_idx] == 0) return;
+
+    if (gl_LocalInvocationIndex == 0) {
+        local_vertex_count = 0;
+    }
+    barrier();
+
+    ivec3 chunk_origin = ivec3(gl_WorkGroupID) * 16;
+    
+    for (int i = 0; i < 8; i++) {
+        uint idx = gl_LocalInvocationIndex * 8 + i;
+        ivec3 local_pos = ivec3(idx % 16, (idx / 16) % 16, idx / 256);
+        ivec3 pos = chunk_origin + local_pos;
+        
+        uint val = imageLoad(all_storage_images[nonuniformEXT(pc.in_img)], pos).r;
+        if (val == 0) continue;
+
+        ivec3 dirs[6] = { ivec3(1,0,0), ivec3(-1,0,0), ivec3(0,1,0), ivec3(0,-1,0), ivec3(0,0,1), ivec3(0,0,-1) };
+        for (int d = 0; d < 6; d++) {
+            ivec3 n_pos = pos + dirs[d];
+            bool visible = false;
+            if (any(lessThan(n_pos, ivec3(0))) || any(greaterThanEqual(n_pos, ivec3(pc.grid_res)))) visible = true;
+            else if (imageLoad(all_storage_images[nonuniformEXT(pc.in_img)], n_pos).r == 0) visible = true;
+
+            if (visible) {
+                uint v_off = atomicAdd(local_vertex_count, 4);
+                if (v_off + 4 <= 98304) {
+                    uint global_v_start = chunk_idx * 98304 + v_off;
+                    uint packed = pack_vertex(pos, d, val);
+                    world[nonuniformEXT(pc.v_buf)].data[global_v_start + 0] = packed;
+                    world[nonuniformEXT(pc.v_buf)].data[global_v_start + 1] = packed;
+                    world[nonuniformEXT(pc.v_buf)].data[global_v_start + 2] = packed;
+                    world[nonuniformEXT(pc.v_buf)].data[global_v_start + 3] = packed;
+                }
+            }
+        }
+    }
+
+    barrier();
+
+    if (gl_LocalInvocationIndex == 0) {
+        world[nonuniformEXT(pc.dirty_buf)].data[chunk_idx] = 0;
+        uint count = min(local_vertex_count, 98304);
+        uint cmd_off = chunk_idx * 5;
+        world[nonuniformEXT(pc.indirect_buf)].data[cmd_off + 0] = (count / 4) * 6;
+        world[nonuniformEXT(pc.indirect_buf)].data[cmd_off + 1] = 1;
+        world[nonuniformEXT(pc.indirect_buf)].data[cmd_off + 2] = 0;
+        world[nonuniformEXT(pc.indirect_buf)].data[cmd_off + 3] = chunk_idx * 98304;
+        world[nonuniformEXT(pc.indirect_buf)].data[cmd_off + 4] = 0;
+    }
+}

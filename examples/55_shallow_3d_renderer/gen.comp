@@ -1,0 +1,69 @@
+#version 450
+#extension GL_EXT_nonuniform_qualifier : require
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 2, r32ui) uniform uimage3D all_storage_images[];
+
+layout(push_constant) uniform PushConstants {
+    uint img;
+    uint grid_res;
+    uint seed;
+} pc;
+
+float hash(vec3 p) {
+    p = fract(p * 0.3183099 + 0.1);
+    p *= 17.0;
+    return fract(p.x * p.y * p.z * (p.x + p.y + p.z));
+}
+
+void main() {
+    ivec3 pos = ivec3(gl_GlobalInvocationID.xy, gl_GlobalInvocationID.z);
+    if (any(greaterThanEqual(pos, ivec3(pc.grid_res)))) return;
+
+    uint val = 0;
+    
+    // Floor at y=0
+    if (pos.y == 0) {
+        if (((pos.x / 8) + (pos.z / 8)) % 2 == 0) {
+            val = 1;
+        } else {
+            val = 2;
+        }
+    }
+    
+    // Border walls
+    if (pos.y >= 0 && pos.y < 4) {
+        if (pos.x == 0 || pos.x == pc.grid_res - 1 || pos.z == 0 || pos.z == pc.grid_res - 1) {
+            val = 7;
+        }
+    }
+
+    // Random pillars/blocks
+    if (pos.y > 0 && pos.y < 12) {
+        float h = hash(vec3(pos.x / 16, 0, pos.z / 16));
+        if (h > 0.95) {
+            val = uint(3 + uint(h * 100) % 4);
+        }
+    }
+    
+    // Some "room" structures
+    if (pos.y >= 0 && pos.y < 8) {
+        // A small room in the corner
+        if (pos.x > 10 && pos.x < 30 && pos.z > 10 && pos.z < 30) {
+            if (pos.y == 0) val = 8;
+            else if (pos.x == 11 || pos.x == 29 || pos.z == 11 || pos.z == 29) {
+                if (!(pos.x > 18 && pos.x < 22 && pos.z == 29)) { // Doorway
+                    val = 9;
+                }
+            }
+        }
+    }
+
+    // Debug axes at origin
+    if (pos.x < 10 && pos.y == 0 && pos.z == 0) val = 3; // X-axis (Red)
+    if (pos.x == 0 && pos.y < 10 && pos.z == 0) val = 4; // Y-axis (Green)
+    if (pos.x == 0 && pos.y == 0 && pos.z < 10) val = 5; // Z-axis (Blue)
+
+    imageStore(all_storage_images[nonuniformEXT(pc.img)], pos, uvec4(val));
+}
