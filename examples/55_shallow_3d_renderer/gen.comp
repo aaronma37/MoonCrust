@@ -7,8 +7,7 @@ layout(set = 0, binding = 2, r32ui) uniform uimage3D all_storage_images[];
 
 layout(push_constant) uniform PushConstants {
     uint img;
-    uint grid_res;
-    uint seed;
+    uint grid_w, grid_h, grid_d;
 } pc;
 
 float hash(vec3 p) {
@@ -18,8 +17,8 @@ float hash(vec3 p) {
 }
 
 void main() {
-    ivec3 pos = ivec3(gl_GlobalInvocationID.xy, gl_GlobalInvocationID.z);
-    if (any(greaterThanEqual(pos, ivec3(pc.grid_res)))) return;
+    ivec3 pos = ivec3(gl_GlobalInvocationID.x, gl_GlobalInvocationID.y, gl_GlobalInvocationID.z);
+    if (pos.x >= pc.grid_w || pos.y >= pc.grid_h || pos.z >= pc.grid_d) return;
 
     uint val = 0;
     
@@ -33,37 +32,34 @@ void main() {
     }
     
     // Border walls
-    if (pos.y >= 0 && pos.y < 4) {
-        if (pos.x == 0 || pos.x == pc.grid_res - 1 || pos.z == 0 || pos.z == pc.grid_res - 1) {
+    if (pos.y >= 0 && pos.y < 8) {
+        if (pos.x == 0 || pos.x == pc.grid_w - 1 || pos.z == 0 || pos.z == pc.grid_d - 1) {
             val = 7;
         }
     }
 
-    // Random pillars/blocks
-    if (pos.y > 0 && pos.y < 12) {
+    // Random pillars/blocks (more of them and taller)
+    if (pos.y > 0 && pos.y < 24) {
         float h = hash(vec3(pos.x / 16, 0, pos.z / 16));
-        if (h > 0.95) {
+        if (h > 0.90) {
             val = uint(3 + uint(h * 100) % 4);
         }
     }
     
     // Some "room" structures
-    if (pos.y >= 0 && pos.y < 8) {
-        // A small room in the corner
-        if (pos.x > 10 && pos.x < 30 && pos.z > 10 && pos.z < 30) {
+    if (pos.y >= 0 && pos.y < 12) {
+        // A few rooms across the map
+        ivec2 grid_pos = ivec2(pos.xz) / 128;
+        ivec2 local_room = ivec2(pos.xz) % 128;
+        if (local_room.x > 40 && local_room.x < 80 && local_room.y > 40 && local_room.y < 80) {
             if (pos.y == 0) val = 8;
-            else if (pos.x == 11 || pos.x == 29 || pos.z == 11 || pos.z == 29) {
-                if (!(pos.x > 18 && pos.x < 22 && pos.z == 29)) { // Doorway
+            else if (local_room.x == 41 || local_room.x == 79 || local_room.y == 41 || local_room.y == 79) {
+                if (!(local_room.x > 58 && local_room.x < 62)) { // Doorway
                     val = 9;
                 }
             }
         }
     }
-
-    // Debug axes at origin
-    if (pos.x < 10 && pos.y == 0 && pos.z == 0) val = 3; // X-axis (Red)
-    if (pos.x == 0 && pos.y < 10 && pos.z == 0) val = 4; // Y-axis (Green)
-    if (pos.x == 0 && pos.y == 0 && pos.z < 10) val = 5; // Z-axis (Blue)
 
     imageStore(all_storage_images[nonuniformEXT(pc.img)], pos, uvec4(val));
 }

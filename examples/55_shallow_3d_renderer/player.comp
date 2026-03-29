@@ -1,0 +1,43 @@
+#version 450
+#extension GL_EXT_nonuniform_qualifier : require
+
+layout(local_size_x = 4, local_size_y = 4, local_size_z = 4) in;
+
+layout(set = 0, binding = 2, r32ui) uniform uimage3D all_storage_images[];
+layout(set = 0, binding = 0) buffer GlobalBuffers { uint data[]; } world[];
+
+layout(push_constant) uniform PushConstants {
+    int old_x, old_y, old_z;
+    int new_x, new_y, new_z;
+    uint img;
+    uint dirty_buf;
+    uint grid_w, grid_h, grid_d;
+} pc;
+
+void main() {
+    ivec3 offset = ivec3(gl_LocalInvocationID);
+    ivec3 old_p = ivec3(pc.old_x, pc.old_y, pc.old_z) + offset;
+    ivec3 new_p = ivec3(pc.new_x, pc.new_y, pc.new_z) + offset;
+
+    // Clear old voxel
+    if (old_p.x >= 0 && old_p.x < pc.grid_w && old_p.y >= 0 && old_p.y < pc.grid_h && old_p.z >= 0 && old_p.z < pc.grid_d) {
+        imageStore(all_storage_images[nonuniformEXT(pc.img)], old_p, uvec4(0));
+        
+        uint chunk_res_x = pc.grid_w / 16;
+        uint chunks_per_slice = (pc.grid_w / 16) * (pc.grid_h / 16);
+        ivec3 c = old_p / 16;
+        uint idx = c.x + c.y * chunk_res_x + c.z * chunks_per_slice;
+        world[nonuniformEXT(pc.dirty_buf)].data[idx] = 1;
+    }
+
+    // Set new voxel (Player is Type 10 - Purple/Magenta)
+    if (new_p.x >= 0 && new_p.x < pc.grid_w && new_p.y >= 0 && new_p.y < pc.grid_h && new_p.z >= 0 && new_p.z < pc.grid_d) {
+        imageStore(all_storage_images[nonuniformEXT(pc.img)], new_p, uvec4(10));
+        
+        uint chunk_res_x = pc.grid_w / 16;
+        uint chunks_per_slice = (pc.grid_w / 16) * (pc.grid_h / 16);
+        ivec3 c = new_p / 16;
+        uint idx = c.x + c.y * chunk_res_x + c.z * chunks_per_slice;
+        world[nonuniformEXT(pc.dirty_buf)].data[idx] = 1;
+    }
+}

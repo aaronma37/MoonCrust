@@ -11,18 +11,25 @@ layout(push_constant) uniform PushConstants {
     uint dirty_buf;
     uint v_buf;
     uint indirect_buf;
-    uint grid_res;
+    uint grid_w, grid_h, grid_d;
 } pc;
 
 shared uint local_vertex_count;
 
+const uint MAX_VERTS_PER_CHUNK = 16384;
+
+// Packing: X(9), Y(7), Z(9), Norm(3), Col(4) = 32 bits
 uint pack_vertex(ivec3 p, uint norm, uint col) {
-    return (uint(p.x) & 255) | ((uint(p.y) & 255) << 8) | ((uint(p.z) & 255) << 16) | ((norm & 7) << 24) | ((col & 15) << 27);
+    return (uint(p.x) & 511) | ((uint(p.y) & 127) << 9) | ((uint(p.z) & 511) << 16) | ((norm & 7) << 25) | ((col & 15) << 28);
 }
 
 void main() {
-    uint chunk_res = pc.grid_res / 16;
-    uint chunk_idx = gl_WorkGroupID.x + gl_WorkGroupID.y * chunk_res + gl_WorkGroupID.z * chunk_res * chunk_res;
+    uint cx = gl_WorkGroupID.x;
+    uint cy = gl_WorkGroupID.y;
+    uint cz = gl_WorkGroupID.z;
+    uint chunks_per_row = pc.grid_w / 16;
+    uint chunks_per_slice = (pc.grid_w / 16) * (pc.grid_h / 16);
+    uint chunk_idx = cx + cy * chunks_per_row + cz * chunks_per_slice;
     
     if (world[nonuniformEXT(pc.dirty_buf)].data[chunk_idx] == 0) return;
 
@@ -38,6 +45,8 @@ void main() {
         ivec3 local_pos = ivec3(idx % 16, (idx / 16) % 16, idx / 256);
         ivec3 pos = chunk_origin + local_pos;
         
+        if (pos.x >= pc.grid_w || pos.y >= pc.grid_h || pos.z >= pc.grid_d) continue;
+
         uint val = imageLoad(all_storage_images[nonuniformEXT(pc.in_img)], pos).r;
         if (val == 0) continue;
 
@@ -45,13 +54,13 @@ void main() {
         for (int d = 0; d < 6; d++) {
             ivec3 n_pos = pos + dirs[d];
             bool visible = false;
-            if (any(lessThan(n_pos, ivec3(0))) || any(greaterThanEqual(n_pos, ivec3(pc.grid_res)))) visible = true;
+            if (n_pos.x < 0 || n_pos.x >= pc.grid_w || n_pos.y < 0 || n_pos.y >= pc.grid_h || n_pos.z < 0 || n_pos.z >= pc.grid_d) visible = true;
             else if (imageLoad(all_storage_images[nonuniformEXT(pc.in_img)], n_pos).r == 0) visible = true;
 
             if (visible) {
                 uint v_off = atomicAdd(local_vertex_count, 4);
-                if (v_off + 4 <= 98304) {
-                    uint global_v_start = chunk_idx * 98304 + v_off;
+                if (v_off + 4 <= MAX_VERTS_PER_CHUNK) {
+                    uint global_v_start = chunk_idx * MAX_VERTS_PER_CHUNK + v_off;
                     uint packed = pack_vertex(pos, d, val);
                     world[nonuniformEXT(pc.v_buf)].data[global_v_start + 0] = packed;
                     world[nonuniformEXT(pc.v_buf)].data[global_v_start + 1] = packed;
@@ -66,12 +75,12 @@ void main() {
 
     if (gl_LocalInvocationIndex == 0) {
         world[nonuniformEXT(pc.dirty_buf)].data[chunk_idx] = 0;
-        uint count = min(local_vertex_count, 98304);
+        uint count = min(local_vertex_count, MAX_VERTS_PER_CHUNK);
         uint cmd_off = chunk_idx * 5;
         world[nonuniformEXT(pc.indirect_buf)].data[cmd_off + 0] = (count / 4) * 6;
         world[nonuniformEXT(pc.indirect_buf)].data[cmd_off + 1] = 1;
         world[nonuniformEXT(pc.indirect_buf)].data[cmd_off + 2] = 0;
-        world[nonuniformEXT(pc.indirect_buf)].data[cmd_off + 3] = chunk_idx * 98304;
+        world[nonuniformEXT(pc.indirect_buf)].data[cmd_off + 3] = chunk_idx * MAX_VERTS_PER_CHUNK;
         world[nonuniformEXT(pc.indirect_buf)].data[cmd_off + 4] = 0;
     }
 }

@@ -26,9 +26,13 @@ const vec3 normals[6] = {
 
 void main() {
     uint packed = world[nonuniformEXT(pc.v_buf)].data[gl_VertexIndex];
-    vec3 pos = vec3(packed & 255, (packed >> 8) & 255, (packed >> 16) & 255);
-    uint norm_idx = (packed >> 24) & 7;
-    uint type = (packed >> 27) & 15;
+    // Unpacking: X(9), Y(7), Z(9), Norm(3), Col(4)
+    vec3 pos;
+    pos.x = float(packed & 511);
+    pos.y = float((packed >> 9) & 127);
+    pos.z = float((packed >> 16) & 511);
+    uint norm_idx = (packed >> 25) & 7;
+    uint type = (packed >> 28) & 15;
 
     vec3 corner = vec3(face_corners[norm_idx][gl_VertexIndex % 4]);
     vec3 world_pos = pos + corner;
@@ -44,10 +48,10 @@ void main() {
         vec3(0.2, 1.0, 0.2),   // 4: Green Pillar
         vec3(0.2, 0.2, 1.0),   // 5: Blue Pillar
         vec3(1.0, 1.0, 0.2),   // 6: Yellow Pillar
-        vec3(0.8, 0.5, 0.2),   // 7
-        vec3(0.5, 0.8, 0.2),   // 8
-        vec3(0.2, 0.8, 0.5),   // 9
-        vec3(0.2, 0.5, 0.8),   // 10
+        vec3(0.8, 0.5, 0.2),   // 7: Orange
+        vec3(0.5, 0.8, 0.2),   // 8: Lime
+        vec3(0.2, 0.8, 0.5),   // 9: Aqua
+        vec3(0.8, 0.0, 0.8),   // 10: Player (Purple)
         vec3(0.5, 0.2, 0.8),   // 11
         vec3(0.8, 0.2, 0.5),   // 12
         vec3(0.5),             // 13
