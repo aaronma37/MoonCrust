@@ -50,6 +50,13 @@ void main() {
     }
 
     uint current = imageLoad(all_storage_images[nonuniformEXT(pc.in_img)], pos).r;
+    
+    // Player (Type 10) is immutable by CA
+    if (current == 10) {
+        imageStore(all_storage_images[nonuniformEXT(pc.out_img)], pos, uvec4(10, 0, 0, 0));
+        return;
+    }
+
     uint next = 0;
     
     // Survival 4-8. Birth 6-10.
