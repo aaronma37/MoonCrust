@@ -9,13 +9,32 @@ layout(set = 0, binding = 0) buffer GlobalBuffers { uint data[]; } world[];
 layout(push_constant) uniform PushConstants {
     uint in_img;
     uint out_img;
-    uint dirty_buf;
-    uint grid_res;
+    uint grid_w, grid_h, grid_d;
+    uint active_map_idx;
+    uint dirty_map_idx;
 } pc;
+
+void mark_chunk(ivec3 p) {
+    if (any(lessThan(p, ivec3(0))) || any(greaterThanEqual(p, ivec3(pc.grid_w, pc.grid_h, pc.grid_d)))) return;
+    ivec3 cp = p / 16;
+    uint chunk_res_x = pc.grid_w / 16;
+    uint chunks_per_slice = (pc.grid_w / 16) * (pc.grid_h / 16);
+    uint chunk_idx = cp.x + (cp.y * chunk_res_x) + (cp.z * chunks_per_slice);
+    atomicOr(world[nonuniformEXT(pc.active_map_idx)].data[chunk_idx], 1);
+    atomicOr(world[nonuniformEXT(pc.dirty_map_idx)].data[chunk_idx], 1);
+}
 
 void main() {
     ivec3 pos = ivec3(gl_GlobalInvocationID.xyz);
-    if (any(greaterThanEqual(pos, ivec3(pc.grid_res)))) return;
+    if (any(greaterThanEqual(pos, ivec3(pc.grid_w, pc.grid_h, pc.grid_d)))) return;
+
+    ivec3 cp = pos / 16;
+    uint chunk_res_x = pc.grid_w / 16;
+    uint chunks_per_slice = (pc.grid_w / 16) * (pc.grid_h / 16);
+    uint chunk_idx = cp.x + (cp.y * chunk_res_x) + (cp.z * chunks_per_slice);
+
+    // Only simulate active chunks
+    if (world[nonuniformEXT(pc.active_map_idx)].data[chunk_idx] == 0) return;
 
     int neighbors = 0;
     for (int z = -1; z <= 1; z++) {
@@ -23,7 +42,7 @@ void main() {
             for (int x = -1; x <= 1; x++) {
                 if (x == 0 && y == 0 && z == 0) continue;
                 ivec3 n_pos = pos + ivec3(x, y, z);
-                if (all(greaterThanEqual(n_pos, ivec3(0))) && all(lessThan(n_pos, ivec3(pc.grid_res)))) {
+                if (all(greaterThanEqual(n_pos, ivec3(0))) && all(lessThan(n_pos, ivec3(pc.grid_w, pc.grid_h, pc.grid_d)))) {
                     if (imageLoad(all_storage_images[nonuniformEXT(pc.in_img)], n_pos).r > 0) neighbors++;
                 }
             }
@@ -35,17 +54,21 @@ void main() {
     
     // Survival 4-8. Birth 6-10.
     if (current > 0) {
-        if (neighbors >= 4 && neighbors <= 8) next = 1;
+        if (neighbors >= 4 && neighbors <= 8) next = current;
     } else {
-        if (neighbors >= 6 && neighbors <= 10) next = 1;
+        if (neighbors >= 6 && neighbors <= 10) next = 1; // Basic matter
     }
 
     imageStore(all_storage_images[nonuniformEXT(pc.out_img)], pos, uvec4(next, 0, 0, 0));
 
     if (current != next) {
-        ivec3 cp = pos / 16;
-        uint chunk_res = pc.grid_res / 16;
-        uint chunk_idx = cp.x + (cp.y * chunk_res) + (cp.z * chunk_res * chunk_res);
-        atomicOr(world[nonuniformEXT(pc.dirty_buf)].data[chunk_idx], 1);
+        mark_chunk(pos);
+        // If near boundary, mark neighbors
+        if (pos.x % 16 == 0) mark_chunk(pos + ivec3(-1, 0, 0));
+        if (pos.x % 16 == 15) mark_chunk(pos + ivec3(1, 0, 0));
+        if (pos.y % 16 == 0) mark_chunk(pos + ivec3(0, -1, 0));
+        if (pos.y % 16 == 15) mark_chunk(pos + ivec3(0, 1, 0));
+        if (pos.z % 16 == 0) mark_chunk(pos + ivec3(0, 0, -1));
+        if (pos.z % 16 == 15) mark_chunk(pos + ivec3(0, 0, 1));
     }
 }

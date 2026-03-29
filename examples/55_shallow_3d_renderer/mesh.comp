@@ -8,10 +8,11 @@ layout(set = 0, binding = 0) buffer GlobalBuffers { uint data[]; } world[];
 
 layout(push_constant) uniform PushConstants {
     uint in_img;
-    uint dirty_buf;
+    uint dirty_map_idx;
     uint v_buf;
     uint indirect_buf;
     uint grid_w, grid_h, grid_d;
+    uint active_map_idx;
 } pc;
 
 shared uint local_vertex_count;
@@ -31,7 +32,11 @@ void main() {
     uint chunks_per_slice = (pc.grid_w / 16) * (pc.grid_h / 16);
     uint chunk_idx = cx + cy * chunks_per_row + cz * chunks_per_slice;
     
-    if (world[nonuniformEXT(pc.dirty_buf)].data[chunk_idx] == 0) return;
+    // Only mesh if dirty AND active
+    bool is_active_chunk = world[nonuniformEXT(pc.active_map_idx)].data[chunk_idx] > 0;
+    bool is_dirty_chunk = world[nonuniformEXT(pc.dirty_map_idx)].data[chunk_idx] > 0;
+    
+    if (!is_active_chunk || !is_dirty_chunk) return;
 
     if (gl_LocalInvocationIndex == 0) {
         local_vertex_count = 0;
@@ -74,7 +79,7 @@ void main() {
     barrier();
 
     if (gl_LocalInvocationIndex == 0) {
-        world[nonuniformEXT(pc.dirty_buf)].data[chunk_idx] = 0;
+        world[nonuniformEXT(pc.dirty_map_idx)].data[chunk_idx] = 0;
         uint count = min(local_vertex_count, MAX_VERTS_PER_CHUNK);
         uint cmd_off = chunk_idx * 5;
         world[nonuniformEXT(pc.indirect_buf)].data[cmd_off + 0] = (count / 4) * 6;

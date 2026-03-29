@@ -10,9 +10,22 @@ layout(push_constant) uniform PushConstants {
     int old_x, old_y, old_z;
     int new_x, new_y, new_z;
     uint img;
-    uint dirty_buf;
+    uint dirty_map_idx;
     uint grid_w, grid_h, grid_d;
+    uint active_map_idx;
 } pc;
+
+void mark_chunk(ivec3 p) {
+    if (p.x < 0 || p.x >= pc.grid_w || p.y < 0 || p.y >= pc.grid_h || p.z < 0 || p.z >= pc.grid_d) return;
+    
+    uint chunk_res_x = pc.grid_w / 16;
+    uint chunks_per_slice = (pc.grid_w / 16) * (pc.grid_h / 16);
+    ivec3 c = p / 16;
+    uint idx = c.x + c.y * chunk_res_x + c.z * chunks_per_slice;
+    
+    atomicOr(world[nonuniformEXT(pc.dirty_map_idx)].data[idx], 1);
+    atomicOr(world[nonuniformEXT(pc.active_map_idx)].data[idx], 1);
+}
 
 void main() {
     ivec3 offset = ivec3(gl_LocalInvocationID);
@@ -22,22 +35,12 @@ void main() {
     // Clear old voxel
     if (old_p.x >= 0 && old_p.x < pc.grid_w && old_p.y >= 0 && old_p.y < pc.grid_h && old_p.z >= 0 && old_p.z < pc.grid_d) {
         imageStore(all_storage_images[nonuniformEXT(pc.img)], old_p, uvec4(0));
-        
-        uint chunk_res_x = pc.grid_w / 16;
-        uint chunks_per_slice = (pc.grid_w / 16) * (pc.grid_h / 16);
-        ivec3 c = old_p / 16;
-        uint idx = c.x + c.y * chunk_res_x + c.z * chunks_per_slice;
-        world[nonuniformEXT(pc.dirty_buf)].data[idx] = 1;
+        mark_chunk(old_p);
     }
 
     // Set new voxel (Player is Type 10 - Purple/Magenta)
     if (new_p.x >= 0 && new_p.x < pc.grid_w && new_p.y >= 0 && new_p.y < pc.grid_h && new_p.z >= 0 && new_p.z < pc.grid_d) {
         imageStore(all_storage_images[nonuniformEXT(pc.img)], new_p, uvec4(10));
-        
-        uint chunk_res_x = pc.grid_w / 16;
-        uint chunks_per_slice = (pc.grid_w / 16) * (pc.grid_h / 16);
-        ivec3 c = new_p / 16;
-        uint idx = c.x + c.y * chunk_res_x + c.z * chunks_per_slice;
-        world[nonuniformEXT(pc.dirty_buf)].data[idx] = 1;
+        mark_chunk(new_p);
     }
 }
