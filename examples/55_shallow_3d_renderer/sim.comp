@@ -35,19 +35,16 @@ void main() {
     uint chunks_per_slice = (pc.grid_w / 16) * (pc.grid_h / 16);
     uint chunk_idx = cp.x + (cp.y * chunk_res_x) + (cp.z * chunks_per_slice);
 
-    // Only simulate active chunks
     if (world[nonuniformEXT(pc.active_map_idx)].data[chunk_idx] == 0) return;
 
     uint current = imageLoad(all_storage_images[nonuniformEXT(pc.in_img)], pos).r;
     float hormone = imageLoad(all_signal_images[nonuniformEXT(pc.signal_img)], pos).r;
     
-    // Hormone Decay (Evaporation)
     if (hormone > 0.0) {
         imageStore(all_signal_images[nonuniformEXT(pc.signal_img)], pos, vec4(hormone * 0.9, 0, 0, 0));
-        mark_chunk(pos); // Keep simulating as long as hormone is active
+        mark_chunk(pos);
     }
 
-    // Player (Type 10) is immutable and handled by player.comp
     if (current == 10) {
         imageStore(all_storage_images[nonuniformEXT(pc.out_img)], pos, uvec4(10, 0, 0, 0));
         return;
@@ -55,15 +52,21 @@ void main() {
 
     uint mat = current & 0xFF;
     uint next = current;
+    bool grew = false;
 
     // SIGNALED GROWTH
     if (mat == 0) {
-        if (hormone > 0.8) next = 20; // Strong signal = Wood
-        else if (hormone > 0.1) next = 21; // Weak signal = Leaf
+        if (hormone > 0.8) {
+            next = 20; 
+            grew = true;
+        } else if (hormone > 0.1) {
+            next = 21;
+            grew = true;
+        }
     }
     
-    // Standard CA neighbor logic
-    if (mat == 0 || mat == 1) { // Only run CA on air or simple cells (birth)
+    // Standard CA neighbor logic (Only if didn't just grow wood/leaf)
+    if (!grew && (mat == 0 || mat == 1)) {
         int neighbors = 0;
         for (int z = -1; z <= 1; z++) {
             for (int y = -1; y <= 1; y++) {
@@ -79,9 +82,9 @@ void main() {
             }
         }
 
-        if (mat == 1) { // Survival
+        if (mat == 1) {
             if (neighbors < 4 || neighbors > 8) next = 0;
-        } else if (mat == 0) { // Birth
+        } else if (mat == 0) {
             if (neighbors >= 6 && neighbors <= 10) next = 1;
         }
     }

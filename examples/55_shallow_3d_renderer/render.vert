@@ -7,10 +7,13 @@ layout(push_constant) uniform PushConstants {
     mat4 mvp;
     uint v_buf;
     uint grid_w, grid_h, grid_d;
+    vec3 cam_pos;
 } pc;
 
 layout(location = 0) out vec3 out_norm;
 layout(location = 1) out vec3 out_col;
+layout(location = 2) out vec3 out_world_pos;
+layout(location = 3) out vec3 out_cam_pos;
 
 const ivec3 face_corners[6][4] = {
     {ivec3(1,0,0), ivec3(1,1,0), ivec3(1,1,1), ivec3(1,0,1)}, // +X
@@ -41,8 +44,6 @@ uint mat_to_col_idx(uint mat) {
 
 void main() {
     uint packed = world[nonuniformEXT(pc.v_buf)].data[gl_VertexIndex];
-    
-    // UNPACK: lp.x(4), lp.y(4), lp.z(4), norm(3), mat(8), ao(2)
     ivec3 lp;
     lp.x = int(packed & 15);
     lp.y = int((packed >> 4) & 15);
@@ -51,7 +52,6 @@ void main() {
     uint mat = (packed >> 15) & 255;
     uint ao = (packed >> 23) & 3;
 
-    // Reconstruct chunk origin from VertexIndex
     const uint MAX_VERTS_PER_CHUNK = 16384;
     uint chunk_idx = gl_VertexIndex / MAX_VERTS_PER_CHUNK;
     uint chunks_per_row = pc.grid_w / 16;
@@ -68,6 +68,8 @@ void main() {
 
     gl_Position = pc.mvp * vec4(world_pos, 1.0);
     out_norm = normals[norm_idx];
+    out_world_pos = world_pos;
+    out_cam_pos = pc.cam_pos;
     
     const vec3 palette[16] = {
         vec3(0.0),             // 0: Empty
