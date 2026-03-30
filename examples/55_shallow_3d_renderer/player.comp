@@ -1,20 +1,33 @@
 #version 450
 #extension GL_EXT_nonuniform_qualifier : require
 
-layout(local_size_x = 8, local_size_y = 8, local_size_z = 8) in;
+layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
 
 layout(set = 0, binding = 2, r32ui) uniform uimage3D all_storage_images[];
 layout(set = 0, binding = 0) buffer GlobalBuffers { uint data[]; } world[];
 
+struct PlayerState {
+    vec3 pos;
+    float yaw;
+    vec3 vel;
+    float p1;
+    uint grounded;
+    uint debug_dist;
+    uint debug_found;
+    uint p2;
+    uint padding[4];
+};
+
+layout(set = 0, binding = 0) buffer PlayerBuffer { PlayerState s; } player_storage[];
+
 layout(push_constant) uniform PushConstants {
-    int ox, oy, oz; // Old position
-    int nx, ny, nz; // New position
     uint img_a;
     uint img_b;
     uint grid_w, grid_h, grid_d;
     uint active_map_idx;
     uint dirty_map_idx;
-    uint plant_seed; // 1 if planting this frame
+    uint player_buf_idx;
+    uint plant_seed;
 } pc;
 
 void mark_chunk(ivec3 p) {
@@ -28,36 +41,17 @@ void mark_chunk(ivec3 p) {
 }
 
 void main() {
-    ivec3 tid = ivec3(gl_LocalInvocationID);
-    ivec3 old_origin = ivec3(pc.ox, pc.oy, pc.oz) - ivec3(2, 2, 2);
-    ivec3 new_origin = ivec3(pc.nx, pc.ny, pc.nz) - ivec3(2, 2, 2);
+    uint p_idx = nonuniformEXT(pc.player_buf_idx);
+    vec3 p = player_storage[p_idx].s.pos;
+    
+    // NO MORE PAINTING THE ROBOT (Material 10) INTO THE GRID.
+    // This allows the robot to be a continuous entity.
 
-    if (tid.x < 6 && tid.y < 6 && tid.z < 6) {
-        ivec3 p = old_origin - ivec3(1, 1, 1) + tid;
-        if (p.x >= 0 && p.x < pc.grid_w && p.y >= 0 && p.y < pc.grid_h && p.z >= 0 && p.z < pc.grid_d) {
-            uint val_a = imageLoad(all_storage_images[nonuniformEXT(pc.img_a)], p).r;
-            if ((val_a & 0xFF) == 10) {
-                imageStore(all_storage_images[nonuniformEXT(pc.img_a)], p, uvec4(0));
-                mark_chunk(p);
-            }
-            uint val_b = imageLoad(all_storage_images[nonuniformEXT(pc.img_b)], p).r;
-            if ((val_b & 0xFF) == 10) {
-                imageStore(all_storage_images[nonuniformEXT(pc.img_b)], p, uvec4(0));
-                mark_chunk(p);
-            }
-        }
-    }
-
-    barrier();
-
-    if (tid.x < 4 && tid.y < 4 && tid.z < 4) {
-        ivec3 p = new_origin + tid;
-        if (p.x >= 0 && p.x < pc.grid_w && p.y >= 0 && p.y < pc.grid_h && p.z >= 0 && p.z < pc.grid_d) {
-            uint val = 10; // Player
-            if (pc.plant_seed > 0 && tid.y == 0 && tid.x == 2 && tid.z == 2) val = 30; // Seed
-            imageStore(all_storage_images[nonuniformEXT(pc.img_a)], p, uvec4(val));
-            imageStore(all_storage_images[nonuniformEXT(pc.img_b)], p, uvec4(val));
-            mark_chunk(p);
-        }
+    if (pc.plant_seed > 0) {
+        ivec3 ip = ivec3(floor(p));
+        // Force plant seed into both buffers
+        imageStore(all_storage_images[nonuniformEXT(pc.img_a)], ip, uvec4(30));
+        imageStore(all_storage_images[nonuniformEXT(pc.img_b)], ip, uvec4(30));
+        mark_chunk(ip);
     }
 }

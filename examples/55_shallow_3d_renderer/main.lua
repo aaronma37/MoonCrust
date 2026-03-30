@@ -18,6 +18,7 @@ local M = {
     chunk_size = 16,
     player_pos = {256, 40, 256},
     prev_player_pos = {256, 40, 256},
+    player_yaw = 0,
     cam_pos_smooth = {256, 40, 286},
     cam_target_smooth = {256, 40, 256},
     cam_yaw = 0,
@@ -35,13 +36,14 @@ local M = {
 
 local device, queue, graphics_family, sw, rg
 local vol_a, vol_b, signal_vol, dirty_map, active_map, v_buf, indirect_buf, index_buf, depth_img, player_state_buf, entity_buf, scene_img
-local pipe_sim, pipe_mesh, pipe_render, pipe_gen, pipe_player, pipe_physics, pipe_dna, pipe_post, render_layout, post_layout
+local robot_v_buf, robot_i_buf
+local pipe_sim, pipe_mesh, pipe_render, pipe_gen, pipe_player, pipe_physics, pipe_dna, pipe_post, pipe_robot, render_layout, post_layout, robot_layout
 local bindless_set, image_available_sem, frame_fence, cbs
 local res_vol_a, res_vol_b, res_signal, res_dirty, res_active, res_v_buf, res_indirect, res_depth, res_player, res_entities, res_scene
 
 ffi.cdef[[
     typedef struct PlayerState { 
-        float pos[3], p0; 
+        float pos[3], yaw; 
         float vel[3], p1; 
         uint32_t grounded, debug_dist, debug_found, p2; 
         uint32_t padding[4]; 
@@ -61,8 +63,7 @@ ffi.cdef[[
     } PhysicsPC;
 
     typedef struct PlayerUpdatePC { 
-        int32_t ox, oy, oz, nx, ny, nz; 
-        uint32_t img_a, img_b, grid_w, grid_h, grid_d, active_map_idx, dirty_map_idx, plant_seed; 
+        uint32_t img_a, img_b, grid_w, grid_h, grid_d, active_map_idx, dirty_map_idx, player_buf_idx, plant_seed; 
     } PlayerUpdatePC;
 
     typedef struct SimTickPC { 
@@ -86,6 +87,11 @@ ffi.cdef[[
         float cam_pos[3], p0;
     } RenderPC;
 
+    typedef struct RobotRenderPC {
+        float mvp[16];
+        float pos[3], yaw;
+    } RobotRenderPC;
+
     typedef struct PostPC {
         uint32_t scene_tex_idx;
         float screen_w, screen_h, p0;
@@ -93,7 +99,7 @@ ffi.cdef[[
 ]]
 
 function M.init()
-    print("Example 55: Voxel Automation Game (512x128x512)")
+    print("Example 55: Voxel Automation Game - Continuous Robot Refactor")
     
     local instance = vulkan.get_instance()
     local physical_device = vulkan.get_physical_device()
@@ -117,9 +123,35 @@ function M.init()
     v_buf = mc.gpu.buffer(num_chunks * 16384 * 4, "storage", nil, false)
     indirect_buf = mc.gpu.buffer(num_chunks * 20, "indirect", nil, true)
     
-    local init_player = ffi.new("PlayerState", { pos = {256, 40, 256}, vel = {0, 0, 0} })
+    local init_player = ffi.new("PlayerState", { pos = {256, 40, 256}, yaw = 0, vel = {0, 0, 0} })
     player_state_buf = mc.gpu.buffer(ffi.sizeof("PlayerState"), "storage", init_player, true)
     entity_buf = mc.gpu.buffer(M.max_entities * ffi.sizeof("Entity"), "storage", nil, true)
+
+    -- Static Robot Mesh (2x3x2 blocks)
+    local function pack_v(lp, norm, mat, ao)
+        return bit.bor(bit.band(lp[1], 15), bit.lshift(bit.band(lp[2], 15), 4), bit.lshift(bit.band(lp[3], 15), 8),
+               bit.lshift(bit.band(norm, 7), 12), bit.lshift(bit.band(mat, 255), 15), bit.lshift(bit.band(ao, 3), 23))
+    end
+    
+    local r_verts = ffi.new("uint32_t[?]", 6 * 4 * 12) 
+    local r_indices = ffi.new("uint16_t[?]", 6 * 6 * 12)
+    local v_idx, i_idx = 0, 0
+    local function add_robot_box(x, y, z, mat)
+        for d=0,5 do
+            local p = pack_v({x,y,z}, d, mat, 3)
+            for j=0,3 do r_verts[v_idx] = p v_idx = v_idx + 1 end
+            local b = v_idx - 4
+            r_indices[i_idx+0], r_indices[i_idx+1], r_indices[i_idx+2] = b, b+1, b+2
+            r_indices[i_idx+3], r_indices[i_idx+4], r_indices[i_idx+5] = b, b+2, b+3
+            i_idx = i_idx + 6
+        end
+    end
+    add_robot_box(0,0,0, 10) add_robot_box(1,0,0, 10)
+    add_robot_box(0,1,0, 10) add_robot_box(1,1,0, 10)
+    add_robot_box(0,2,0, 10) add_robot_box(1,2,0, 10)
+    robot_v_buf = mc.gpu.buffer(v_idx * 4, "vertex", r_verts, false)
+    robot_i_buf = mc.gpu.buffer(i_idx * 2, "index", r_indices, false)
+    M.robot_index_count = i_idx
 
     local index_data = ffi.new("uint16_t[?]", 24576 * 6)
     for i=0, 24576-1 do
@@ -170,22 +202,21 @@ function M.init()
     local f_mod = shader.create_module(device, shader.compile_glsl(io.open("examples/55_shallow_3d_renderer/render.frag"):read("*all"), vk.VK_SHADER_STAGE_FRAGMENT_BIT))
     pipe_render = pipeline.create_graphics_pipeline(device, render_layout, v_mod, f_mod, { depth_test = true, depth_write = true, cull_mode = vk.VK_CULL_MODE_BACK_BIT, depth_format = vk.VK_FORMAT_D32_SFLOAT, color_formats = { vk.VK_FORMAT_R16G16B16A16_SFLOAT } })
 
+    local robot_pc_ranges = ffi.new("VkPushConstantRange[1]", {{ stageFlags = vk.VK_SHADER_STAGE_VERTEX_BIT, offset = 0, size = ffi.sizeof("RobotRenderPC") }})
+    robot_layout = pipeline.create_layout(device, {bl_layout}, robot_pc_ranges)
+    local rv_mod = shader.create_module(device, shader.compile_glsl(io.open("examples/55_shallow_3d_renderer/robot.vert"):read("*all"), vk.VK_SHADER_STAGE_VERTEX_BIT))
+    pipe_robot = pipeline.create_graphics_pipeline(device, robot_layout, rv_mod, f_mod, { depth_test = true, depth_write = true, depth_format = vk.VK_FORMAT_D32_SFLOAT, color_formats = { vk.VK_FORMAT_R16G16B16A16_SFLOAT }, 
+        vertex_binding = ffi.new("VkVertexInputBindingDescription[1]", {{ binding = 0, stride = 4, inputRate = vk.VK_VERTEX_INPUT_RATE_VERTEX }}),
+        vertex_attributes = ffi.new("VkVertexInputAttributeDescription[1]", {{ location = 0, binding = 0, format = vk.VK_FORMAT_R32_UINT, offset = 0 }}),
+        vertex_attribute_count = 1
+    })
+
     local post_pc_ranges = ffi.new("VkPushConstantRange[1]", {{ stageFlags = vk.VK_SHADER_STAGE_FRAGMENT_BIT, offset = 0, size = ffi.sizeof("PostPC") }})
     post_layout = pipeline.create_layout(device, {bl_layout}, post_pc_ranges)
-    local post_v_src = [[#version 450
+    local pv_mod = shader.create_module(device, shader.compile_glsl([[#version 450
         layout(location = 0) out vec2 outUV;
-        void main() {
-            outUV = vec2((gl_VertexIndex << 1) & 2, gl_VertexIndex & 2);
-            gl_Position = vec4(outUV * 2.0 - 1.0, 0.0, 1.0);
-        }]]
-    local post_f_src = io.open("examples/55_shallow_3d_renderer/post.frag") and io.open("examples/55_shallow_3d_renderer/post.frag"):read("*all") or [[#version 450
-        layout(location = 0) in vec2 inUV;
-        layout(location = 0) out vec4 outCol;
-        layout(set = 0, binding = 1) uniform sampler2D all_textures[];
-        layout(push_constant) uniform PC { uint tex_idx; float w, h; } pc;
-        void main() { outCol = texture(all_textures[pc.tex_idx], inUV); }]]
-    local pv_mod = shader.create_module(device, shader.compile_glsl(post_v_src, vk.VK_SHADER_STAGE_VERTEX_BIT))
-    local pf_mod = shader.create_module(device, shader.compile_glsl(post_f_src, vk.VK_SHADER_STAGE_FRAGMENT_BIT))
+        void main() { outUV = vec2((gl_VertexIndex << 1) & 2, gl_VertexIndex & 2); gl_Position = vec4(outUV * 2.0 - 1.0, 0.0, 1.0); }]], vk.VK_SHADER_STAGE_VERTEX_BIT))
+    local pf_mod = shader.create_module(device, shader.compile_glsl(io.open("examples/55_shallow_3d_renderer/post.frag"):read("*all"), vk.VK_SHADER_STAGE_FRAGMENT_BIT))
     pipe_post = pipeline.create_graphics_pipeline(device, post_layout, pv_mod, pf_mod, { color_formats = { sw.format } })
 
     local pool = command.create_pool(device, graphics_family)
@@ -258,12 +289,16 @@ function M.update()
     if input.key_down(input.SCANCODE_A) then move_input[1], move_input[3] = move_input[1] + math.cos(M.cam_yaw), move_input[3] - math.sin(M.cam_yaw) end
     if input.key_down(input.SCANCODE_D) then move_input[1], move_input[3] = move_input[1] - math.cos(M.cam_yaw), move_input[3] + math.sin(M.cam_yaw) end
     local len = math.sqrt(move_input[1]^2 + move_input[3]^2)
-    if len > 0 then move_input[1], move_input[3] = move_input[1]/len, move_input[3]/len end
+    if len > 0 then 
+        move_input[1], move_input[3] = move_input[1]/len, move_input[3]/len 
+        M.player_yaw = math.atan2(move_input[1], move_input[3])
+    end
     if input.key_down(input.SCANCODE_SPACE) then move_input[2] = 1.0 end
 
     local p_ptr = ffi.cast("PlayerState*", player_state_buf.allocation.ptr)
     M.prev_player_pos = {math.floor(M.player_pos[1]), math.floor(M.player_pos[2]), math.floor(M.player_pos[3])}
     M.player_pos = {p_ptr.pos[0], p_ptr.pos[1], p_ptr.pos[2]}
+    p_ptr.yaw = M.player_yaw
 
     if input.key_pressed(19) then 
         local e_ptr = ffi.cast("Entity*", entity_buf.allocation.ptr)
@@ -283,14 +318,11 @@ function M.update()
         M.player_pos[3] - math.cos(M.cam_yaw) * math.cos(M.cam_pitch) * M.cam_dist
     }
     local target_look = {M.player_pos[1], M.player_pos[2]+2, M.player_pos[3]}
-    
-    -- Smooth Camera Lerp
     local cam_smooth = 0.1
     for i=1,3 do
         M.cam_pos_smooth[i] = M.cam_pos_smooth[i] + (target_eye[i] - M.cam_pos_smooth[i]) * cam_smooth
         M.cam_target_smooth[i] = M.cam_target_smooth[i] + (target_look[i] - M.cam_target_smooth[i]) * cam_smooth
     end
-
     local view = mc.mat4_look_at(M.cam_pos_smooth, M.cam_target_smooth, {0,1,0})
     local mvp = mc.mat4_multiply(proj, view)
 
@@ -298,9 +330,10 @@ function M.update()
     if imgui.gui.igBegin("MoonCrust Debug", nil, 0) then
         imgui.gui.igText("FPS: " .. M.fps)
         imgui.gui.igSeparator()
-        imgui.gui.igText("Smooth Camera Active")
-        imgui.gui.igText("Post-Process: FXAA")
+        imgui.gui.igText(string.format("Robot Pos: %.2f, %.2f, %.2f", M.player_pos[1], M.player_pos[2], M.player_pos[3]))
+        imgui.gui.igText(string.format("Robot Yaw: %.2f", M.player_yaw))
         imgui.gui.igSeparator()
+        imgui.gui.igText("Post-Process: FXAA")
         imgui.gui.igText("Entities: " .. M.next_entity_idx)
         imgui.gui.igEnd()
     end
@@ -323,16 +356,17 @@ function M.update()
     end):using(vol_in_res, vk.VK_ACCESS_SHADER_READ_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, vk.VK_IMAGE_LAYOUT_GENERAL)
        :using(res_player, bit.bor(vk.VK_ACCESS_SHADER_READ_BIT, vk.VK_ACCESS_SHADER_WRITE_BIT), vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT)
 
-    rg:add_pass("Player_Update", function(cb)
+    rg:add_pass("Player_Interact", function(cb)
         vk.vkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_player.handle)
         vk.vkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_player.layout, 0, 1, ffi.new("VkDescriptorSet[1]", {bindless_set}), 0, nil)
-        local pc = ffi.new("PlayerUpdatePC", { ox = M.prev_player_pos[1], oy = M.prev_player_pos[2], oz = M.prev_player_pos[3], nx = math.floor(M.player_pos[1]), ny = math.floor(M.player_pos[2]), nz = math.floor(M.player_pos[3]), img_a = 0, img_b = 1, grid_w = M.grid_w, grid_h = M.grid_h, grid_d = M.grid_d, active_map_idx = 3, dirty_map_idx = 0, plant_seed = input.key_pressed(19) and 1 or 0 })
+        local pc = ffi.new("PlayerUpdatePC", { img_a = 0, img_b = 1, grid_w = M.grid_w, grid_h = M.grid_h, grid_d = M.grid_d, active_map_idx = 3, dirty_map_idx = 0, player_buf_idx = 4, plant_seed = input.key_pressed(19) and 1 or 0 })
         vk.vkCmdPushConstants(cb, pipe_player.layout, vk.VK_SHADER_STAGE_COMPUTE_BIT, 0, ffi.sizeof("PlayerUpdatePC"), pc)
         vk.vkCmdDispatch(cb, 1, 1, 1)
     end):using(res_vol_a, bit.bor(vk.VK_ACCESS_SHADER_READ_BIT, vk.VK_ACCESS_SHADER_WRITE_BIT), vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, vk.VK_IMAGE_LAYOUT_GENERAL)
        :using(res_vol_b, bit.bor(vk.VK_ACCESS_SHADER_READ_BIT, vk.VK_ACCESS_SHADER_WRITE_BIT), vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, vk.VK_IMAGE_LAYOUT_GENERAL)
        :using(res_dirty, bit.bor(vk.VK_ACCESS_SHADER_READ_BIT, vk.VK_ACCESS_SHADER_WRITE_BIT), vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT)
        :using(res_active, bit.bor(vk.VK_ACCESS_SHADER_READ_BIT, vk.VK_ACCESS_SHADER_WRITE_BIT), vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT)
+       :using(res_player, vk.VK_ACCESS_SHADER_READ_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT)
 
     for i=1, num_ticks do
         rg:add_pass("DNA_Update_" .. i, function(cb)
@@ -393,12 +427,21 @@ function M.update()
         vk.vkCmdBeginRendering(cb, ffi.new("VkRenderingInfo", { sType=vk.VK_STRUCTURE_TYPE_RENDERING_INFO, renderArea={extent=sw.extent}, layerCount=1, colorAttachmentCount=1, pColorAttachments=color_attach, pDepthAttachment=depth_attach }))
         vk.vkCmdSetViewport(cb, 0, 1, ffi.new("VkViewport", { width=sw.extent.width, height=sw.extent.height, maxDepth=1 }))
         vk.vkCmdSetScissor(cb, 0, 1, ffi.new("VkRect2D", { extent=sw.extent }))
+        
         vk.vkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe_render)
         vk.vkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, render_layout, 0, 1, ffi.new("VkDescriptorSet[1]", {bindless_set}), 0, nil)
         local pc = ffi.new("RenderPC", { mvp = mvp.m, v_buf = 1, grid_w = M.grid_w, grid_h = M.grid_h, grid_d = M.grid_d, cam_pos = {M.cam_pos_smooth[1], M.cam_pos_smooth[2], M.cam_pos_smooth[3]} })
         vk.vkCmdPushConstants(cb, render_layout, vk.VK_SHADER_STAGE_VERTEX_BIT, 0, ffi.sizeof("RenderPC"), pc)
         vk.vkCmdBindIndexBuffer(cb, index_buf.handle, 0, vk.VK_INDEX_TYPE_UINT16)
         vk.vkCmdDrawIndexedIndirect(cb, indirect_buf.handle, 0, cx*cy*cz, 20)
+        
+        vk.vkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe_robot)
+        local r_pc = ffi.new("RobotRenderPC", { mvp = mvp.m, pos = {M.player_pos[1], M.player_pos[2], M.player_pos[3]}, yaw = M.player_yaw })
+        vk.vkCmdPushConstants(cb, robot_layout, vk.VK_SHADER_STAGE_VERTEX_BIT, 0, ffi.sizeof("RobotRenderPC"), r_pc)
+        vk.vkCmdBindVertexBuffers(cb, 0, 1, ffi.new("VkBuffer[1]", {robot_v_buf.handle}), ffi.new("VkDeviceSize[1]", {0}))
+        vk.vkCmdBindIndexBuffer(cb, robot_i_buf.handle, 0, vk.VK_INDEX_TYPE_UINT16)
+        vk.vkCmdDrawIndexed(cb, M.robot_index_count, 1, 0, 0, 0)
+
         vk.vkCmdEndRendering(cb)
     end):using(res_scene, vk.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, vk.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL)
        :using(res_v_buf, vk.VK_ACCESS_SHADER_READ_BIT, vk.VK_PIPELINE_STAGE_VERTEX_SHADER_BIT)

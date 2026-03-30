@@ -8,12 +8,14 @@ layout(set = 0, binding = 0) buffer GlobalBuffers { uint data[]; } world[];
 
 struct PlayerState {
     vec3 pos;
-    float padding0;
+    float yaw;
     vec3 vel;
+    float p1;
     uint grounded;
     uint debug_dist;
     uint debug_found;
-    uint padding[6];
+    uint p2;
+    uint padding[4];
 };
 
 layout(set = 0, binding = 0) buffer PlayerBuffer { PlayerState s; } player_storage[];
@@ -30,7 +32,7 @@ layout(push_constant) uniform PushConstants {
 bool is_solid(ivec3 p) {
     if (any(lessThan(p, ivec3(0))) || any(greaterThanEqual(p, ivec3(pc.grid_w, pc.grid_h, pc.grid_d)))) return false;
     uint val = imageLoad(all_storage_images[nonuniformEXT(pc.img_idx)], p).r;
-    return val > 0 && val != 10;
+    return (val & 0xFF) > 0;
 }
 
 bool check_aabb(vec3 pos, vec3 size) {
