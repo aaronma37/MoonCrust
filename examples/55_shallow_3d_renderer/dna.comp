@@ -4,7 +4,6 @@
 layout(local_size_x = 32, local_size_y = 1, local_size_z = 1) in;
 
 layout(set = 0, binding = 2, r32ui) uniform uimage3D all_storage_images[];
-layout(set = 0, binding = 3, r16f) uniform image3D all_signal_images[];
 layout(set = 0, binding = 0) buffer GlobalBuffers { uint data[]; } world[];
 
 struct Entity {
@@ -27,19 +26,15 @@ layout(push_constant) uniform PushConstants {
     uint active_map_idx;
     uint dirty_map_idx;
     float dt;
+    uint p0, p1, p2; // Padding to match Lua DNAPC (48 bytes)
 } pc;
 
 void mark_chunk(ivec3 p) {
     if (any(lessThan(p, ivec3(0))) || any(greaterThanEqual(p, ivec3(pc.grid_w, pc.grid_h, pc.grid_d)))) return;
     ivec3 cp = p / 16;
-    uint chunk_res_x = pc.grid_w / 16;
-    uint chunks_per_slice = (pc.grid_w / 16) * (pc.grid_h / 16);
-    uint chunk_idx = cp.x + (cp.y * chunk_res_x) + (cp.z * chunks_per_slice);
+    uint chunk_idx = cp.x + (cp.y * (pc.grid_w/16)) + (cp.z * (pc.grid_w/16) * (pc.grid_h/16));
     atomicOr(world[nonuniformEXT(pc.active_map_idx)].data[chunk_idx], 1);
-    atomicOr(world[nonuniformEXT(pc.dirty_map_idx)].data[chunk_idx], 1);
 }
-
-float hash(float n) { return fract(sin(n) * 43758.5453123); }
 
 void main() {
     uint idx = gl_GlobalInvocationID.x;
@@ -66,27 +61,10 @@ void main() {
 
             if (found_top) {
                 ivec3 tip_pos = ivec3(base_pos.x, tip_y, base_pos.z);
-                imageStore(all_signal_images[nonuniformEXT(pc.signal_img)], tip_pos, vec4(1.0, 0, 0, 0));
+                // Baseline: Write a distinct value to the signal buffer
+                imageStore(all_storage_images[nonuniformEXT(pc.signal_img)], tip_pos, uvec4(255));
                 mark_chunk(tip_pos);
-                
-                // Convert seed to wood if we just grew above it
-                if (tip_y > base_pos.y) {
-                    imageStore(all_storage_images[nonuniformEXT(pc.img_idx)], base_pos, uvec4(20));
-                }
-
-                // Slow energy drain
                 entities[e_idx].e[idx].energy -= 1; 
-                
-                // Leaf crown
-                if (tip_y - base_pos.y > 4) {
-                    for(int ox=-2; ox<=2; ox++) {
-                        for(int oz=-2; oz<=2; oz++) {
-                            if (abs(ox) + abs(oz) < 3) {
-                                imageStore(all_signal_images[nonuniformEXT(pc.signal_img)], tip_pos + ivec3(ox, -1, oz), vec4(0.4, 0, 0, 0));
-                            }
-                        }
-                    }
-                }
             }
         }
     }

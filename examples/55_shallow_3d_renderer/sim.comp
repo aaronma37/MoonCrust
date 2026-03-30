@@ -4,7 +4,6 @@
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
 layout(set = 0, binding = 2, r32ui) uniform uimage3D all_storage_images[];
-layout(set = 0, binding = 3, r16f) uniform image3D all_signal_images[];
 layout(set = 0, binding = 0) buffer GlobalBuffers { uint data[]; } world[];
 
 layout(push_constant) uniform PushConstants {
@@ -19,11 +18,8 @@ layout(push_constant) uniform PushConstants {
 void mark_chunk(ivec3 p) {
     if (any(lessThan(p, ivec3(0))) || any(greaterThanEqual(p, ivec3(pc.grid_w, pc.grid_h, pc.grid_d)))) return;
     ivec3 cp = p / 16;
-    uint chunk_res_x = pc.grid_w / 16;
-    uint chunks_per_slice = (pc.grid_w / 16) * (pc.grid_h / 16);
-    uint chunk_idx = cp.x + (cp.y * chunk_res_x) + (cp.z * chunks_per_slice);
+    uint chunk_idx = cp.x + (cp.y * (pc.grid_w/16)) + (cp.z * (pc.grid_w/16) * (pc.grid_h/16));
     atomicOr(world[nonuniformEXT(pc.active_map_idx)].data[chunk_idx], 1);
-    atomicOr(world[nonuniformEXT(pc.dirty_map_idx)].data[chunk_idx], 1);
 }
 
 void main() {
@@ -31,42 +27,29 @@ void main() {
     if (any(greaterThanEqual(pos, ivec3(pc.grid_w, pc.grid_h, pc.grid_d)))) return;
 
     ivec3 cp = pos / 16;
-    uint chunk_res_x = pc.grid_w / 16;
-    uint chunks_per_slice = (pc.grid_w / 16) * (pc.grid_h / 16);
-    uint chunk_idx = cp.x + (cp.y * chunk_res_x) + (cp.z * chunks_per_slice);
-
+    uint chunk_idx = cp.x + (cp.y * (pc.grid_w/16)) + (cp.z * (pc.grid_w/16) * (pc.grid_h/16));
     if (world[nonuniformEXT(pc.active_map_idx)].data[chunk_idx] == 0) return;
 
     uint current = imageLoad(all_storage_images[nonuniformEXT(pc.in_img)], pos).r;
-    float hormone = imageLoad(all_signal_images[nonuniformEXT(pc.signal_img)], pos).r;
+    uint sig = imageLoad(all_storage_images[nonuniformEXT(pc.signal_img)], pos).r;
     
-    if (hormone > 0.0) {
-        imageStore(all_signal_images[nonuniformEXT(pc.signal_img)], pos, vec4(hormone * 0.9, 0, 0, 0));
+    // Stage 1 Baseline: Basic Decay
+    if (sig > 0) {
+        sig = uint(float(sig) * 0.95);
+        imageStore(all_storage_images[nonuniformEXT(pc.signal_img)], pos, uvec4(sig));
         mark_chunk(pos);
     }
 
-    if (current == 10) {
-        imageStore(all_storage_images[nonuniformEXT(pc.out_img)], pos, uvec4(10, 0, 0, 0));
+    if ((current & 0xFF) == 10) {
+        imageStore(all_storage_images[nonuniformEXT(pc.out_img)], pos, uvec4(10));
         return;
     }
 
     uint mat = current & 0xFF;
     uint next = current;
-    bool grew = false;
-
-    // SIGNALED GROWTH
-    if (mat == 0) {
-        if (hormone > 0.8) {
-            next = 20; 
-            grew = true;
-        } else if (hormone > 0.1) {
-            next = 21;
-            grew = true;
-        }
-    }
     
-    // Standard CA neighbor logic (Only if didn't just grow wood/leaf)
-    if (!grew && (mat == 0 || mat == 1)) {
+    // Standard CA neighbor logic
+    if (mat == 0 || mat == 1) { 
         int neighbors = 0;
         for (int z = -1; z <= 1; z++) {
             for (int y = -1; y <= 1; y++) {
@@ -74,30 +57,16 @@ void main() {
                     if (x == 0 && y == 0 && z == 0) continue;
                     ivec3 n_pos = pos + ivec3(x, y, z);
                     if (all(greaterThanEqual(n_pos, ivec3(0))) && all(lessThan(n_pos, ivec3(pc.grid_w, pc.grid_h, pc.grid_d)))) {
-                        uint n_val = imageLoad(all_storage_images[nonuniformEXT(pc.in_img)], n_pos).r;
-                        uint n_mat = n_val & 0xFF;
+                        uint n_mat = imageLoad(all_storage_images[nonuniformEXT(pc.in_img)], n_pos).r & 0xFF;
                         if (n_mat > 0 && n_mat != 10 && n_mat < 20) neighbors++;
                     }
                 }
             }
         }
-
-        if (mat == 1) {
-            if (neighbors < 4 || neighbors > 8) next = 0;
-        } else if (mat == 0) {
-            if (neighbors >= 6 && neighbors <= 10) next = 1;
-        }
+        if (mat == 1) { if (neighbors < 4 || neighbors > 8) next = 0; }
+        else if (mat == 0) { if (neighbors >= 6 && neighbors <= 10) next = 1; }
     }
 
-    imageStore(all_storage_images[nonuniformEXT(pc.out_img)], pos, uvec4(next, 0, 0, 0));
-
-    if (current != next) {
-        mark_chunk(pos);
-        if (pos.x % 16 == 0) mark_chunk(pos + ivec3(-1, 0, 0));
-        if (pos.x % 16 == 15) mark_chunk(pos + ivec3(1, 0, 0));
-        if (pos.y % 16 == 0) mark_chunk(pos + ivec3(0, -1, 0));
-        if (pos.y % 16 == 15) mark_chunk(pos + ivec3(0, 1, 0));
-        if (pos.z % 16 == 0) mark_chunk(pos + ivec3(0, 0, -1));
-        if (pos.z % 16 == 15) mark_chunk(pos + ivec3(0, 0, 1));
-    }
+    imageStore(all_storage_images[nonuniformEXT(pc.out_img)], pos, uvec4(next));
+    if (current != next) mark_chunk(pos);
 }

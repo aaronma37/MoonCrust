@@ -17,9 +17,8 @@ layout(push_constant) uniform PushConstants {
 } pc;
 
 shared uint local_vertex_count;
-const uint MAX_VERTS_PER_CHUNK = 16384;
+const uint MAX_VERTS_PER_CHUNK = 16384; // Increased budget
 
-// NEW PACKING: LocalX(4), LocalY(4), LocalZ(4), Normal(3), MatID(8), AO(2) = 25 bits
 uint pack_vertex(ivec3 lp, uint norm, uint mat, uint ao) {
     return (uint(lp.x) & 15) | ((uint(lp.y) & 15) << 4) | ((uint(lp.z) & 15) << 8) | 
            ((norm & 7) << 12) | ((mat & 255) << 15) | ((ao & 3) << 23);
@@ -64,7 +63,6 @@ void main() {
                 if (v_off + 4 <= MAX_VERTS_PER_CHUNK) {
                     uint g_start = chunk_idx * MAX_VERTS_PER_CHUNK + v_off;
                     
-                    // Determine AO for each corner of the face
                     uint ao[4];
                     if (d == 0) { // +X
                         ao[0] = vertex_ao(n_pos, ivec3(0,0,-1), ivec3(0,-1,0));

@@ -4,10 +4,14 @@
 layout(set = 0, binding = 0) buffer GlobalBuffers { uint data[]; } world[];
 
 layout(push_constant) uniform PushConstants {
-    mat4 mvp;
-    uint v_buf;
-    uint grid_w, grid_h, grid_d;
-    vec3 cam_pos;
+    mat4 mvp;           // 0-63
+    uint v_buf;         // 64-67
+    uint signal_img;    // 68-71
+    uint grid_w;        // 72-75
+    uint grid_h;        // 76-79
+    uint grid_d;        // 80-83
+    uint p0, p1, p2;    // 84-95 (Padding)
+    vec3 cam_pos;       // 96-107 (Alignment at end)
 } pc;
 
 layout(location = 0) out vec3 out_norm;
@@ -52,7 +56,7 @@ void main() {
     uint mat = (packed >> 15) & 255;
     uint ao = (packed >> 23) & 3;
 
-    const uint MAX_VERTS_PER_CHUNK = 16384;
+    const uint MAX_VERTS_PER_CHUNK = 16384; // Corrected stride
     uint chunk_idx = gl_VertexIndex / MAX_VERTS_PER_CHUNK;
     uint chunks_per_row = pc.grid_w / 16;
     uint chunks_per_slice = (pc.grid_w / 16) * (pc.grid_h / 16);
@@ -90,6 +94,6 @@ void main() {
         vec3(0.7)              // 15
     };
 
-    float ao_mult = 0.25 + (float(ao) / 3.0) * 0.75;
+    float ao_mult = 0.4 + (float(ao) / 3.0) * 0.6;
     out_col = palette[mat_to_col_idx(mat)] * ao_mult;
 }
