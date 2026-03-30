@@ -51,6 +51,7 @@ void main() {
             bool found_top = false;
             for (int y = 0; y < 64; y++) {
                 ivec3 p = base_pos + ivec3(0, y, 0);
+                if (any(lessThan(p, ivec3(0))) || any(greaterThanEqual(p, ivec3(pc.grid_w, pc.grid_h, pc.grid_d)))) continue;
                 uint val = imageLoad(all_storage_images[nonuniformEXT(pc.img_idx)], p).r;
                 if ((val & 0xFF) == 0) {
                     tip_y = p.y;
@@ -61,9 +62,11 @@ void main() {
 
             if (found_top) {
                 ivec3 tip_pos = ivec3(base_pos.x, tip_y, base_pos.z);
-                // Baseline: Write a distinct value to the signal buffer
-                imageStore(all_storage_images[nonuniformEXT(pc.signal_img)], tip_pos, uvec4(255));
-                mark_chunk(tip_pos);
+                if (all(greaterThanEqual(tip_pos, ivec3(0))) && all(lessThan(tip_pos, ivec3(pc.grid_w, pc.grid_h, pc.grid_d)))) {
+                    // Baseline: Write a distinct value to the signal buffer
+                    imageStore(all_storage_images[nonuniformEXT(pc.signal_img)], tip_pos, uvec4(255));
+                    mark_chunk(tip_pos);
+                }
                 entities[e_idx].e[idx].energy -= 1; 
             }
         }

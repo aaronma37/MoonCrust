@@ -185,13 +185,20 @@ function M.image_3d(width, height, depth, format, usage_type)
     local handle = image.create_3d(d, width, height, depth, format, usage)
     local mem_req = ffi.new("VkMemoryRequirements[1]")
     vk.vkGetImageMemoryRequirements(d, handle, mem_req)
-    
-    local alloc = M.heaps.device:malloc(tonumber(mem_req[0].size))
-    if not alloc then error("mc.gpu: Image 3D malloc failed") end
-    vk.vkBindImageMemory(d, handle, alloc.memory, alloc.offset)
-    
+
+    local alloc_info = ffi.new("VkMemoryAllocateInfo", {
+        sType = vk.VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        allocationSize = mem_req[0].size,
+        memoryTypeIndex = M.heaps.device.memory_type_index
+    })
+    local pMemory = ffi.new("VkDeviceMemory[1]")
+    vk.vkAllocateMemory(d, alloc_info, nil, pMemory)
+    vk.vkBindImageMemory(d, handle, pMemory[0], 0)
+
+    local alloc = { memory = pMemory[0], offset = 0, is_dedicated = true }
+
     local view = image.create_view(d, handle, format, vk.VK_IMAGE_ASPECT_COLOR_BIT, true)
-    
+
     local obj = {
         handle = handle,
         view = view,
@@ -203,9 +210,17 @@ function M.image_3d(width, height, depth, format, usage_type)
         destroy = function(self)
             resource.free(self.view, resource.TYPE_VIEW)
             resource.free(self.handle, resource.TYPE_IMAGE)
-            M.heaps.device:free(self.allocation)
+            if self.allocation.is_dedicated then
+                vk.vkFreeMemory(vulkan.get_device(), self.allocation.memory, nil)
+            else
+                M.heaps.device:free(self.allocation)
+            end
         end,
         upload = function(self, data)
+            local pd = vulkan.get_physical_device()
+            local q = vulkan.get_queue()
+            local family = vulkan.get_graphics_family()
+            
             local size = width * height * depth -- Assume 1 byte per pixel for R8_UINT
             local st = staging.new(pd, d, M.heaps.host, size + 1024)
             ffi.copy(st.alloc.ptr, data, size)

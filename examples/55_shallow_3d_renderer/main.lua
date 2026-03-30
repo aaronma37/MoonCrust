@@ -67,11 +67,11 @@ ffi.cdef[[
     } PlayerUpdatePC;
 
     typedef struct SimTickPC { 
-        uint32_t in_img, out_img, signal_img, grid_w, grid_h, grid_d, active_map_idx, dirty_map_idx; 
+        uint32_t in_img, out_img, light_in_img, light_out_img, grid_w, grid_h, grid_d, active_map_idx, dirty_map_idx; 
     } SimTickPC;
 
     typedef struct DNAPC { 
-        uint32_t img_idx, signal_img, entity_buf_idx, grid_w, grid_h, grid_d, active_map_idx, dirty_map_idx; 
+        uint32_t img_idx, light_img, entity_buf_idx, grid_w, grid_h, grid_d, active_map_idx, dirty_map_idx; 
         float dt; uint32_t p0, p1, p2; 
     } DNAPC;
 
@@ -82,7 +82,7 @@ ffi.cdef[[
 
     typedef struct RenderPC { 
         float mvp[16]; 
-        uint32_t v_buf, signal_img, grid_w, grid_h, grid_d, p0, p1, p2;
+        uint32_t v_buf, light_img, grid_w, grid_h, grid_d, p0, p1, p2;
         float cam_pos[3], p3; // vec3 at end for easiest alignment
     } RenderPC;
 
@@ -189,10 +189,11 @@ function M.init()
     local f_mod = shader.create_module(device, shader.compile_glsl(io.open("examples/55_shallow_3d_renderer/render.frag"):read("*all"), vk.VK_SHADER_STAGE_FRAGMENT_BIT))
     pipe_render = pipeline.create_graphics_pipeline(device, render_layout, v_mod, f_mod, { depth_test = true, depth_write = true, cull_mode = vk.VK_CULL_MODE_BACK_BIT, depth_format = vk.VK_FORMAT_D32_SFLOAT, color_formats = { sw.format } })
 
-    local robot_pc_ranges = ffi.new("VkPushConstantRange[1]", {{ stageFlags = vk.VK_SHADER_STAGE_VERTEX_BIT, offset = 0, size = ffi.sizeof("RobotRenderPC") }})
+    local robot_pc_ranges = ffi.new("VkPushConstantRange[1]", {{ stageFlags = bit.bor(vk.VK_SHADER_STAGE_VERTEX_BIT, vk.VK_SHADER_STAGE_FRAGMENT_BIT), offset = 0, size = ffi.sizeof("RobotRenderPC") }})
     robot_layout = pipeline.create_layout(device, {bl_layout}, robot_pc_ranges)
     local rv_mod = shader.create_module(device, shader.compile_glsl(io.open("examples/55_shallow_3d_renderer/robot.vert"):read("*all"), vk.VK_SHADER_STAGE_VERTEX_BIT))
-    pipe_robot = pipeline.create_graphics_pipeline(device, robot_layout, rv_mod, f_mod, { depth_test = true, depth_write = true, depth_format = vk.VK_FORMAT_D32_SFLOAT, color_formats = { sw.format }, 
+    local rf_mod = shader.create_module(device, shader.compile_glsl(io.open("examples/55_shallow_3d_renderer/robot.frag"):read("*all"), vk.VK_SHADER_STAGE_FRAGMENT_BIT))
+    pipe_robot = pipeline.create_graphics_pipeline(device, robot_layout, rv_mod, rf_mod, { depth_test = true, depth_write = true, depth_format = vk.VK_FORMAT_D32_SFLOAT, color_formats = { sw.format }, 
         vertex_binding = ffi.new("VkVertexInputBindingDescription[1]", {{ binding = 0, stride = 4, inputRate = vk.VK_VERTEX_INPUT_RATE_VERTEX }}),
         vertex_attributes = ffi.new("VkVertexInputAttributeDescription[1]", {{ location = 0, binding = 0, format = vk.VK_FORMAT_R32_UINT, offset = 0 }}),
         vertex_attribute_count = 1
@@ -411,6 +412,7 @@ function M.update()
         vk.vkCmdDrawIndexedIndirect(cb, indirect_buf.handle, 0, cx*cy*cz, 20)
         
         vk.vkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe_robot)
+        vk.vkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, robot_layout, 0, 1, ffi.new("VkDescriptorSet[1]", {bindless_set}), 0, nil)
         local r_pc = ffi.new("RobotRenderPC", { mvp = mvp.m, pos = {M.player_pos[1], M.player_pos[2], M.player_pos[3]}, yaw = M.player_yaw })
         vk.vkCmdPushConstants(cb, robot_layout, vk.VK_SHADER_STAGE_VERTEX_BIT, 0, ffi.sizeof("RobotRenderPC"), r_pc)
         vk.vkCmdBindVertexBuffers(cb, 0, 1, ffi.new("VkBuffer[1]", {robot_v_buf.handle}), ffi.new("VkDeviceSize[1]", {0}))

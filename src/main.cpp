@@ -210,8 +210,10 @@ int main(int argc, char* argv[]) {
     VkPhysicalDeviceFeatures2 features2 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2 };
     features2.pNext = &meshFeatures;
     features2.features.vertexPipelineStoresAndAtomics = VK_TRUE;
+    features2.features.fragmentStoresAndAtomics = VK_TRUE;
     features2.features.largePoints = VK_TRUE;
     features2.features.wideLines = VK_TRUE;
+    features2.features.multiDrawIndirect = VK_TRUE;
     features2.features.shaderStorageImageArrayDynamicIndexing = VK_TRUE;
     features2.features.shaderStorageBufferArrayDynamicIndexing = VK_TRUE;
     features2.features.shaderSampledImageArrayDynamicIndexing = VK_TRUE;

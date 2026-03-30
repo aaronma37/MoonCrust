@@ -49,9 +49,11 @@ void main() {
 
     if (pc.plant_seed > 0) {
         ivec3 ip = ivec3(floor(p));
-        // Force plant seed into both buffers
-        imageStore(all_storage_images[nonuniformEXT(pc.img_a)], ip, uvec4(30));
-        imageStore(all_storage_images[nonuniformEXT(pc.img_b)], ip, uvec4(30));
-        mark_chunk(ip);
+        if (all(greaterThanEqual(ip, ivec3(0))) && all(lessThan(ip, ivec3(pc.grid_w, pc.grid_h, pc.grid_d)))) {
+            // Force plant seed into both buffers
+            imageStore(all_storage_images[nonuniformEXT(pc.img_a)], ip, uvec4(30));
+            imageStore(all_storage_images[nonuniformEXT(pc.img_b)], ip, uvec4(30));
+            mark_chunk(ip);
+        }
     }
 }
