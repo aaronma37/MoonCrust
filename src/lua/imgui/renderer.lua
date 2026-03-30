@@ -82,7 +82,7 @@ void main() {
 }
 ]]
 
-function M.init()
+function M.init(color_format)
     local d = vulkan.get_device()
     local shader = require("vulkan.shader")
     local v_spirv = shader.compile_glsl(vert_shader, vk.VK_SHADER_STAGE_VERTEX_BIT)
@@ -101,18 +101,23 @@ function M.init()
     local pc_range = ffi.new("VkPushConstantRange[1]", {{ stageFlags = bit.bor(vk.VK_SHADER_STAGE_VERTEX_BIT, vk.VK_SHADER_STAGE_FRAGMENT_BIT), offset = 0, size = 40 }})
     local layout = pipeline_mod.create_layout(d, {gpu.get_bindless_layout()}, pc_range)
     
+    local fmt = color_format or vk.VK_FORMAT_B8G8R8A8_UNORM
+    local depth_fmt = vk.VK_FORMAT_D32_SFLOAT -- Match main.lua
+    
     M.pipeline = pipeline_mod.create_graphics_pipeline(d, layout, v_mod, f_mod, {
         vertex_binding = binding, vertex_attributes = attributes, vertex_attribute_count = 3,
         topology = vk.VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, alpha_blend = true,
         depth_test = false, depth_write = false, cull_mode = vk.VK_CULL_MODE_NONE,
-        color_formats = { vk.VK_FORMAT_B8G8R8A8_UNORM }
+        color_formats = { fmt },
+        depth_format = depth_fmt
     })
 
     M.additive_pipeline = pipeline_mod.create_graphics_pipeline(d, layout, v_mod, f_mod, {
         vertex_binding = binding, vertex_attributes = attributes, vertex_attribute_count = 3,
         topology = vk.VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, additive = true,
         depth_test = false, depth_write = false, cull_mode = vk.VK_CULL_MODE_NONE,
-        color_formats = { vk.VK_FORMAT_B8G8R8A8_UNORM }
+        color_formats = { fmt },
+        depth_format = depth_fmt
     })
 
     M.layout = layout

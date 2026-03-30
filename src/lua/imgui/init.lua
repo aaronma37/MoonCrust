@@ -168,8 +168,10 @@ function M.add_font(path, size, merge, glyph_ranges)
     return font
 end
 
-function M.init()
+function M.init(color_format)
     if S.ctx then return end
+    gpu.get_bindless_set() -- Force GPU initialization (heaps, bindless system)
+    
     if not S.ffi_lib then S.ffi_lib = ffi_loader() end
     S.ctx = S.ffi_lib.igCreateContext(nil)
     S.plot_ctx = S.ffi_lib.ImPlot_CreateContext()
@@ -185,7 +187,7 @@ function M.init()
     style.AntiAliasedLinesUseTex = true
     
     M.build_and_upload_fonts()
-    renderer.init()
+    renderer.init(color_format)
 end
 
 function M.new_frame()
@@ -242,12 +244,12 @@ function M.new_frame()
     S.ffi_lib.igNewFrame()
 end
 
-function M.render(cb)
+function M.render(cb, frame_idx)
     if not S.ffi_lib then S.ffi_lib = ffi_loader() end
     S.ffi_lib.igRender()
     local draw_data = S.ffi_lib.igGetDrawData()
     renderer.on_callback = M.on_callback
-    renderer.render(cb, draw_data)
+    renderer.render(cb, draw_data, frame_idx)
 end
 
 M.gui = setmetatable({}, { 

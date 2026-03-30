@@ -7,6 +7,7 @@ local swapchain = require("vulkan.swapchain")
 local command = require("vulkan.command")
 local graph = require("vulkan.graph")
 local input = require("mc.input")
+local imgui = require("imgui")
 
 local M = { 
     current_time = 0,
@@ -26,7 +27,10 @@ local M = {
     hover_target = 4.0,
     hover_strength = 100.0,
     max_entities = 1024,
-    next_entity_idx = 0
+    next_entity_idx = 0,
+    fps = 0,
+    frame_times = {},
+    active_entities = 0
 }
 
 local device, queue, graphics_family, sw, rg
@@ -88,6 +92,7 @@ function M.init()
     
     sw = swapchain.new(instance, physical_device, device, _G._SDL_WINDOW)
     rg = graph.new(device)
+    imgui.init(sw.format)
 
     vol_a = mc.gpu.image_3d(M.grid_w, M.grid_h, M.grid_d, vk.VK_FORMAT_R32_UINT, "storage sampled")
     vol_b = mc.gpu.image_3d(M.grid_w, M.grid_h, M.grid_d, vk.VK_FORMAT_R32_UINT, "storage sampled")
@@ -188,6 +193,7 @@ function M.init()
 end
 
 local frame_count = 0
+local last_fps_time = 0
 function M.update()
     vk.vkWaitForFences(device, 1, ffi.new("VkFence[1]", {frame_fence}), vk.VK_TRUE, 0xFFFFFFFFFFFFFFFFULL)
     vk.vkResetFences(device, 1, ffi.new("VkFence[1]", {frame_fence}))
@@ -201,6 +207,13 @@ function M.update()
     local tick_duration = 1.0 / M.tick_rate
     local num_ticks = math.floor(M.accumulated_time / tick_duration)
     M.accumulated_time = M.accumulated_time - (num_ticks * tick_duration)
+
+    -- FPS Counter
+    if M.current_time - last_fps_time > 1.0 then
+        M.fps = frame_count
+        frame_count = 0
+        last_fps_time = M.current_time
+    end
 
     local mx, my = input.mouse_delta()
     if input.mouse_down(3) then
@@ -227,10 +240,9 @@ function M.update()
         local idx = M.next_entity_idx % M.max_entities
         e_ptr[idx].pos = {math.floor(M.player_pos[1]), math.floor(M.player_pos[2]), math.floor(M.player_pos[3])}
         e_ptr[idx].type = 1 
-        e_ptr[idx].energy = 500
+        e_ptr[idx].energy = 1000
         e_ptr[idx].age = 0
         M.next_entity_idx = M.next_entity_idx + 1
-        print("Planted seed at slot " .. idx)
     end
 
     local aspect = sw.extent.width / sw.extent.height
@@ -242,6 +254,18 @@ function M.update()
     }
     local view = mc.mat4_look_at(eye, {M.player_pos[1], M.player_pos[2]+2, M.player_pos[3]}, {0,1,0})
     local mvp = mc.mat4_multiply(proj, view)
+
+    imgui.new_frame()
+    if imgui.gui.igBegin("MoonCrust Debug", nil, 0) then
+        imgui.gui.igText("FPS: " .. M.fps)
+        imgui.gui.igSeparator()
+        imgui.gui.igText(string.format("Pos: %.1f, %.1f, %.1f", M.player_pos[1], M.player_pos[2], M.player_pos[3]))
+        imgui.gui.igText("Grounded: " .. (p_ptr.grounded > 0 and "Yes" or "No"))
+        imgui.gui.igSeparator()
+        imgui.gui.igText("Entities: " .. M.next_entity_idx)
+        imgui.gui.igText("Tick Rate: " .. M.tick_rate .. "Hz")
+        imgui.gui.igEnd()
+    end
 
     local cb = cbs[img_idx+1]
     vk.vkResetCommandBuffer(cb, 0); vk.vkBeginCommandBuffer(cb, ffi.new("VkCommandBufferBeginInfo", { sType = vk.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, flags = vk.VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT }))
@@ -338,12 +362,16 @@ function M.update()
         vk.vkCmdPushConstants(cb, render_layout, vk.VK_SHADER_STAGE_VERTEX_BIT, 0, ffi.sizeof("RenderPC"), pc)
         vk.vkCmdBindIndexBuffer(cb, index_buf.handle, 0, vk.VK_INDEX_TYPE_UINT16)
         vk.vkCmdDrawIndexedIndirect(cb, indirect_buf.handle, 0, cx*cy*cz, 20)
+        
+        imgui.render(cb, frame_count)
+        
         vk.vkCmdEndRendering(cb)
         bar[0].oldLayout, bar[0].newLayout, bar[0].srcAccessMask = vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, vk.VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, vk.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT
         vk.vkCmdPipelineBarrier(cb, vk.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, vk.VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nil, 0, nil, 1, bar)
     end):using(res_v_buf, vk.VK_ACCESS_SHADER_READ_BIT, vk.VK_PIPELINE_STAGE_VERTEX_SHADER_BIT)
        :using(res_indirect, vk.VK_ACCESS_INDIRECT_COMMAND_READ_BIT, vk.VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT)
        :using(res_depth, vk.VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT, vk.VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT, vk.VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
+    
     rg:execute(cb)
     vk.vkEndCommandBuffer(cb)
     local render_finished_sem = sw.semaphores[img_idx]
