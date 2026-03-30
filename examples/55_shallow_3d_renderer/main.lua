@@ -14,8 +14,8 @@ local M = {
     grid_h = 128,
     grid_d = 512,
     chunk_size = 16,
-    player_pos = {256, 10, 256},
-    prev_player_pos = {256, 10, 256},
+    player_pos = {256, 40, 256},
+    prev_player_pos = {256, 40, 256},
     cam_yaw = 0,
     cam_pitch = -0.5,
     cam_dist = 30,
@@ -23,7 +23,7 @@ local M = {
     accumulated_time = 0,
     hover_enabled = true,
     hover_target = 4.0,
-    hover_strength = 50.0
+    hover_strength = 100.0
 }
 
 local device, queue, graphics_family, sw, rg
@@ -33,7 +33,7 @@ local bindless_set, image_available_sem, frame_fence, cbs
 local res_vol_a, res_vol_b, res_dirty, res_active, res_v_buf, res_indirect, res_depth, res_player
 
 ffi.cdef[[
-    typedef struct PlayerState { float pos[3], p0; float vel[3]; uint32_t grounded; uint32_t p[8]; } PlayerState;
+    typedef struct PlayerState { float pos[3], p0; float vel[3]; uint32_t grounded; uint32_t debug_dist, debug_found; uint32_t p[6]; } PlayerState;
     typedef struct PhysicsPC { float input_dir[3], dt; uint32_t img_idx, grid_w, grid_h, grid_d; float hover_target, hover_strength; uint32_t player_buf_idx; } PhysicsPC;
     typedef struct PlayerUpdatePC { int32_t old_p[3], new_p[3]; uint32_t img_idx, dirty_map_idx, grid_w, grid_h, grid_d, active_map_idx; } PlayerUpdatePC;
     typedef struct SimTickPC { uint32_t in_img, out_img, grid_w, grid_h, grid_d, active_map_idx, dirty_map_idx; } SimTickPC;
@@ -63,7 +63,7 @@ function M.init()
     indirect_buf = mc.gpu.buffer(num_chunks * 20, "indirect", nil, true)
     depth_img = mc.gpu.image(sw.extent.width, sw.extent.height, vk.VK_FORMAT_D32_SFLOAT, "depth")
     
-    local init_player = ffi.new("PlayerState", { pos = {256, 10, 256}, vel = {0, 0, 0} })
+    local init_player = ffi.new("PlayerState", { pos = {256, 40, 256}, vel = {0, 0, 0} })
     player_state_buf = mc.gpu.buffer(ffi.sizeof("PlayerState"), "storage", init_player, true)
 
     local index_data = ffi.new("uint16_t[?]", 24576 * 6)
@@ -173,13 +173,15 @@ function M.update()
     if len > 0 then move_input[1], move_input[3] = move_input[1]/len, move_input[3]/len end
     if input.key_down(input.SCANCODE_SPACE) then move_input[2] = 1.0 end
 
-    -- Read back state from GPU (Delayed by 1 frame due to timeline)
+    -- Read back state from GPU
     local p_ptr = ffi.cast("PlayerState*", player_state_buf.allocation.ptr)
     M.prev_player_pos = {math.floor(M.player_pos[1]), math.floor(M.player_pos[2]), math.floor(M.player_pos[3])}
     M.player_pos = {p_ptr.pos[0], p_ptr.pos[1], p_ptr.pos[2]}
 
     if frame_count % 60 == 0 then
-        print(string.format("Player: %.1f, %.1f, %.1f | Grounded: %d", M.player_pos[1], M.player_pos[2], M.player_pos[3], p_ptr.grounded))
+        local d = p_ptr.debug_dist / 100.0
+        local status = p_ptr.debug_found > 0 and string.format("Hovering (%.1f)", d) or "Falling"
+        print(string.format("Pos: %.1f, %.1f, %.1f | %s | VelY: %.1f", M.player_pos[1], M.player_pos[2], M.player_pos[3], status, p_ptr.vel[1]))
     end
 
     local aspect = sw.extent.width / sw.extent.height
