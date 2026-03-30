@@ -69,6 +69,14 @@ void main() {
                 imageStore(all_signal_images[nonuniformEXT(pc.signal_img)], tip_pos, vec4(1.0, 0, 0, 0));
                 mark_chunk(tip_pos);
                 
+                // Convert seed to wood if we just grew above it
+                if (tip_y > base_pos.y) {
+                    imageStore(all_storage_images[nonuniformEXT(pc.img_idx)], base_pos, uvec4(20));
+                }
+
+                // Slow energy drain
+                entities[e_idx].e[idx].energy -= 1; 
+                
                 // Leaf crown
                 if (tip_y - base_pos.y > 4) {
                     for(int ox=-2; ox<=2; ox++) {
