@@ -10,6 +10,7 @@ local input = require("mc.input")
 
 local M = { 
     current_time = 0,
+    current_vol_idx = 0,
     grid_w = 512,
     grid_h = 128,
     grid_d = 512,
@@ -34,11 +35,11 @@ local res_vol_a, res_vol_b, res_dirty, res_active, res_v_buf, res_indirect, res_
 
 ffi.cdef[[
     typedef struct PlayerState { float pos[3], p0; float vel[3]; uint32_t grounded; uint32_t debug_dist, debug_found; uint32_t p[6]; } PlayerState;
-    typedef struct PhysicsPC { float input_dir[3], dt; uint32_t img_idx, grid_w, grid_h, grid_d; float hover_target, hover_strength; uint32_t player_buf_idx; } PhysicsPC;
-    typedef struct PlayerUpdatePC { int32_t old_p[3], new_p[3]; uint32_t img_idx, dirty_map_idx, grid_w, grid_h, grid_d, active_map_idx; } PlayerUpdatePC;
+    typedef struct PhysicsPC { float ix, iy, iz, dt; uint32_t img_idx, grid_w, grid_h, grid_d; float hover_target, hover_strength; uint32_t player_buf_idx; } PhysicsPC;
+    typedef struct PlayerUpdatePC { int32_t ox, oy, oz, nx, ny, nz; uint32_t img_a, img_b, grid_w, grid_h, grid_d, active_map_idx, dirty_map_idx; } PlayerUpdatePC;
     typedef struct SimTickPC { uint32_t in_img, out_img, grid_w, grid_h, grid_d, active_map_idx, dirty_map_idx; } SimTickPC;
-    typedef struct MesherPC { uint32_t in_img, dirty_map_idx, v_buf, indirect_buf, grid_w, grid_h, grid_d, active_map_idx; } MesherPC;
-    typedef struct RenderPC { float mvp[16]; uint32_t v_buf_off; } RenderPC;
+    typedef struct MesherPC { uint32_t in_img, dirty_map_idx, v_buf, indirect_buf, grid_w, grid_h, grid_d, active_map_idx; int32_t px, py, pz; } MesherPC;
+    typedef struct RenderPC { float mvp[16]; uint32_t v_buf; } RenderPC;
 ]]
 
 function M.init()
@@ -52,7 +53,6 @@ function M.init()
     sw = swapchain.new(instance, physical_device, device, _G._SDL_WINDOW)
     rg = graph.new(device)
 
-    -- 1. Resources
     vol_a = mc.gpu.image_3d(M.grid_w, M.grid_h, M.grid_d, vk.VK_FORMAT_R32_UINT, "storage sampled")
     vol_b = mc.gpu.image_3d(M.grid_w, M.grid_h, M.grid_d, vk.VK_FORMAT_R32_UINT, "storage sampled")
     
@@ -74,7 +74,6 @@ function M.init()
     end
     index_buf = mc.gpu.buffer(24576 * 6 * 2, "index", index_data, false)
 
-    -- Register with Graph
     res_vol_a = rg:register_resource("vol_a", graph.TYPE_IMAGE, vol_a.handle, { layout = vk.VK_IMAGE_LAYOUT_GENERAL, access = vk.VK_ACCESS_SHADER_WRITE_BIT, stage = vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT })
     res_vol_b = rg:register_resource("vol_b", graph.TYPE_IMAGE, vol_b.handle, { layout = vk.VK_IMAGE_LAYOUT_GENERAL, access = vk.VK_ACCESS_SHADER_WRITE_BIT, stage = vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT })
     res_dirty = rg:register_resource("dirty", graph.TYPE_BUFFER, dirty_map.handle, { access = vk.VK_ACCESS_TRANSFER_WRITE_BIT, stage = vk.VK_PIPELINE_STAGE_TRANSFER_BIT })
@@ -84,18 +83,15 @@ function M.init()
     res_depth = rg:register_resource("depth", graph.TYPE_IMAGE, depth_img.handle, { layout = vk.VK_IMAGE_LAYOUT_UNDEFINED, access = 0, stage = vk.VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT })
     res_player = rg:register_resource("player", graph.TYPE_BUFFER, player_state_buf.handle)
 
-    -- 2. Bindless Updates
     bindless_set = mc.gpu.get_bindless_set()
     descriptors.update_storage_image_set(device, bindless_set, 2, vk.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, vol_a.view, vk.VK_IMAGE_LAYOUT_GENERAL, 0)
     descriptors.update_storage_image_set(device, bindless_set, 2, vk.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, vol_b.view, vk.VK_IMAGE_LAYOUT_GENERAL, 1)
-    
     descriptors.update_buffer_set(device, bindless_set, 0, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, dirty_map.handle, 0, dirty_map.size, 0)
     descriptors.update_buffer_set(device, bindless_set, 0, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, v_buf.handle, 0, v_buf.size, 1)
     descriptors.update_buffer_set(device, bindless_set, 0, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, indirect_buf.handle, 0, indirect_buf.size, 2)
     descriptors.update_buffer_set(device, bindless_set, 0, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, active_map.handle, 0, active_map.size, 3)
     descriptors.update_buffer_set(device, bindless_set, 0, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, player_state_buf.handle, 0, player_state_buf.size, 4)
 
-    -- 3. Pipelines
     pipe_sim = mc.gpu.compute_pipeline("examples/55_shallow_3d_renderer/sim.comp", ffi.sizeof("SimTickPC"))
     pipe_mesh = mc.gpu.compute_pipeline("examples/55_shallow_3d_renderer/mesh.comp", ffi.sizeof("MesherPC"))
     pipe_gen = mc.gpu.compute_pipeline("examples/55_shallow_3d_renderer/gen.comp", 16)
@@ -109,7 +105,6 @@ function M.init()
     local f_mod = shader.create_module(device, shader.compile_glsl(io.open("examples/55_shallow_3d_renderer/render.frag"):read("*all"), vk.VK_SHADER_STAGE_FRAGMENT_BIT))
     pipe_render = pipeline.create_graphics_pipeline(device, render_layout, v_mod, f_mod, { depth_test = true, depth_write = true, cull_mode = vk.VK_CULL_MODE_BACK_BIT })
 
-    -- 4. Initialization Commands
     local pool = command.create_pool(device, graphics_family)
     local gcb = command.allocate_buffers(device, pool, 1)[1]
     command.begin_one_time(gcb)
@@ -124,10 +119,15 @@ function M.init()
     vk.vkCmdFillBuffer(gcb, active_map.handle, 0, active_map.size, 1)
     vk.vkCmdFillBuffer(gcb, v_buf.handle, 0, v_buf.size, 0)
     vk.vkCmdFillBuffer(gcb, indirect_buf.handle, 0, indirect_buf.size, 0)
+    
+    -- Generate world in both buffers
     vk.vkCmdBindPipeline(gcb, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_gen.handle)
     vk.vkCmdBindDescriptorSets(gcb, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_gen.layout, 0, 1, ffi.new("VkDescriptorSet[1]", {bindless_set}), 0, nil)
-    vk.vkCmdPushConstants(gcb, pipe_gen.layout, vk.VK_SHADER_STAGE_COMPUTE_BIT, 0, 16, ffi.new("uint32_t[4]", {0, M.grid_w, M.grid_h, M.grid_d}))
-    vk.vkCmdDispatch(gcb, M.grid_w/16, M.grid_h/16, M.grid_d)
+    for i=0,1 do
+        vk.vkCmdPushConstants(gcb, pipe_gen.layout, vk.VK_SHADER_STAGE_COMPUTE_BIT, 0, 16, ffi.new("uint32_t[4]", {i, M.grid_w, M.grid_h, M.grid_d}))
+        vk.vkCmdDispatch(gcb, M.grid_w/16, M.grid_h/16, M.grid_d)
+    end
+    
     vk.vkEndCommandBuffer(gcb)
     vk.vkQueueSubmit(queue, 1, ffi.new("VkSubmitInfo", { sType = vk.VK_STRUCTURE_TYPE_SUBMIT_INFO, commandBufferCount = 1, pCommandBuffers = ffi.new("VkCommandBuffer[1]", {gcb}) }), nil)
     vk.vkQueueWaitIdle(queue)
@@ -155,33 +155,32 @@ function M.update()
     local num_ticks = math.floor(M.accumulated_time / tick_duration)
     M.accumulated_time = M.accumulated_time - (num_ticks * tick_duration)
 
-    -- 1. Camera Control
     local mx, my = input.mouse_delta()
     if input.mouse_down(3) then
         M.cam_yaw = M.cam_yaw - mx * 0.005
         M.cam_pitch = math.max(-1.5, math.min(1.5, M.cam_pitch - my * 0.005))
     end
     
-    -- 2. Movement Input
     local move_input = {0, 0, 0}
     if input.key_down(input.SCANCODE_W) then move_input[1], move_input[3] = move_input[1] + math.sin(M.cam_yaw), move_input[3] + math.cos(M.cam_yaw) end
     if input.key_down(input.SCANCODE_S) then move_input[1], move_input[3] = move_input[1] - math.sin(M.cam_yaw), move_input[3] - math.cos(M.cam_yaw) end
     if input.key_down(input.SCANCODE_A) then move_input[1], move_input[3] = move_input[1] + math.cos(M.cam_yaw), move_input[3] - math.sin(M.cam_yaw) end
     if input.key_down(input.SCANCODE_D) then move_input[1], move_input[3] = move_input[1] - math.cos(M.cam_yaw), move_input[3] + math.sin(M.cam_yaw) end
-    
     local len = math.sqrt(move_input[1]^2 + move_input[3]^2)
     if len > 0 then move_input[1], move_input[3] = move_input[1]/len, move_input[3]/len end
     if input.key_down(input.SCANCODE_SPACE) then move_input[2] = 1.0 end
 
-    -- Read back state from GPU
     local p_ptr = ffi.cast("PlayerState*", player_state_buf.allocation.ptr)
     M.prev_player_pos = {math.floor(M.player_pos[1]), math.floor(M.player_pos[2]), math.floor(M.player_pos[3])}
     M.player_pos = {p_ptr.pos[0], p_ptr.pos[1], p_ptr.pos[2]}
 
-    if frame_count % 60 == 0 then
-        local d = p_ptr.debug_dist / 100.0
-        local status = p_ptr.debug_found > 0 and string.format("Hovering (%.1f)", d) or "Falling"
-        print(string.format("Pos: %.1f, %.1f, %.1f | %s | VelY: %.1f", M.player_pos[1], M.player_pos[2], M.player_pos[3], status, p_ptr.vel[1]))
+    -- DEBUG: Use raw type for indirect command instead of re-defining
+    if frame_count % 10 == 0 then
+        local cx, cy, cz = math.floor(M.player_pos[1]/16), math.floor(M.player_pos[2]/16), math.floor(M.player_pos[3]/16)
+        local chunk_idx = cx + (cy * (M.grid_w/16)) + (cz * (M.grid_w/16) * (M.grid_h/16))
+        local ind_ptr = ffi.cast("VkDrawIndexedIndirectCommand*", indirect_buf.allocation.ptr)
+        local cmd = ind_ptr[chunk_idx]
+        print(string.format("[DEBUG] Chunk[%d] IndexCount: %d | FirstIndex: %d", chunk_idx, cmd.indexCount, cmd.firstIndex))
     end
 
     local aspect = sw.extent.width / sw.extent.height
@@ -198,19 +197,15 @@ function M.update()
     vk.vkResetCommandBuffer(cb, 0); vk.vkBeginCommandBuffer(cb, ffi.new("VkCommandBufferBeginInfo", { sType = vk.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, flags = vk.VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT }))
     rg:reset()
     
-    local vol_in_res = (frame_count % 2 == 1) and res_vol_a or res_vol_b
-    local vol_out_res = (frame_count % 2 == 1) and res_vol_b or res_vol_a
-    local vol_in_idx = (frame_count % 2 == 1) and 0 or 1
-    local vol_out_idx = (frame_count % 2 == 1) and 1 or 0
+    local vol_in_idx = M.current_vol_idx
+    local vol_out_idx = (vol_in_idx == 0) and 1 or 0
+    local vol_in_res = (vol_in_idx == 0) and res_vol_a or res_vol_b
+    local vol_out_res = (vol_in_idx == 0) and res_vol_b or res_vol_a
 
     rg:add_pass("Physics", function(cb)
         vk.vkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_physics.handle)
         vk.vkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_physics.layout, 0, 1, ffi.new("VkDescriptorSet[1]", {bindless_set}), 0, nil)
-        local pc = ffi.new("PhysicsPC", { 
-            input_dir = {move_input[1], move_input[2], move_input[3]}, dt = dt, 
-            img_idx = vol_in_idx, grid_w = M.grid_w, grid_h = M.grid_h, grid_d = M.grid_d, 
-            hover_target = M.hover_target, hover_strength = M.hover_enabled and M.hover_strength or 0, player_buf_idx = 4 
-        })
+        local pc = ffi.new("PhysicsPC", { ix = move_input[1], iy = move_input[2], iz = move_input[3], dt = dt, img_idx = vol_in_idx, grid_w = M.grid_w, grid_h = M.grid_h, grid_d = M.grid_d, hover_target = M.hover_target, hover_strength = M.hover_enabled and M.hover_strength or 0, player_buf_idx = 4 })
         vk.vkCmdPushConstants(cb, pipe_physics.layout, vk.VK_SHADER_STAGE_COMPUTE_BIT, 0, ffi.sizeof("PhysicsPC"), pc)
         vk.vkCmdDispatch(cb, 1, 1, 1)
     end):using(vol_in_res, vk.VK_ACCESS_SHADER_READ_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, vk.VK_IMAGE_LAYOUT_GENERAL)
@@ -219,14 +214,11 @@ function M.update()
     rg:add_pass("Player_Update", function(cb)
         vk.vkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_player.handle)
         vk.vkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_player.layout, 0, 1, ffi.new("VkDescriptorSet[1]", {bindless_set}), 0, nil)
-        local pc = ffi.new("PlayerUpdatePC", { 
-            old_p = {M.prev_player_pos[1], M.prev_player_pos[2], M.prev_player_pos[3]}, 
-            new_p = {math.floor(M.player_pos[1]), math.floor(M.player_pos[2]), math.floor(M.player_pos[3])}, 
-            img_idx = vol_in_idx, dirty_map_idx = 0, grid_w = M.grid_w, grid_h = M.grid_h, grid_d = M.grid_d, active_map_idx = 3 
-        })
+        local pc = ffi.new("PlayerUpdatePC", { ox = M.prev_player_pos[1], oy = M.prev_player_pos[2], oz = M.prev_player_pos[3], nx = math.floor(M.player_pos[1]), ny = math.floor(M.player_pos[2]), nz = math.floor(M.player_pos[3]), img_a = 0, img_b = 1, grid_w = M.grid_w, grid_h = M.grid_h, grid_d = M.grid_d, active_map_idx = 3, dirty_map_idx = 0 })
         vk.vkCmdPushConstants(cb, pipe_player.layout, vk.VK_SHADER_STAGE_COMPUTE_BIT, 0, ffi.sizeof("PlayerUpdatePC"), pc)
         vk.vkCmdDispatch(cb, 1, 1, 1)
-    end):using(vol_in_res, bit.bor(vk.VK_ACCESS_SHADER_READ_BIT, vk.VK_ACCESS_SHADER_WRITE_BIT), vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, vk.VK_IMAGE_LAYOUT_GENERAL)
+    end):using(res_vol_a, bit.bor(vk.VK_ACCESS_SHADER_READ_BIT, vk.VK_ACCESS_SHADER_WRITE_BIT), vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, vk.VK_IMAGE_LAYOUT_GENERAL)
+       :using(res_vol_b, bit.bor(vk.VK_ACCESS_SHADER_READ_BIT, vk.VK_ACCESS_SHADER_WRITE_BIT), vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, vk.VK_IMAGE_LAYOUT_GENERAL)
        :using(res_dirty, bit.bor(vk.VK_ACCESS_SHADER_READ_BIT, vk.VK_ACCESS_SHADER_WRITE_BIT), vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT)
        :using(res_active, bit.bor(vk.VK_ACCESS_SHADER_READ_BIT, vk.VK_ACCESS_SHADER_WRITE_BIT), vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT)
 
@@ -243,12 +235,13 @@ function M.update()
         vol_in_res, vol_out_res = vol_out_res, vol_in_res
         vol_in_idx, vol_out_idx = vol_out_idx, vol_in_idx
     end
+    M.current_vol_idx = vol_in_idx -- Final state is in vol_in_idx after loop
 
     local cx, cy, cz = M.grid_w/M.chunk_size, M.grid_h/M.chunk_size, M.grid_d/M.chunk_size
     rg:add_pass("Mesher", function(cb)
         vk.vkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_mesh.handle)
         vk.vkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_mesh.layout, 0, 1, ffi.new("VkDescriptorSet[1]", {bindless_set}), 0, nil)
-        local pc = ffi.new("MesherPC", { in_img = vol_in_idx, dirty_map_idx = 0, v_buf = 1, indirect_buf = 2, grid_w = M.grid_w, grid_h = M.grid_h, grid_d = M.grid_d, active_map_idx = 3 })
+        local pc = ffi.new("MesherPC", { in_img = vol_in_idx, dirty_map_idx = 0, v_buf = 1, indirect_buf = 2, grid_w = M.grid_w, grid_h = M.grid_h, grid_d = M.grid_d, active_map_idx = 3, px = math.floor(M.player_pos[1]), py = math.floor(M.player_pos[2]), pz = math.floor(M.player_pos[3]) })
         vk.vkCmdPushConstants(cb, pipe_mesh.layout, vk.VK_SHADER_STAGE_COMPUTE_BIT, 0, ffi.sizeof("MesherPC"), pc)
         vk.vkCmdDispatch(cb, cx, cy, cz)
     end):using(vol_in_res, vk.VK_ACCESS_SHADER_READ_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, vk.VK_IMAGE_LAYOUT_GENERAL)
@@ -256,6 +249,18 @@ function M.update()
        :using(res_active, vk.VK_ACCESS_SHADER_READ_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT)
        :using(res_v_buf, vk.VK_ACCESS_SHADER_WRITE_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT)
        :using(res_indirect, vk.VK_ACCESS_SHADER_WRITE_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT)
+
+    rg:add_pass("Sync_Barrier", function(cb)
+        local bar = ffi.new("VkMemoryBarrier2", {
+            sType = vk.VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+            srcStageMask = vk.VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+            srcAccessMask = vk.VK_ACCESS_2_SHADER_WRITE_BIT,
+            dstStageMask = bit.bor(vk.VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT, vk.VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT),
+            dstAccessMask = bit.bor(vk.VK_ACCESS_2_SHADER_READ_BIT, vk.VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT)
+        })
+        local dependency = ffi.new("VkDependencyInfo", { sType = vk.VK_STRUCTURE_TYPE_DEPENDENCY_INFO, memoryBarrierCount = 1, pMemoryBarriers = bar })
+        vk.vkCmdPipelineBarrier2(cb, dependency)
+    end)
 
     rg:add_pass("Render", function(cb)
         local bar = ffi.new("VkImageMemoryBarrier[1]", {{ sType=vk.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, oldLayout=vk.VK_IMAGE_LAYOUT_UNDEFINED, newLayout=vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, image=ffi.cast("VkImage", sw.images[img_idx]), subresourceRange={aspectMask=vk.VK_IMAGE_ASPECT_COLOR_BIT, levelCount=1, layerCount=1}, dstAccessMask=vk.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT }})
@@ -268,7 +273,7 @@ function M.update()
         vk.vkCmdSetScissor(cb, 0, 1, ffi.new("VkRect2D", { extent=sw.extent }))
         vk.vkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe_render)
         vk.vkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, render_layout, 0, 1, ffi.new("VkDescriptorSet[1]", {bindless_set}), 0, nil)
-        local pc = ffi.new("RenderPC", { mvp = mvp.m, v_buf_off = 1 })
+        local pc = ffi.new("RenderPC", { mvp = mvp.m, v_buf = 1 })
         vk.vkCmdPushConstants(cb, render_layout, vk.VK_SHADER_STAGE_VERTEX_BIT, 0, ffi.sizeof("RenderPC"), pc)
         vk.vkCmdBindIndexBuffer(cb, index_buf.handle, 0, vk.VK_INDEX_TYPE_UINT16)
         vk.vkCmdDrawIndexedIndirect(cb, indirect_buf.handle, 0, cx*cy*cz, 20)

@@ -1,55 +1,57 @@
 #version 450
 #extension GL_EXT_nonuniform_qualifier : require
 
-layout(local_size_x = 8, local_size_y = 8, local_size_z = 8) in; // Larger local size to cover 4x4x4 + 1 voxel margin
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 8) in;
 
 layout(set = 0, binding = 2, r32ui) uniform uimage3D all_storage_images[];
 layout(set = 0, binding = 0) buffer GlobalBuffers { uint data[]; } world[];
 
 layout(push_constant) uniform PushConstants {
-    int old_x, old_y, old_z;
-    int new_x, new_y, new_z;
-    uint img;
-    uint dirty_map_idx;
+    int ox, oy, oz; // Old position
+    int nx, ny, nz; // New position
+    uint img_a;
+    uint img_b;
     uint grid_w, grid_h, grid_d;
     uint active_map_idx;
+    uint dirty_map_idx;
 } pc;
 
 void mark_chunk(ivec3 p) {
     if (p.x < 0 || p.x >= pc.grid_w || p.y < 0 || p.y >= pc.grid_h || p.z < 0 || p.z >= pc.grid_d) return;
-    
     uint chunk_res_x = pc.grid_w / 16;
     uint chunks_per_slice = (pc.grid_w / 16) * (pc.grid_h / 16);
     ivec3 c = p / 16;
     uint idx = c.x + c.y * chunk_res_x + c.z * chunks_per_slice;
-    
     atomicOr(world[nonuniformEXT(pc.dirty_map_idx)].data[idx], 1);
     atomicOr(world[nonuniformEXT(pc.active_map_idx)].data[idx], 1);
 }
 
 void main() {
     ivec3 tid = ivec3(gl_LocalInvocationID);
-    
-    // 1. Clear a slightly larger area around old_p (6x6x6 centered on 4x4x4)
-    // ONLY if it's currently Type 10.
+    ivec3 old_origin = ivec3(pc.ox, pc.oy, pc.oz) - ivec3(2, 2, 2);
+    ivec3 new_origin = ivec3(pc.nx, pc.ny, pc.nz) - ivec3(2, 2, 2);
+
     if (tid.x < 6 && tid.y < 6 && tid.z < 6) {
-        ivec3 p = ivec3(pc.old_x - 1, pc.old_y - 1, pc.old_z - 1) + tid;
+        ivec3 p = old_origin - ivec3(1, 1, 1) + tid;
         if (p.x >= 0 && p.x < pc.grid_w && p.y >= 0 && p.y < pc.grid_h && p.z >= 0 && p.z < pc.grid_d) {
-            uint val = imageLoad(all_storage_images[nonuniformEXT(pc.img)], p).r;
-            if (val == 10) {
-                imageStore(all_storage_images[nonuniformEXT(pc.img)], p, uvec4(0));
+            if (imageLoad(all_storage_images[nonuniformEXT(pc.img_a)], p).r == 10) {
+                imageStore(all_storage_images[nonuniformEXT(pc.img_a)], p, uvec4(0));
+                mark_chunk(p);
+            }
+            if (imageLoad(all_storage_images[nonuniformEXT(pc.img_b)], p).r == 10) {
+                imageStore(all_storage_images[nonuniformEXT(pc.img_b)], p, uvec4(0));
                 mark_chunk(p);
             }
         }
     }
 
-    barrier(); // Ensure all clears are done before we write the new position
+    barrier();
 
-    // 2. Set new voxel (4x4x4 block)
     if (tid.x < 4 && tid.y < 4 && tid.z < 4) {
-        ivec3 p = ivec3(pc.new_x, pc.new_y, pc.new_z) + tid;
+        ivec3 p = new_origin + tid;
         if (p.x >= 0 && p.x < pc.grid_w && p.y >= 0 && p.y < pc.grid_h && p.z >= 0 && p.z < pc.grid_d) {
-            imageStore(all_storage_images[nonuniformEXT(pc.img)], p, uvec4(10));
+            imageStore(all_storage_images[nonuniformEXT(pc.img_a)], p, uvec4(10));
+            imageStore(all_storage_images[nonuniformEXT(pc.img_b)], p, uvec4(10));
             mark_chunk(p);
         }
     }

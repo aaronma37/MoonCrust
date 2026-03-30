@@ -36,6 +36,14 @@ void main() {
     // Only simulate active chunks
     if (world[nonuniformEXT(pc.active_map_idx)].data[chunk_idx] == 0) return;
 
+    uint current = imageLoad(all_storage_images[nonuniformEXT(pc.in_img)], pos).r;
+    
+    // Player (Type 10) is immutable and handled by player.comp
+    if (current == 10) {
+        imageStore(all_storage_images[nonuniformEXT(pc.out_img)], pos, uvec4(10, 0, 0, 0));
+        return;
+    }
+
     int neighbors = 0;
     for (int z = -1; z <= 1; z++) {
         for (int y = -1; y <= 1; y++) {
@@ -43,18 +51,12 @@ void main() {
                 if (x == 0 && y == 0 && z == 0) continue;
                 ivec3 n_pos = pos + ivec3(x, y, z);
                 if (all(greaterThanEqual(n_pos, ivec3(0))) && all(lessThan(n_pos, ivec3(pc.grid_w, pc.grid_h, pc.grid_d)))) {
-                    if (imageLoad(all_storage_images[nonuniformEXT(pc.in_img)], n_pos).r > 0) neighbors++;
+                    uint n_val = imageLoad(all_storage_images[nonuniformEXT(pc.in_img)], n_pos).r;
+                    // IMPORTANT: Ignore player (Type 10) in neighbor count
+                    if (n_val > 0 && n_val != 10) neighbors++;
                 }
             }
         }
-    }
-
-    uint current = imageLoad(all_storage_images[nonuniformEXT(pc.in_img)], pos).r;
-    
-    // Player (Type 10) is immutable by CA
-    if (current == 10) {
-        imageStore(all_storage_images[nonuniformEXT(pc.out_img)], pos, uvec4(10, 0, 0, 0));
-        return;
     }
 
     uint next = 0;
@@ -63,14 +65,13 @@ void main() {
     if (current > 0) {
         if (neighbors >= 4 && neighbors <= 8) next = current;
     } else {
-        if (neighbors >= 6 && neighbors <= 10) next = 1; // Basic matter
+        if (neighbors >= 6 && neighbors <= 10) next = 1;
     }
 
     imageStore(all_storage_images[nonuniformEXT(pc.out_img)], pos, uvec4(next, 0, 0, 0));
 
     if (current != next) {
         mark_chunk(pos);
-        // If near boundary, mark neighbors
         if (pos.x % 16 == 0) mark_chunk(pos + ivec3(-1, 0, 0));
         if (pos.x % 16 == 15) mark_chunk(pos + ivec3(1, 0, 0));
         if (pos.y % 16 == 0) mark_chunk(pos + ivec3(0, -1, 0));

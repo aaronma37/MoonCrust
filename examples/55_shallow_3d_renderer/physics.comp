@@ -19,14 +19,11 @@ struct PlayerState {
 layout(set = 0, binding = 0) buffer PlayerBuffer { PlayerState s; } player_storage[];
 
 layout(push_constant) uniform PushConstants {
-    vec3 input_dir;
+    float ix, iy, iz; // Input direction
     float dt;
     uint img_idx;
-    uint grid_w;
-    uint grid_h;
-    uint grid_d;
-    float hover_target;
-    float hover_strength;
+    uint grid_w, grid_h, grid_d;
+    float hover_target, hover_strength;
     uint player_buf_idx;
 } pc;
 
@@ -55,16 +52,11 @@ void main() {
     vec3 p = player_storage[p_idx].s.pos;
     vec3 v = player_storage[p_idx].s.vel;
 
-    // 1. Gravity
-    float gravity = -50.0;
-    v.y += gravity * pc.dt;
+    v.y -= 50.0 * pc.dt; // Gravity
     
-    // 2. Upward Thrust (Spacebar)
-    if (pc.input_dir.y > 0.1) {
-        v.y += 150.0 * pc.dt;
-    }
+    if (pc.iy > 0.1) v.y += 150.0 * pc.dt; // Jump
     
-    // 3. Hover Dynamics (Only if not jumping)
+    // Hover
     float dist_to_floor = 100.0;
     bool found_floor = false;
     for (int i = 1; i <= 12; i++) {
@@ -74,33 +66,28 @@ void main() {
             break;
         }
     }
-    
     player_storage[p_idx].s.debug_dist = uint(dist_to_floor * 100);
     player_storage[p_idx].s.debug_found = found_floor ? 1 : 0;
 
-    if (found_floor && pc.hover_strength > 0.1 && pc.input_dir.y < 0.1) {
-        float target = pc.hover_target;
-        if (dist_to_floor < target + 2.0) {
-            float force = (target - dist_to_floor) * pc.hover_strength - v.y * 10.0;
+    if (found_floor && pc.hover_strength > 0.1 && pc.iy < 0.1) {
+        if (dist_to_floor < pc.hover_target + 2.0) {
+            float force = (pc.hover_target - dist_to_floor) * pc.hover_strength - v.y * 10.0;
             v.y += force * pc.dt;
         }
     }
 
-    // 4. Horizontal Movement
     float friction = player_storage[p_idx].s.grounded > 0 ? 20.0 : 4.0;
-    v.xz += pc.input_dir.xz * 100.0 * pc.dt;
+    v.x += pc.ix * 100.0 * pc.dt;
+    v.z += pc.iz * 100.0 * pc.dt;
     v.xz -= v.xz * friction * pc.dt;
 
-    // 5. Integration & DEPENETRATION
     // Y-Axis
     vec3 next_y = p + vec3(0, v.y * pc.dt, 0);
     if (check_aabb(next_y, size)) {
         if (v.y < 0) {
             player_storage[p_idx].s.grounded = 1;
-            // Snap to floor top
             p.y = floor(next_y.y - size.y*0.5) + 1.0 + size.y*0.5 + 0.01;
         } else {
-            // Snap to ceiling bottom
             p.y = floor(next_y.y + size.y*0.5) - size.y*0.5 - 0.01;
         }
         v.y = 0;
