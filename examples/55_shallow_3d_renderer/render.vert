@@ -6,6 +6,7 @@ layout(set = 0, binding = 0) buffer GlobalBuffers { uint data[]; } world[];
 layout(push_constant) uniform PushConstants {
     mat4 mvp;
     uint v_buf;
+    uint grid_w, grid_h, grid_d;
 } pc;
 
 layout(location = 0) out vec3 out_norm;
@@ -24,16 +25,44 @@ const vec3 normals[6] = {
     vec3(1,0,0), vec3(-1,0,0), vec3(0,1,0), vec3(0,-1,0), vec3(0,0,1), vec3(0,0,-1)
 };
 
+uint mat_to_col_idx(uint mat) {
+    if (mat == 0) return 0;
+    if (mat == 1) return 1;
+    if (mat == 2) return 2;
+    if (mat == 7) return 3;
+    if (mat == 10) return 12; // Player
+    if (mat == 20) return 5; // Wood (Brown)
+    if (mat == 21) return 6; // Leaf (Green)
+    if (mat == 30) return 14; // Seed (Bright Lime)
+    if (mat >= 3 && mat <= 6) return 7 + (mat - 3);
+    if (mat >= 8 && mat <= 9) return 11 + (mat - 8);
+    return 1;
+}
+
 void main() {
     uint packed = world[nonuniformEXT(pc.v_buf)].data[gl_VertexIndex];
-    // Unpacking: X(9), Y(7), Z(9), Norm(3), Col(4)
-    vec3 pos;
-    pos.x = float(packed & 511);
-    pos.y = float((packed >> 9) & 127);
-    pos.z = float((packed >> 16) & 511);
-    uint norm_idx = (packed >> 25) & 7;
-    uint type = (packed >> 28) & 15;
+    
+    // UNPACK: lp.x(4), lp.y(4), lp.z(4), norm(3), mat(8), ao(2)
+    ivec3 lp;
+    lp.x = int(packed & 15);
+    lp.y = int((packed >> 4) & 15);
+    lp.z = int((packed >> 8) & 15);
+    uint norm_idx = (packed >> 12) & 7;
+    uint mat = (packed >> 15) & 255;
+    uint ao = (packed >> 23) & 3;
 
+    // Reconstruct chunk origin from VertexIndex
+    const uint MAX_VERTS_PER_CHUNK = 16384;
+    uint chunk_idx = gl_VertexIndex / MAX_VERTS_PER_CHUNK;
+    uint chunks_per_row = pc.grid_w / 16;
+    uint chunks_per_slice = (pc.grid_w / 16) * (pc.grid_h / 16);
+    ivec3 chunk_origin;
+    chunk_origin.z = int(chunk_idx / chunks_per_slice);
+    chunk_origin.y = int((chunk_idx % chunks_per_slice) / chunks_per_row);
+    chunk_origin.x = int(chunk_idx % chunks_per_row);
+    chunk_origin *= 16;
+
+    vec3 pos = vec3(chunk_origin + lp);
     vec3 corner = vec3(face_corners[norm_idx][gl_VertexIndex % 4]);
     vec3 world_pos = pos + corner;
 
@@ -46,18 +75,19 @@ void main() {
         vec3(0.4, 0.4, 0.45),  // 2: Floor 2
         vec3(1.0, 0.2, 0.2),   // 3: Red Pillar
         vec3(0.2, 1.0, 0.2),   // 4: Green Pillar
-        vec3(0.2, 0.2, 1.0),   // 5: Blue Pillar
-        vec3(1.0, 1.0, 0.2),   // 6: Yellow Pillar
-        vec3(0.8, 0.5, 0.2),   // 7: Orange
-        vec3(0.5, 0.8, 0.2),   // 8: Lime
-        vec3(0.2, 0.8, 0.5),   // 9: Aqua
-        vec3(0.8, 0.0, 0.8),   // 10: Player (Purple)
-        vec3(0.5, 0.2, 0.8),   // 11
-        vec3(0.8, 0.2, 0.5),   // 12
-        vec3(0.5),             // 13
-        vec3(0.7),             // 14
-        vec3(1.0)              // 15
+        vec3(0.4, 0.25, 0.1),  // 5: Wood (Brown)
+        vec3(0.1, 0.5, 0.1),   // 6: Leaf (Green)
+        vec3(0.2, 0.2, 1.0),   // 7: Blue Pillar
+        vec3(1.0, 1.0, 0.2),   // 8: Yellow Pillar
+        vec3(0.8, 0.5, 0.2),   // 9: Orange
+        vec3(0.5, 0.8, 0.2),   // 10: Lime
+        vec3(0.2, 0.8, 0.5),   // 11: Aqua
+        vec3(0.8, 0.0, 0.8),   // 12: Player (Purple)
+        vec3(0.5, 0.2, 0.8),   // 13
+        vec3(0.4, 1.0, 0.4),   // 14: Seed (Bright Lime)
+        vec3(0.7)              // 15
     };
 
-    out_col = palette[type];
+    float ao_mult = 0.25 + (float(ao) / 3.0) * 0.75;
+    out_col = palette[mat_to_col_idx(mat)] * ao_mult;
 }

@@ -14,6 +14,7 @@ layout(push_constant) uniform PushConstants {
     uint grid_w, grid_h, grid_d;
     uint active_map_idx;
     uint dirty_map_idx;
+    uint plant_seed; // 1 if planting this frame
 } pc;
 
 void mark_chunk(ivec3 p) {
@@ -34,11 +35,13 @@ void main() {
     if (tid.x < 6 && tid.y < 6 && tid.z < 6) {
         ivec3 p = old_origin - ivec3(1, 1, 1) + tid;
         if (p.x >= 0 && p.x < pc.grid_w && p.y >= 0 && p.y < pc.grid_h && p.z >= 0 && p.z < pc.grid_d) {
-            if (imageLoad(all_storage_images[nonuniformEXT(pc.img_a)], p).r == 10) {
+            uint val_a = imageLoad(all_storage_images[nonuniformEXT(pc.img_a)], p).r;
+            if ((val_a & 0xFF) == 10) {
                 imageStore(all_storage_images[nonuniformEXT(pc.img_a)], p, uvec4(0));
                 mark_chunk(p);
             }
-            if (imageLoad(all_storage_images[nonuniformEXT(pc.img_b)], p).r == 10) {
+            uint val_b = imageLoad(all_storage_images[nonuniformEXT(pc.img_b)], p).r;
+            if ((val_b & 0xFF) == 10) {
                 imageStore(all_storage_images[nonuniformEXT(pc.img_b)], p, uvec4(0));
                 mark_chunk(p);
             }
@@ -50,8 +53,10 @@ void main() {
     if (tid.x < 4 && tid.y < 4 && tid.z < 4) {
         ivec3 p = new_origin + tid;
         if (p.x >= 0 && p.x < pc.grid_w && p.y >= 0 && p.y < pc.grid_h && p.z >= 0 && p.z < pc.grid_d) {
-            imageStore(all_storage_images[nonuniformEXT(pc.img_a)], p, uvec4(10));
-            imageStore(all_storage_images[nonuniformEXT(pc.img_b)], p, uvec4(10));
+            uint val = 10; // Player
+            if (pc.plant_seed > 0 && tid.y == 0 && tid.x == 2 && tid.z == 2) val = 30; // Seed
+            imageStore(all_storage_images[nonuniformEXT(pc.img_a)], p, uvec4(val));
+            imageStore(all_storage_images[nonuniformEXT(pc.img_b)], p, uvec4(val));
             mark_chunk(p);
         }
     }

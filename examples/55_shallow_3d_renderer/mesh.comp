@@ -19,54 +19,87 @@ layout(push_constant) uniform PushConstants {
 shared uint local_vertex_count;
 const uint MAX_VERTS_PER_CHUNK = 16384;
 
-uint pack_vertex(ivec3 p, uint norm, uint col) {
-    return (uint(p.x) & 511) | ((uint(p.y) & 127) << 9) | ((uint(p.z) & 511) << 16) | ((norm & 7) << 25) | ((col & 15) << 28);
+// NEW PACKING: LocalX(4), LocalY(4), LocalZ(4), Normal(3), MatID(8), AO(2) = 25 bits
+uint pack_vertex(ivec3 lp, uint norm, uint mat, uint ao) {
+    return (uint(lp.x) & 15) | ((uint(lp.y) & 15) << 4) | ((uint(lp.z) & 15) << 8) | 
+           ((norm & 7) << 12) | ((mat & 255) << 15) | ((ao & 3) << 23);
+}
+
+bool is_solid(ivec3 p) {
+    if (p.x < 0 || p.x >= pc.grid_w || p.y < 0 || p.y >= pc.grid_h || p.z < 0 || p.z >= pc.grid_d) return false;
+    return (imageLoad(all_storage_images[nonuniformEXT(pc.in_img)], p).r & 0xFF) > 0;
+}
+
+uint vertex_ao(ivec3 p, ivec3 d1, ivec3 d2) {
+    bool s1 = is_solid(p + d1);
+    bool s2 = is_solid(p + d2);
+    bool corner = is_solid(p + d1 + d2);
+    if (s1 && s2) return 0;
+    return 3 - (uint(s1) + uint(s2) + uint(corner));
 }
 
 void main() {
-    uint cx = gl_WorkGroupID.x;
-    uint cy = gl_WorkGroupID.y;
-    uint cz = gl_WorkGroupID.z;
-    uint chunks_per_row = pc.grid_w / 16;
-    uint chunks_per_slice = (pc.grid_w / 16) * (pc.grid_h / 16);
-    uint chunk_idx = cx + cy * chunks_per_row + cz * chunks_per_slice;
-    
+    uint chunk_idx = gl_WorkGroupID.x + gl_WorkGroupID.y * (pc.grid_w/16) + gl_WorkGroupID.z * (pc.grid_w/16) * (pc.grid_h/16);
     ivec3 chunk_origin = ivec3(gl_WorkGroupID) * 16;
     
-    // Simple rule: If it's active, we mesh it. No more flickering "dirty" logic for now.
-    bool is_active_chunk = world[nonuniformEXT(pc.active_map_idx)].data[chunk_idx] > 0;
+    if (world[nonuniformEXT(pc.active_map_idx)].data[chunk_idx] == 0) return;
     
-    if (gl_LocalInvocationIndex == 0) {
-        local_vertex_count = 0;
-    }
+    if (gl_LocalInvocationIndex == 0) local_vertex_count = 0;
     barrier();
 
-    if (is_active_chunk) {
-        for (int i = 0; i < 8; i++) {
-            uint idx = gl_LocalInvocationIndex * 8 + i;
-            ivec3 local_pos = ivec3(idx % 16, (idx / 16) % 16, idx / 256);
-            ivec3 pos = chunk_origin + local_pos;
-            if (pos.x >= pc.grid_w || pos.y >= pc.grid_h || pos.z >= pc.grid_d) continue;
+    for (int i = 0; i < 8; i++) {
+        uint idx = gl_LocalInvocationIndex * 8 + i;
+        ivec3 lp = ivec3(idx % 16, (idx / 16) % 16, idx / 256);
+        ivec3 p = chunk_origin + lp;
+        
+        uint val = imageLoad(all_storage_images[nonuniformEXT(pc.in_img)], p).r;
+        uint mat = val & 0xFF;
+        if (mat == 0) continue;
 
-            uint val = imageLoad(all_storage_images[nonuniformEXT(pc.in_img)], pos).r;
-            if (val == 0) continue;
+        ivec3 dirs[6] = { ivec3(1,0,0), ivec3(-1,0,0), ivec3(0,1,0), ivec3(0,-1,0), ivec3(0,0,1), ivec3(0,0,-1) };
+        for (int d = 0; d < 6; d++) {
+            ivec3 n_pos = p + dirs[d];
+            if (!is_solid(n_pos)) {
+                uint v_off = atomicAdd(local_vertex_count, 4);
+                if (v_off + 4 <= MAX_VERTS_PER_CHUNK) {
+                    uint g_start = chunk_idx * MAX_VERTS_PER_CHUNK + v_off;
+                    
+                    // Determine AO for each corner of the face
+                    uint ao[4];
+                    if (d == 0) { // +X
+                        ao[0] = vertex_ao(n_pos, ivec3(0,0,-1), ivec3(0,-1,0));
+                        ao[1] = vertex_ao(n_pos, ivec3(0,0,-1), ivec3(0,1,0));
+                        ao[2] = vertex_ao(n_pos, ivec3(0,0,1), ivec3(0,1,0));
+                        ao[3] = vertex_ao(n_pos, ivec3(0,0,1), ivec3(0,-1,0));
+                    } else if (d == 1) { // -X
+                        ao[0] = vertex_ao(n_pos, ivec3(0,0,1), ivec3(0,-1,0));
+                        ao[1] = vertex_ao(n_pos, ivec3(0,0,1), ivec3(0,1,0));
+                        ao[2] = vertex_ao(n_pos, ivec3(0,0,-1), ivec3(0,1,0));
+                        ao[3] = vertex_ao(n_pos, ivec3(0,0,-1), ivec3(0,-1,0));
+                    } else if (d == 2) { // +Y
+                        ao[0] = vertex_ao(n_pos, ivec3(-1,0,0), ivec3(0,0,1));
+                        ao[1] = vertex_ao(n_pos, ivec3(1,0,0), ivec3(0,0,1));
+                        ao[2] = vertex_ao(n_pos, ivec3(1,0,0), ivec3(0,0,-1));
+                        ao[3] = vertex_ao(n_pos, ivec3(-1,0,0), ivec3(0,0,-1));
+                    } else if (d == 3) { // -Y
+                        ao[0] = vertex_ao(n_pos, ivec3(-1,0,0), ivec3(0,0,-1));
+                        ao[1] = vertex_ao(n_pos, ivec3(1,0,0), ivec3(0,0,-1));
+                        ao[2] = vertex_ao(n_pos, ivec3(1,0,0), ivec3(0,0,1));
+                        ao[3] = vertex_ao(n_pos, ivec3(-1,0,0), ivec3(0,0,1));
+                    } else if (d == 4) { // +Z
+                        ao[0] = vertex_ao(n_pos, ivec3(1,0,0), ivec3(0,-1,0));
+                        ao[1] = vertex_ao(n_pos, ivec3(1,0,0), ivec3(0,1,0));
+                        ao[2] = vertex_ao(n_pos, ivec3(-1,0,0), ivec3(0,1,0));
+                        ao[3] = vertex_ao(n_pos, ivec3(-1,0,0), ivec3(0,-1,0));
+                    } else { // -Z
+                        ao[0] = vertex_ao(n_pos, ivec3(-1,0,0), ivec3(0,-1,0));
+                        ao[1] = vertex_ao(n_pos, ivec3(-1,0,0), ivec3(0,1,0));
+                        ao[2] = vertex_ao(n_pos, ivec3(1,0,0), ivec3(0,1,0));
+                        ao[3] = vertex_ao(n_pos, ivec3(1,0,0), ivec3(0,-1,0));
+                    }
 
-            ivec3 dirs[6] = { ivec3(1,0,0), ivec3(-1,0,0), ivec3(0,1,0), ivec3(0,-1,0), ivec3(0,0,1), ivec3(0,0,-1) };
-            for (int d = 0; d < 6; d++) {
-                ivec3 n_pos = pos + dirs[d];
-                bool visible = false;
-                if (n_pos.x < 0 || n_pos.x >= pc.grid_w || n_pos.y < 0 || n_pos.y >= pc.grid_h || n_pos.z < 0 || n_pos.z >= pc.grid_d) visible = true;
-                else if (imageLoad(all_storage_images[nonuniformEXT(pc.in_img)], n_pos).r == 0) visible = true;
-
-                if (visible) {
-                    uint v_off = atomicAdd(local_vertex_count, 4);
-                    if (v_off + 4 <= MAX_VERTS_PER_CHUNK) {
-                        uint global_v_start = chunk_idx * MAX_VERTS_PER_CHUNK + v_off;
-                        uint packed = pack_vertex(pos, d, val);
-                        world[nonuniformEXT(pc.v_buf)].data[global_v_start + 0] = packed;
-                        world[nonuniformEXT(pc.v_buf)].data[global_v_start + 1] = packed;
-                        world[nonuniformEXT(pc.v_buf)].data[global_v_start + 2] = packed;
-                        world[nonuniformEXT(pc.v_buf)].data[global_v_start + 3] = packed;
+                    for(int j=0; j<4; j++) {
+                        world[nonuniformEXT(pc.v_buf)].data[g_start + j] = pack_vertex(lp, d, mat, ao[j]);
                     }
                 }
             }
@@ -74,7 +107,6 @@ void main() {
     }
 
     barrier();
-
     if (gl_LocalInvocationIndex == 0) {
         uint count = min(local_vertex_count, MAX_VERTS_PER_CHUNK);
         uint cmd_off = chunk_idx * 5;

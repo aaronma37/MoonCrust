@@ -1,0 +1,85 @@
+#version 450
+#extension GL_EXT_nonuniform_qualifier : require
+
+layout(local_size_x = 32, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 2, r32ui) uniform uimage3D all_storage_images[];
+layout(set = 0, binding = 3, r16f) uniform image3D all_signal_images[];
+layout(set = 0, binding = 0) buffer GlobalBuffers { uint data[]; } world[];
+
+struct Entity {
+    vec3 pos;
+    float age;
+    uint type;
+    uint parent_id;
+    uint child_count;
+    uint energy;
+    uint padding[8];
+};
+
+layout(set = 0, binding = 0) buffer EntityBuffer { Entity e[]; } entities[];
+
+layout(push_constant) uniform PushConstants {
+    uint img_idx;
+    uint signal_img;
+    uint entity_buf_idx;
+    uint grid_w, grid_h, grid_d;
+    uint active_map_idx;
+    uint dirty_map_idx;
+    float dt;
+} pc;
+
+void mark_chunk(ivec3 p) {
+    if (any(lessThan(p, ivec3(0))) || any(greaterThanEqual(p, ivec3(pc.grid_w, pc.grid_h, pc.grid_d)))) return;
+    ivec3 cp = p / 16;
+    uint chunk_res_x = pc.grid_w / 16;
+    uint chunks_per_slice = (pc.grid_w / 16) * (pc.grid_h / 16);
+    uint chunk_idx = cp.x + (cp.y * chunk_res_x) + (cp.z * chunks_per_slice);
+    atomicOr(world[nonuniformEXT(pc.active_map_idx)].data[chunk_idx], 1);
+    atomicOr(world[nonuniformEXT(pc.dirty_map_idx)].data[chunk_idx], 1);
+}
+
+float hash(float n) { return fract(sin(n) * 43758.5453123); }
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    uint e_idx = nonuniformEXT(pc.entity_buf_idx);
+    
+    if (entities[e_idx].e[idx].type == 0) return;
+
+    if (entities[e_idx].e[idx].type == 1) {
+        entities[e_idx].e[idx].age += pc.dt;
+        ivec3 base_pos = ivec3(entities[e_idx].e[idx].pos);
+        
+        if (entities[e_idx].e[idx].energy > 0) {
+            int tip_y = 0;
+            bool found_top = false;
+            for (int y = 0; y < 64; y++) {
+                ivec3 p = base_pos + ivec3(0, y, 0);
+                uint val = imageLoad(all_storage_images[nonuniformEXT(pc.img_idx)], p).r;
+                if ((val & 0xFF) == 0) {
+                    tip_y = p.y;
+                    found_top = true;
+                    break;
+                }
+            }
+
+            if (found_top) {
+                ivec3 tip_pos = ivec3(base_pos.x, tip_y, base_pos.z);
+                imageStore(all_signal_images[nonuniformEXT(pc.signal_img)], tip_pos, vec4(1.0, 0, 0, 0));
+                mark_chunk(tip_pos);
+                
+                // Leaf crown
+                if (tip_y - base_pos.y > 4) {
+                    for(int ox=-2; ox<=2; ox++) {
+                        for(int oz=-2; oz<=2; oz++) {
+                            if (abs(ox) + abs(oz) < 3) {
+                                imageStore(all_signal_images[nonuniformEXT(pc.signal_img)], tip_pos + ivec3(ox, -1, oz), vec4(0.4, 0, 0, 0));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
