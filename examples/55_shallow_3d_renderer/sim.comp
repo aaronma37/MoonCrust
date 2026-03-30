@@ -9,7 +9,8 @@ layout(set = 0, binding = 0) buffer GlobalBuffers { uint data[]; } world[];
 layout(push_constant) uniform PushConstants {
     uint in_img;
     uint out_img;
-    uint signal_img;
+    uint light_in_img;
+    uint light_out_img;
     uint grid_w, grid_h, grid_d;
     uint active_map_idx;
     uint dirty_map_idx;
@@ -31,21 +32,76 @@ void main() {
     if (world[nonuniformEXT(pc.active_map_idx)].data[chunk_idx] == 0) return;
 
     uint current = imageLoad(all_storage_images[nonuniformEXT(pc.in_img)], pos).r;
-    uint sig = imageLoad(all_storage_images[nonuniformEXT(pc.signal_img)], pos).r;
+    uint mat = current & 0xFF;
     
-    // Stage 1 Baseline: Basic Decay
-    if (sig > 0) {
-        sig = uint(float(sig) * 0.95);
-        imageStore(all_storage_images[nonuniformEXT(pc.signal_img)], pos, uvec4(sig));
-        mark_chunk(pos);
+    // Light Propagation (Max-based diffusion)
+    uint light_out = 0;
+    
+    if (pos.y >= pc.grid_h - 1) {
+        // Sunlight injection
+        light_out = 255 | (240 << 8) | (220 << 16);
+    } else if (mat == 0 || mat == 10) { // Air or Robot
+        vec3 max_light = vec3(0.0);
+        
+        ivec3 offsets[7] = {
+            ivec3(0,0,0), // self
+            ivec3(1,0,0), ivec3(-1,0,0),
+            ivec3(0,1,0), ivec3(0,-1,0),
+            ivec3(0,0,1), ivec3(0,0,-1)
+        };
+        
+        for (int i = 0; i < 7; i++) {
+            ivec3 np = pos + offsets[i];
+            if (all(greaterThanEqual(np, ivec3(0))) && all(lessThan(np, ivec3(pc.grid_w, pc.grid_h, pc.grid_d)))) {
+                uint nl = imageLoad(all_storage_images[nonuniformEXT(pc.light_in_img)], np).r;
+                if (nl > 0) {
+                    float r = float(nl & 0xFF);
+                    float g = float((nl >> 8) & 0xFF);
+                    float b = float((nl >> 16) & 0xFF);
+                    
+                    if (offsets[i] == ivec3(0, 1, 0) && r > 250.0 && g > 230.0) {
+                        // Sunlight falls straight down without decay
+                        max_light = max(max_light, vec3(r, g, b)); 
+                    } else if (i == 0) {
+                        // Self slowly decays if no neighbors have higher light
+                        max_light = max(max_light, vec3(r, g, b) * 0.90);
+                    } else {
+                        // Propagate from neighbors with decay
+                        max_light = max(max_light, vec3(r, g, b) * 0.80);
+                    }
+                }
+            }
+        }
+        
+        uint nr = uint(max_light.r);
+        uint ng = uint(max_light.g);
+        uint nb = uint(max_light.b);
+        if (nr > 5 || ng > 5 || nb > 5) {
+            light_out = nr | (ng << 8) | (nb << 16);
+        }
+    } else if (mat == 3) {
+        // Example: Material 3 is emissive blue crystal
+        light_out = 50 | (100 << 8) | (255 << 16);
     }
+    
+    // Check if we need to preserve existing entity light injection (from DNA)
+    // We do this by taking max with self light_in to ensure injected light isn't overwritten immediately
+    uint light_in = imageLoad(all_storage_images[nonuniformEXT(pc.light_in_img)], pos).r;
+    if (light_in > 0) {
+        uint nr = max(light_out & 0xFF, light_in & 0xFF);
+        uint ng = max((light_out >> 8) & 0xFF, (light_in >> 8) & 0xFF);
+        uint nb = max((light_out >> 16) & 0xFF, (light_in >> 16) & 0xFF);
+        light_out = nr | (ng << 8) | (nb << 16);
+    }
+    
+    imageStore(all_storage_images[nonuniformEXT(pc.light_out_img)], pos, uvec4(light_out));
+    if (light_in != light_out) mark_chunk(pos);
 
-    if ((current & 0xFF) == 10) {
+    if (mat == 10) {
         imageStore(all_storage_images[nonuniformEXT(pc.out_img)], pos, uvec4(10));
         return;
     }
 
-    uint mat = current & 0xFF;
     uint next = current;
     
     // Standard CA neighbor logic

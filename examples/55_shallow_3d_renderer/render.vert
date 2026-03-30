@@ -2,16 +2,15 @@
 #extension GL_EXT_nonuniform_qualifier : require
 
 layout(set = 0, binding = 0) buffer GlobalBuffers { uint data[]; } world[];
-
 layout(push_constant) uniform PushConstants {
     mat4 mvp;           // 0-63
     uint v_buf;         // 64-67
-    uint signal_img;    // 68-71
+    uint light_img;     // 68-71
     uint grid_w;        // 72-75
     uint grid_h;        // 76-79
     uint grid_d;        // 80-83
     uint p0, p1, p2;    // 84-95 (Padding)
-    vec3 cam_pos;       // 96-107 (Alignment at end)
+    vec3 cam_pos;       // 96-107
 } pc;
 
 layout(location = 0) out vec3 out_norm;

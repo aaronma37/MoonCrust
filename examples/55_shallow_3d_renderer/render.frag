@@ -13,7 +13,7 @@ layout(set = 0, binding = 2, r32ui) uniform uimage3D all_storage_images[];
 layout(push_constant) uniform PushConstants {
     mat4 mvp;           // 0-63
     uint v_buf;         // 64-67
-    uint signal_img;    // 68-71
+    uint light_img;     // 68-71
     uint grid_w;        // 72-75
     uint grid_h;        // 76-79
     uint grid_d;        // 80-83
@@ -25,17 +25,26 @@ void main() {
     vec3 L = normalize(vec3(0.5, 1.0, 0.3));
     float dif = clamp(dot(in_norm, L), 0.2, 1.0);
     
-    // Fixed Sampling: Go slightly INSIDE the voxel face to avoid row artifacts
-    ivec3 p = ivec3(floor(in_world_pos - in_norm * 0.1));
-    uint sig_raw = 0;
+    // Sample light slightly inside the "air" block
+    ivec3 p = ivec3(floor(in_world_pos + in_norm * 0.1));
+    uint light_raw = 0;
     if (all(greaterThanEqual(p, ivec3(0))) && all(lessThan(p, ivec3(pc.grid_w, pc.grid_h, pc.grid_d)))) {
-        sig_raw = imageLoad(all_storage_images[nonuniformEXT(pc.signal_img)], p).r;
+        light_raw = imageLoad(all_storage_images[nonuniformEXT(pc.light_img)], p).r;
+    }
+    
+    vec3 light_color = vec3(0.0);
+    if (light_raw > 0) {
+        float r = float(light_raw & 0xFF) / 255.0;
+        float g = float((light_raw >> 8) & 0xFF) / 255.0;
+        float b = float((light_raw >> 16) & 0xFF) / 255.0;
+        light_color = vec3(r, g, b);
+    } else {
+        // Default ambient if completely dark
+        light_color = vec3(0.05);
     }
     
     vec3 base_col = in_col * dif;
-    if (sig_raw > 0) {
-        base_col = mix(base_col, vec3(0.0, 1.0, 0.0), 0.5);
-    }
+    base_col *= light_color * 2.0; // Boost light intensity for visibility
     
     vec3 sky_color = vec3(0.5, 0.7, 0.9);
     float dist = distance(in_world_pos, pc.cam_pos);

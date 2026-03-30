@@ -20,7 +20,7 @@ layout(set = 0, binding = 0) buffer EntityBuffer { Entity e[]; } entities[];
 
 layout(push_constant) uniform PushConstants {
     uint img_idx;
-    uint signal_img;
+    uint light_img;
     uint entity_buf_idx;
     uint grid_w, grid_h, grid_d;
     uint active_map_idx;
@@ -63,8 +63,9 @@ void main() {
             if (found_top) {
                 ivec3 tip_pos = ivec3(base_pos.x, tip_y, base_pos.z);
                 if (all(greaterThanEqual(tip_pos, ivec3(0))) && all(lessThan(tip_pos, ivec3(pc.grid_w, pc.grid_h, pc.grid_d)))) {
-                    // Baseline: Write a distinct value to the signal buffer
-                    imageStore(all_storage_images[nonuniformEXT(pc.signal_img)], tip_pos, uvec4(255));
+                    // DNA entity injects bright green light (0x0000FF00 -> R=0, G=255, B=0)
+                    uint green_light = (255 << 8);
+                    imageStore(all_storage_images[nonuniformEXT(pc.light_img)], tip_pos, uvec4(green_light));
                     mark_chunk(tip_pos);
                 }
                 entities[e_idx].e[idx].energy -= 1; 
