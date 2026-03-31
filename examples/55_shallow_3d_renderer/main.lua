@@ -132,7 +132,7 @@ function M.init()
     state.macro_light_b = mc.gpu.image_3d(M.macro_w, M.macro_h, M.macro_d, vk.VK_FORMAT_R32_UINT, "storage sampled")
     
     state.depth_img = mc.gpu.image(state.sw.extent.width, state.sw.extent.height, vk.VK_FORMAT_D32_SFLOAT, "depth")
-    state.shadow_img = mc.gpu.image(2048, 2048, vk.VK_FORMAT_D32_SFLOAT, "depth sampled")
+    state.shadow_img = mc.gpu.image(4096, 4096, vk.VK_FORMAT_D32_SFLOAT, "depth sampled")
     state.shadow_sampler = mc.gpu.sampler(vk.VK_FILTER_LINEAR, vk.VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER)
     
     local num_chunks = (M.grid_w/M.chunk_size) * (M.grid_h/M.chunk_size) * (M.grid_d/M.chunk_size)
@@ -207,7 +207,7 @@ function M.init()
     descriptors.update_storage_image_set(state.device, state.bindless_set, 2, vk.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, state.light_vol_b.view, vk.VK_IMAGE_LAYOUT_GENERAL, 3)
     descriptors.update_storage_image_set(state.device, state.bindless_set, 2, vk.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, state.macro_light_a.view, vk.VK_IMAGE_LAYOUT_GENERAL, 4)
     descriptors.update_storage_image_set(state.device, state.bindless_set, 2, vk.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, state.macro_light_b.view, vk.VK_IMAGE_LAYOUT_GENERAL, 5)
-    descriptors.update_image_set(state.device, state.bindless_set, 1, vk.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, state.shadow_img.view, state.shadow_sampler, vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0)
+    descriptors.update_image_set(state.device, state.bindless_set, 1, vk.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, state.shadow_img.view, state.shadow_sampler, vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 10)
     
     descriptors.update_buffer_set(state.device, state.bindless_set, 0, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, state.dirty_map.handle, 0, state.dirty_map.size, 0)
     descriptors.update_buffer_set(state.device, state.bindless_set, 0, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, state.v_buf.handle, 0, state.v_buf.size, 1)
@@ -236,7 +236,10 @@ function M.init()
     local shadow_pc_ranges = ffi.new("VkPushConstantRange[1]", {{ stageFlags = vk.VK_SHADER_STAGE_VERTEX_BIT, offset = 0, size = ffi.sizeof("ShadowPC") }})
     state.shadow_layout = pipeline.create_layout(state.device, {bl_layout}, shadow_pc_ranges)
     local sv_mod = shader.create_module(state.device, shader.compile_glsl(io.open("examples/55_shallow_3d_renderer/shadow.vert"):read("*all"), vk.VK_SHADER_STAGE_VERTEX_BIT))
-    state.pipe_shadow = pipeline.create_graphics_pipeline(state.device, state.shadow_layout, sv_mod, nil, { depth_test = true, depth_write = true, depth_format = vk.VK_FORMAT_D32_SFLOAT, color_formats = {} })
+    state.pipe_shadow = pipeline.create_graphics_pipeline(state.device, state.shadow_layout, sv_mod, nil, { 
+        depth_test = true, depth_write = true, depth_format = vk.VK_FORMAT_D32_SFLOAT, color_formats = {},
+        depth_bias_enable = true, depth_bias_constant = 4.0, depth_bias_slope = 1.5
+    })
 
     local robot_pc_ranges = ffi.new("VkPushConstantRange[1]", {{ stageFlags = bit.bor(vk.VK_SHADER_STAGE_VERTEX_BIT, vk.VK_SHADER_STAGE_FRAGMENT_BIT), offset = 0, size = ffi.sizeof("RobotRenderPC") }})
     state.robot_layout = pipeline.create_layout(state.device, {bl_layout}, robot_pc_ranges)
@@ -379,9 +382,9 @@ function M.update()
     local sun_len = math.sqrt(sun_dir[1]^2 + sun_dir[2]^2 + sun_dir[3]^2)
     sun_dir[1], sun_dir[2], sun_dir[3] = sun_dir[1]/sun_len, sun_dir[2]/sun_len, sun_dir[3]/sun_len
     
-    local shadow_range = 150.0
-    local shadow_proj = mc.mat4_ortho(-shadow_range, shadow_range, shadow_range, -shadow_range, -200.0, 200.0)
-    local shadow_view = mc.mat4_look_at({M.player_pos[1] + sun_dir[1]*100, M.player_pos[2] + sun_dir[2]*100, M.player_pos[3] + sun_dir[3]*100}, {M.player_pos[1], M.player_pos[2], M.player_pos[3]}, {0,1,0})
+    local shadow_range = 300.0
+    local shadow_proj = mc.mat4_ortho(-shadow_range, shadow_range, -shadow_range, shadow_range, 0.1, 500.0)
+    local shadow_view = mc.mat4_look_at({M.player_pos[1] + sun_dir[1]*200, M.player_pos[2] + sun_dir[2]*200, M.player_pos[3] + sun_dir[3]*200}, {M.player_pos[1], M.player_pos[2], M.player_pos[3]}, {0,1,0})
     local light_mvp = mc.mat4_multiply(shadow_proj, shadow_view)
 
     imgui.new_frame()
@@ -506,12 +509,12 @@ function M.update()
     state.rg:add_pass("Shadow", function(cb)
         local depth_attach = ffi.new("VkRenderingAttachmentInfo[1]")
         depth_attach[0].sType, depth_attach[0].imageView, depth_attach[0].imageLayout, depth_attach[0].loadOp, depth_attach[0].storeOp, depth_attach[0].clearValue.depthStencil = vk.VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, ffi.cast("VkImageView", state.shadow_img.view), vk.VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, vk.VK_ATTACHMENT_LOAD_OP_CLEAR, vk.VK_ATTACHMENT_STORE_OP_STORE, {depth=1, stencil=0}
-        vk.vkCmdBeginRendering(cb, ffi.new("VkRenderingInfo", { sType=vk.VK_STRUCTURE_TYPE_RENDERING_INFO, renderArea={extent={width=2048, height=2048}}, layerCount=1, colorAttachmentCount=0, pDepthAttachment=depth_attach }))
-        vk.vkCmdSetViewport(cb, 0, 1, ffi.new("VkViewport", { width=2048, height=2048, maxDepth=1 }))
-        vk.vkCmdSetScissor(cb, 0, 1, ffi.new("VkRect2D", { extent={width=2048, height=2048} }))
+        vk.vkCmdBeginRendering(cb, ffi.new("VkRenderingInfo", { sType=vk.VK_STRUCTURE_TYPE_RENDERING_INFO, renderArea={extent={width=4096, height=4096}}, layerCount=1, colorAttachmentCount=0, pDepthAttachment=depth_attach }))
+        vk.vkCmdSetViewport(cb, 0, 1, ffi.new("VkViewport", { width=4096, height=4096, maxDepth=1 }))
+        vk.vkCmdSetScissor(cb, 0, 1, ffi.new("VkRect2D", { extent={width=4096, height=4096} }))
         vk.vkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, state.pipe_shadow)
         vk.vkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, state.shadow_layout, 0, 1, ffi.new("VkDescriptorSet[1]", {state.bindless_set}), 0, nil)
-        local spc = ffi.new("ShadowPC", { mvp = light_mvp.m, v_buf = 1, light_img = 0, grid_w = M.grid_w, grid_h = M.grid_h, grid_d = M.grid_d })
+        local spc = ffi.new("ShadowPC", { mvp = light_mvp.m, v_buf = 1, light_img = 4, grid_w = M.grid_w, grid_h = M.grid_h, grid_d = M.grid_d })
         vk.vkCmdPushConstants(cb, state.shadow_layout, vk.VK_SHADER_STAGE_VERTEX_BIT, 0, ffi.sizeof("ShadowPC"), spc)
         vk.vkCmdBindIndexBuffer(cb, state.index_buf.handle, 0, vk.VK_INDEX_TYPE_UINT16)
         vk.vkCmdDrawIndexedIndirect(cb, state.indirect_buf.handle, 0, cx*cy*cz, 20)
@@ -548,7 +551,7 @@ function M.update()
             light_img = light_in_idx, 
             grid_w = M.grid_w, grid_h = M.grid_h, grid_d = M.grid_d, 
             macro_w = M.macro_w, macro_h = M.macro_h, macro_d = M.macro_d, 
-            shadow_idx = 0,
+            shadow_idx = 10,
             cam_pos = {M.cam_pos_smooth[1], M.cam_pos_smooth[2], M.cam_pos_smooth[3]} 
         })
         vk.vkCmdPushConstants(cb, state.render_layout, bit.bor(vk.VK_SHADER_STAGE_VERTEX_BIT, vk.VK_SHADER_STAGE_FRAGMENT_BIT), 0, ffi.sizeof("RenderPC"), pc)

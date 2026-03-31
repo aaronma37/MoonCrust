@@ -56,15 +56,15 @@
 - [ ] **Dynamic Destruction:** High-speed "Carving" of the 3D Image when tools/explosives are used.
 
 ## 💡 Voxel Global Illumination (Light Propagation CA)
-- [ ] **Dual Light Buffers:** Replace the single `signal_vol` with `light_vol_a` and `light_vol_b` (using packed `r32ui` for RGB channels) to enable ping-pong CA read/writes.
-- [ ] **Light Injection:**
+- [x] **Dual Light Buffers:** Replace the single `signal_vol` with `light_vol_a` and `light_vol_b` (using packed `r32ui` for RGB channels) to enable ping-pong CA read/writes.
+- [x] **Light Injection:**
     - Constant warm sunlight injected at the top of the grid (`y = grid_h - 1`).
     - Emissive voxel materials (e.g., glowing crystals or lava) injecting their own colored light locally.
     - Dynamic entities (robot, DNA) injecting light directly into the volume.
-- [ ] **Fluid Propagation Logic (`sim.comp`):**
+- [x] **Fluid Propagation Logic (`sim.comp`):**
     - Treat light like a diffusing fluid. Each air voxel samples its 6 neighbors, averages incoming RGB light, and applies a decay/attenuation factor.
-    - Occlusion: Solid blocks block light propagation naturally, creating soft shadows and directional bouncing.
-- [ ] **GI Rendering (`render.frag`):**
+- [x] **Shadow Mapping Pass:** Added 2D shadow mapping for crisp directional light.
+- [x] **GI Rendering (`render.frag`):**
     - Sample the 3D light volume using the fragment's world position slightly offset by the vertex normal.
     - Unpack the RGB values and multiply by the base voxel color/diffuse lighting.
 - [ ] **Sparsity Optimization:** Ensure light propagation updates the chunk `active_map` so illuminated areas eventually settle and go to "sleep" (costing zero GPU cycles) once the lighting state reaches equilibrium.

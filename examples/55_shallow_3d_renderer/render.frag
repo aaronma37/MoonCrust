@@ -68,7 +68,7 @@ float get_shadow(vec3 world_pos) {
     
     float shadow = 0.0;
     vec2 texel_size = 1.0 / textureSize(all_textures[nonuniformEXT(pc.shadow_idx)], 0);
-    float bias = 0.005;
+    float bias = 0.0005; 
     
     for (int x = -1; x <= 1; ++x) {
         for (int y = -1; y <= 1; ++y) {

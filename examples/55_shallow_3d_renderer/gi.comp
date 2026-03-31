@@ -21,8 +21,8 @@ void main() {
     uint light_out = 0;
     
     if (pos.y >= pc.macro_h - 1) {
-        // Sunlight injection at the top of the macro volume
-        light_out = 255 | (240 << 8) | (220 << 16);
+        // Sunlight injection at the top of the macro volume (boosted)
+        light_out = 255 | (250 << 8) | (240 << 16);
     } else {
         // Sample center of the 8x8x8 high-res block
         ivec3 hp = pos * 8 + ivec3(4);
@@ -39,7 +39,7 @@ void main() {
         uint nl_self_raw = imageLoad(all_storage_images[nonuniformEXT(pc.light_in_idx)], pos).r;
         vec3 nl_self = vec3(float(nl_self_raw & 0xFF), float((nl_self_raw >> 8) & 0xFF), float((nl_self_raw >> 16) & 0xFF));
 
-        float bounce_factor = (mat == 0 || mat == 10) ? 0.98 : 0.85; // Much slower decay for macro-GI
+        float bounce_factor = (mat == 0 || mat == 10) ? 0.99 : 0.92; // Slower decay
 
         for (int i = 1; i < 7; i++) {
             ivec3 np = pos + offsets[i];
