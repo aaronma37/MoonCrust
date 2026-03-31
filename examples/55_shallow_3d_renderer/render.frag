@@ -59,12 +59,11 @@ void main() {
     // Sample macro light volume with trilinear interpolation
     vec3 light_color = sample_macro_light(in_world_pos + in_norm * 0.5);
     
-    if (length(light_color) < 0.01) {
-        light_color = vec3(0.05); // Default ambient
-    }
+    // Smooth ambient floor to avoid dark ring artifacts
+    light_color = max(light_color, vec3(0.05));
     
     vec3 base_col = in_col * dif;
-    base_col *= light_color * 2.0; // Boost light intensity for visibility
+    base_col *= light_color * 2.5; // Boost light intensity for visibility
     
     // Emissive Override
     if (in_mat == 3) {

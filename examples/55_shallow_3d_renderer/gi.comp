@@ -1,0 +1,71 @@
+#version 450
+#extension GL_EXT_nonuniform_qualifier : require
+
+layout(local_size_x = 4, local_size_y = 4, local_size_z = 4) in;
+
+layout(set = 0, binding = 2, r32ui) uniform uimage3D all_storage_images[];
+
+layout(push_constant) uniform PushConstants {
+    uint in_img;
+    uint out_img;
+    uint light_in_idx;
+    uint light_out_idx;
+    uint grid_w, grid_h, grid_d;
+    uint macro_w, macro_h, macro_d;
+} pc;
+
+void main() {
+    ivec3 pos = ivec3(gl_GlobalInvocationID.xyz);
+    if (any(greaterThanEqual(pos, ivec3(pc.macro_w, pc.macro_h, pc.macro_d)))) return;
+
+    uint light_out = 0;
+    
+    if (pos.y >= pc.macro_h - 1) {
+        // Sunlight injection at the top of the macro volume
+        light_out = 255 | (240 << 8) | (220 << 16);
+    } else {
+        // Sample center of the 8x8x8 high-res block
+        ivec3 hp = pos * 8 + ivec3(4);
+        uint high_current = imageLoad(all_storage_images[nonuniformEXT(pc.in_img)], hp).r;
+        uint mat = high_current & 0xFF;
+        
+        vec3 sum_light = vec3(0.0);
+        float count = 0.0;
+        ivec3 offsets[7] = {
+            ivec3(0,0,0), ivec3(1,0,0), ivec3(-1,0,0),
+            ivec3(0,1,0), ivec3(0,-1,0), ivec3(0,0,1), ivec3(0,0,-1)
+        };
+        
+        uint nl_self_raw = imageLoad(all_storage_images[nonuniformEXT(pc.light_in_idx)], pos).r;
+        vec3 nl_self = vec3(float(nl_self_raw & 0xFF), float((nl_self_raw >> 8) & 0xFF), float((nl_self_raw >> 16) & 0xFF));
+
+        float bounce_factor = (mat == 0 || mat == 10) ? 0.98 : 0.85; // Much slower decay for macro-GI
+
+        for (int i = 1; i < 7; i++) {
+            ivec3 np = pos + offsets[i];
+            if (all(greaterThanEqual(np, ivec3(0))) && all(lessThan(np, ivec3(pc.macro_w, pc.macro_h, pc.macro_d)))) {
+                uint nl_raw = imageLoad(all_storage_images[nonuniformEXT(pc.light_in_idx)], np).r;
+                vec3 nl = vec3(float(nl_raw & 0xFF), float((nl_raw >> 8) & 0xFF), float((nl_raw >> 16) & 0xFF));
+                
+                if (offsets[i] == ivec3(0, 1, 0) && nl.r > 240.0) {
+                    sum_light += (mat == 0 || mat == 10) ? nl : nl * bounce_factor;
+                } else {
+                    sum_light += nl * bounce_factor;
+                }
+                count += 1.0;
+            }
+        }
+        
+        vec3 avg_light = (count > 0.0) ? (sum_light / count) : vec3(0.0);
+        vec3 final_light = max(avg_light, nl_self * (bounce_factor - 0.01));
+        
+        // Emissive crystal boost
+        if (mat == 3) {
+            final_light = max(final_light, vec3(50.0, 100.0, 255.0));
+        }
+        
+        light_out = uint(final_light.r) | (uint(final_light.g) << 8) | (uint(final_light.b) << 16);
+    }
+    
+    imageStore(all_storage_images[nonuniformEXT(pc.light_out_idx)], pos, uvec4(light_out));
+}

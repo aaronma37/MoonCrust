@@ -80,6 +80,10 @@ ffi.cdef[[
         float dt; 
     } DNAPC;
 
+    typedef struct GIPC { 
+        uint32_t in_img, out_img, light_in_idx, light_out_idx, grid_w, grid_h, grid_d, macro_w, macro_h, macro_d; 
+    } GIPC;
+
     typedef struct MesherPC { 
         uint32_t in_img, dirty_map_idx, v_buf, indirect_buf, grid_w, grid_h, grid_d, active_map_idx; 
         int32_t px, py, pz, p0; 
@@ -201,6 +205,7 @@ function M.init()
     descriptors.update_buffer_set(state.device, state.bindless_set, 0, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, state.stats_buf.handle, 0, state.stats_buf.size, 7)
 
     state.pipe_sim = mc.gpu.compute_pipeline("examples/55_shallow_3d_renderer/sim.comp", ffi.sizeof("SimTickPC"))
+    state.pipe_gi = mc.gpu.compute_pipeline("examples/55_shallow_3d_renderer/gi.comp", ffi.sizeof("GIPC"))
     state.pipe_mesh = mc.gpu.compute_pipeline("examples/55_shallow_3d_renderer/mesh.comp", ffi.sizeof("MesherPC"))
     state.pipe_gen = mc.gpu.compute_pipeline("examples/55_shallow_3d_renderer/gen.comp", 16)
     state.pipe_player = mc.gpu.compute_pipeline("examples/55_shallow_3d_renderer/player.comp", ffi.sizeof("PlayerUpdatePC"))
@@ -431,11 +436,19 @@ function M.update()
             vk.vkCmdDispatch(cb, M.grid_w/16, M.grid_h/16, M.grid_d)
         end):using(vol_in_res, vk.VK_ACCESS_SHADER_READ_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, vk.VK_IMAGE_LAYOUT_GENERAL)
            :using(vol_out_res, vk.VK_ACCESS_SHADER_WRITE_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, vk.VK_IMAGE_LAYOUT_GENERAL)
-           :using(light_in_res, bit.bor(vk.VK_ACCESS_SHADER_READ_BIT, vk.VK_ACCESS_SHADER_WRITE_BIT), vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, vk.VK_IMAGE_LAYOUT_GENERAL)
-           :using(light_out_res, vk.VK_ACCESS_SHADER_WRITE_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, vk.VK_IMAGE_LAYOUT_GENERAL)
            :using(act_in_res, vk.VK_ACCESS_SHADER_READ_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT)
            :using(act_out_res, vk.VK_ACCESS_SHADER_WRITE_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT)
            :using(state.res_stats, vk.VK_ACCESS_SHADER_WRITE_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT)
+
+        state.rg:add_pass("Macro_GI_" .. i, function(cb)
+            vk.vkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_COMPUTE, state.pipe_gi.handle)
+            vk.vkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_COMPUTE, state.pipe_gi.layout, 0, 1, ffi.new("VkDescriptorSet[1]", {state.bindless_set}), 0, nil)
+            local pc = ffi.new("GIPC", { in_img = vol_in_idx, out_img = vol_out_idx, light_in_idx = light_in_idx, light_out_idx = light_out_idx, grid_w = M.grid_w, grid_h = M.grid_h, grid_d = M.grid_d, macro_w = M.macro_w, macro_h = M.macro_h, macro_d = M.macro_d })
+            vk.vkCmdPushConstants(cb, state.pipe_gi.layout, vk.VK_SHADER_STAGE_COMPUTE_BIT, 0, ffi.sizeof("GIPC"), pc)
+            vk.vkCmdDispatch(cb, M.macro_w/4, M.macro_h/4, M.macro_d/4)
+        end):using(vol_in_res, vk.VK_ACCESS_SHADER_READ_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, vk.VK_IMAGE_LAYOUT_GENERAL)
+           :using(light_in_res, vk.VK_ACCESS_SHADER_READ_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, vk.VK_IMAGE_LAYOUT_GENERAL)
+           :using(light_out_res, vk.VK_ACCESS_SHADER_WRITE_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, vk.VK_IMAGE_LAYOUT_GENERAL)
         
         vol_in_res, vol_out_res = vol_out_res, vol_in_res
         vol_in_idx, vol_out_idx = vol_out_idx, vol_in_idx
