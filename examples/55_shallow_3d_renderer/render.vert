@@ -4,13 +4,16 @@
 layout(set = 0, binding = 0) buffer GlobalBuffers { uint data[]; } world[];
 layout(push_constant) uniform PushConstants {
     mat4 mvp;           // 0-63
-    uint v_buf;         // 64-67
-    uint light_img;     // 68-71
-    uint grid_w;        // 72-75
-    uint grid_h;        // 76-79
-    uint grid_d;        // 80-83
-    uint p0, p1, p2;    // 84-95 (Padding)
-    vec3 cam_pos;       // 96-107
+    mat4 light_mvp;     // 64-127
+    uint v_buf;         // 128-131
+    uint light_img;     // 132-135
+    uint grid_w;        // 136-139
+    uint grid_h;        // 140-143
+    uint grid_d;        // 144-147
+    uint macro_w, macro_h, macro_d; // 148-159
+    uint shadow_idx;    // 160-163
+    float p0, p1, p2;   // 164-175
+    vec3 cam_pos;       // 176-187
 } pc;
 
 layout(location = 0) out vec3 out_norm;
