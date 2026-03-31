@@ -84,15 +84,7 @@ void main() {
         light_out = 50 | (100 << 8) | (255 << 16);
     }
     
-    // Check if we need to preserve existing entity light injection (from DNA)
-    // We do this by taking max with self light_in to ensure injected light isn't overwritten immediately
     uint light_in = imageLoad(all_storage_images[nonuniformEXT(pc.light_in_img)], pos).r;
-    if (light_in > 0) {
-        uint nr = max(light_out & 0xFF, light_in & 0xFF);
-        uint ng = max((light_out >> 8) & 0xFF, (light_in >> 8) & 0xFF);
-        uint nb = max((light_out >> 16) & 0xFF, (light_in >> 16) & 0xFF);
-        light_out = nr | (ng << 8) | (nb << 16);
-    }
     
     imageStore(all_storage_images[nonuniformEXT(pc.light_out_img)], pos, uvec4(light_out));
     if (light_in != light_out) mark_chunk(pos);

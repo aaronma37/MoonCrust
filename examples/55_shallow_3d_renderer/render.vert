@@ -17,6 +17,7 @@ layout(location = 0) out vec3 out_norm;
 layout(location = 1) out vec3 out_col;
 layout(location = 2) out vec3 out_world_pos;
 layout(location = 3) out vec3 out_cam_pos;
+layout(location = 4) flat out uint out_mat;
 
 const ivec3 face_corners[6][4] = {
     {ivec3(1,0,0), ivec3(1,1,0), ivec3(1,1,1), ivec3(1,0,1)}, // +X
@@ -95,4 +96,5 @@ void main() {
 
     float ao_mult = 0.4 + (float(ao) / 3.0) * 0.6;
     out_col = palette[mat_to_col_idx(mat)] * ao_mult;
+    out_mat = mat;
 }

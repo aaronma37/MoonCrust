@@ -5,6 +5,7 @@ layout(location = 0) in vec3 in_norm;
 layout(location = 1) in vec3 in_col;
 layout(location = 2) in vec3 in_world_pos;
 layout(location = 3) in vec3 in_cam_pos;
+layout(location = 4) flat in uint in_mat;
 layout(location = 0) out vec4 out_col;
 
 layout(set = 0, binding = 2, r32ui) uniform uimage3D all_storage_images[];
@@ -45,6 +46,11 @@ void main() {
     
     vec3 base_col = in_col * dif;
     base_col *= light_color * 2.0; // Boost light intensity for visibility
+    
+    // Emissive Override
+    if (in_mat == 3) {
+        base_col = in_col * 2.0; // Glow brightly, ignore shadows
+    }
     
     vec3 sky_color = vec3(0.5, 0.7, 0.9);
     float dist = distance(in_world_pos, pc.cam_pos);
