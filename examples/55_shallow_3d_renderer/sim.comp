@@ -14,13 +14,31 @@ layout(push_constant) uniform PushConstants {
     uint grid_w, grid_h, grid_d;
     uint active_map_idx;
     uint dirty_map_idx;
+    uint out_active_map_idx;
 } pc;
 
-void mark_chunk(ivec3 p) {
-    if (any(lessThan(p, ivec3(0))) || any(greaterThanEqual(p, ivec3(pc.grid_w, pc.grid_h, pc.grid_d)))) return;
+void mark_self(ivec3 p, bool physical_change) {
     ivec3 cp = p / 16;
     uint chunk_idx = cp.x + (cp.y * (pc.grid_w/16)) + (cp.z * (pc.grid_w/16) * (pc.grid_h/16));
-    atomicOr(world[nonuniformEXT(pc.active_map_idx)].data[chunk_idx], 1);
+    atomicOr(world[nonuniformEXT(pc.out_active_map_idx)].data[chunk_idx], 1);
+    if (physical_change) {
+        atomicOr(world[nonuniformEXT(pc.dirty_map_idx)].data[chunk_idx], 1);
+    }
+}
+
+void mark_neighbors(ivec3 p) {
+    ivec3 offsets[6] = {
+        ivec3(16,0,0), ivec3(-16,0,0),
+        ivec3(0,16,0), ivec3(0,-16,0),
+        ivec3(0,0,16), ivec3(0,0,-16)
+    };
+    for (int i = 0; i < 6; i++) {
+        ivec3 np = p + offsets[i];
+        if (any(lessThan(np, ivec3(0))) || any(greaterThanEqual(np, ivec3(pc.grid_w, pc.grid_h, pc.grid_d)))) continue;
+        ivec3 cp = np / 16;
+        uint chunk_idx = cp.x + (cp.y * (pc.grid_w/16)) + (cp.z * (pc.grid_w/16) * (pc.grid_h/16));
+        atomicOr(world[nonuniformEXT(pc.out_active_map_idx)].data[chunk_idx], 1);
+    }
 }
 
 void main() {
@@ -84,10 +102,27 @@ void main() {
         light_out = 50 | (100 << 8) | (255 << 16);
     }
     
+    // Always take max with incoming light
     uint light_in = imageLoad(all_storage_images[nonuniformEXT(pc.light_in_img)], pos).r;
+    if (light_in > 0) {
+        uint nr = max(light_out & 0xFF, light_in & 0xFF);
+        uint ng = max((light_out >> 8) & 0xFF, (light_in >> 8) & 0xFF);
+        uint nb = max((light_out >> 16) & 0xFF, (light_in >> 16) & 0xFF);
+        if (mat != 0 && mat != 3) {
+            nr = uint(float(nr) * 0.5); ng = uint(float(ng) * 0.5); nb = uint(float(nb) * 0.5);
+        }
+        light_out = nr | (ng << 8) | (nb << 16);
+    }
     
     imageStore(all_storage_images[nonuniformEXT(pc.light_out_img)], pos, uvec4(light_out));
-    if (light_in != light_out) mark_chunk(pos);
+    if (light_in != light_out) {
+        mark_self(pos, false);
+        // If we are at the border of a chunk, wake up the neighbor
+        ivec3 lp = pos % 16;
+        if (lp.x == 0 || lp.x == 15 || lp.y == 0 || lp.y == 15 || lp.z == 0 || lp.z == 15) {
+            mark_neighbors(pos);
+        }
+    }
 
     if (mat == 10) {
         imageStore(all_storage_images[nonuniformEXT(pc.out_img)], pos, uvec4(10));
@@ -95,29 +130,10 @@ void main() {
     }
 
     uint next = current;
-    
-    // Standard CA neighbor logic
-    // Disabled to prevent apocalyptic terrain growth
-    /*
-    if (mat == 0 || mat == 1) { 
-        int neighbors = 0;
-        for (int z = -1; z <= 1; z++) {
-            for (int y = -1; y <= 1; y++) {
-                for (int x = -1; x <= 1; x++) {
-                    if (x == 0 && y == 0 && z == 0) continue;
-                    ivec3 n_pos = pos + ivec3(x, y, z);
-                    if (all(greaterThanEqual(n_pos, ivec3(0))) && all(lessThan(n_pos, ivec3(pc.grid_w, pc.grid_h, pc.grid_d)))) {
-                        uint n_mat = imageLoad(all_storage_images[nonuniformEXT(pc.in_img)], n_pos).r & 0xFF;
-                        if (n_mat == 1) neighbors++;
-                    }
-                }
-            }
-        }
-        if (mat == 1) { if (neighbors < 4 || neighbors > 8) next = 0; }
-        else if (mat == 0) { if (neighbors >= 6 && neighbors <= 10) next = 1; }
-    }
-    */
-
+    // (CA logic disabled)
     imageStore(all_storage_images[nonuniformEXT(pc.out_img)], pos, uvec4(next));
-    if (current != next) mark_chunk(pos);
+    if (current != next) {
+        mark_self(pos, true);
+        mark_neighbors(pos);
+    }
 }

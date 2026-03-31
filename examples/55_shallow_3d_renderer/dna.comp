@@ -25,15 +25,31 @@ layout(push_constant) uniform PushConstants {
     uint grid_w, grid_h, grid_d;
     uint active_map_idx;
     uint dirty_map_idx;
+    uint out_active_map_idx;
+    uint p0;
     float dt;
-    uint p0, p1, p2; // Padding to match Lua DNAPC (48 bytes)
 } pc;
 
-void mark_chunk(ivec3 p) {
+void mark_self(ivec3 p) {
     if (any(lessThan(p, ivec3(0))) || any(greaterThanEqual(p, ivec3(pc.grid_w, pc.grid_h, pc.grid_d)))) return;
     ivec3 cp = p / 16;
     uint chunk_idx = cp.x + (cp.y * (pc.grid_w/16)) + (cp.z * (pc.grid_w/16) * (pc.grid_h/16));
-    atomicOr(world[nonuniformEXT(pc.active_map_idx)].data[chunk_idx], 1);
+    atomicOr(world[nonuniformEXT(pc.out_active_map_idx)].data[chunk_idx], 1);
+}
+
+void mark_neighbors(ivec3 p) {
+    ivec3 offsets[6] = {
+        ivec3(16,0,0), ivec3(-16,0,0),
+        ivec3(0,16,0), ivec3(0,-16,0),
+        ivec3(0,0,16), ivec3(0,0,-16)
+    };
+    for (int i = 0; i < 6; i++) {
+        ivec3 np = p + offsets[i];
+        if (any(lessThan(np, ivec3(0))) || any(greaterThanEqual(np, ivec3(pc.grid_w, pc.grid_h, pc.grid_d)))) continue;
+        ivec3 cp = np / 16;
+        uint chunk_idx = cp.x + (cp.y * (pc.grid_w/16)) + (cp.z * (pc.grid_w/16) * (pc.grid_h/16));
+        atomicOr(world[nonuniformEXT(pc.out_active_map_idx)].data[chunk_idx], 1);
+    }
 }
 
 void main() {
@@ -41,6 +57,9 @@ void main() {
     uint e_idx = nonuniformEXT(pc.entity_buf_idx);
     
     if (entities[e_idx].e[idx].type == 0) return;
+
+    // Wake up current chunk for next tick
+    mark_self(ivec3(entities[e_idx].e[idx].pos));
 
     if (entities[e_idx].e[idx].type == 1) {
         entities[e_idx].e[idx].age += pc.dt;
@@ -66,7 +85,8 @@ void main() {
                     // DNA entity injects bright green light (0x0000FF00 -> R=0, G=255, B=0)
                     uint green_light = (255 << 8);
                     imageStore(all_storage_images[nonuniformEXT(pc.light_img)], tip_pos, uvec4(green_light));
-                    mark_chunk(tip_pos);
+                    mark_self(tip_pos);
+                    mark_neighbors(tip_pos);
                 }
                 entities[e_idx].e[idx].energy -= 1; 
             }
