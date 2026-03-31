@@ -97,6 +97,8 @@ void main() {
     uint next = current;
     
     // Standard CA neighbor logic
+    // Disabled to prevent apocalyptic terrain growth
+    /*
     if (mat == 0 || mat == 1) { 
         int neighbors = 0;
         for (int z = -1; z <= 1; z++) {
@@ -106,7 +108,7 @@ void main() {
                     ivec3 n_pos = pos + ivec3(x, y, z);
                     if (all(greaterThanEqual(n_pos, ivec3(0))) && all(lessThan(n_pos, ivec3(pc.grid_w, pc.grid_h, pc.grid_d)))) {
                         uint n_mat = imageLoad(all_storage_images[nonuniformEXT(pc.in_img)], n_pos).r & 0xFF;
-                        if (n_mat > 0 && n_mat != 10 && n_mat < 20) neighbors++;
+                        if (n_mat == 1) neighbors++;
                     }
                 }
             }
@@ -114,6 +116,7 @@ void main() {
         if (mat == 1) { if (neighbors < 4 || neighbors > 8) next = 0; }
         else if (mat == 0) { if (neighbors >= 6 && neighbors <= 10) next = 1; }
     }
+    */
 
     imageStore(all_storage_images[nonuniformEXT(pc.out_img)], pos, uvec4(next));
     if (current != next) mark_chunk(pos);
