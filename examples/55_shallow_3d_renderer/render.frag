@@ -18,30 +18,49 @@ layout(push_constant) uniform PushConstants {
     uint grid_w;        // 72-75
     uint grid_h;        // 76-79
     uint grid_d;        // 80-83
-    uint p0, p1, p2;    // 84-95 (Padding)
+    uint macro_w, macro_h, macro_d; // 84-95
     vec3 cam_pos;       // 96-107
 } pc;
+
+vec3 unpack_light(uint raw) {
+    if (raw == 0) return vec3(0.0);
+    return vec3(float(raw & 0xFF), float((raw >> 8) & 0xFF), float((raw >> 16) & 0xFF)) / 255.0;
+}
+
+vec3 sample_macro_light(vec3 world_pos) {
+    vec3 p = (world_pos / 8.0) - vec3(0.5);
+    ivec3 p0 = ivec3(floor(p));
+    vec3 f = fract(p);
+    
+    vec3 c000 = unpack_light(imageLoad(all_storage_images[nonuniformEXT(pc.light_img)], clamp(p0 + ivec3(0,0,0), ivec3(0), ivec3(pc.macro_w-1, pc.macro_h-1, pc.macro_d-1))).r);
+    vec3 c100 = unpack_light(imageLoad(all_storage_images[nonuniformEXT(pc.light_img)], clamp(p0 + ivec3(1,0,0), ivec3(0), ivec3(pc.macro_w-1, pc.macro_h-1, pc.macro_d-1))).r);
+    vec3 c010 = unpack_light(imageLoad(all_storage_images[nonuniformEXT(pc.light_img)], clamp(p0 + ivec3(0,1,0), ivec3(0), ivec3(pc.macro_w-1, pc.macro_h-1, pc.macro_d-1))).r);
+    vec3 c110 = unpack_light(imageLoad(all_storage_images[nonuniformEXT(pc.light_img)], clamp(p0 + ivec3(1,1,0), ivec3(0), ivec3(pc.macro_w-1, pc.macro_h-1, pc.macro_d-1))).r);
+    vec3 c001 = unpack_light(imageLoad(all_storage_images[nonuniformEXT(pc.light_img)], clamp(p0 + ivec3(0,0,1), ivec3(0), ivec3(pc.macro_w-1, pc.macro_h-1, pc.macro_d-1))).r);
+    vec3 c101 = unpack_light(imageLoad(all_storage_images[nonuniformEXT(pc.light_img)], clamp(p0 + ivec3(1,0,1), ivec3(0), ivec3(pc.macro_w-1, pc.macro_h-1, pc.macro_d-1))).r);
+    vec3 c011 = unpack_light(imageLoad(all_storage_images[nonuniformEXT(pc.light_img)], clamp(p0 + ivec3(0,1,1), ivec3(0), ivec3(pc.macro_w-1, pc.macro_h-1, pc.macro_d-1))).r);
+    vec3 c111 = unpack_light(imageLoad(all_storage_images[nonuniformEXT(pc.light_img)], clamp(p0 + ivec3(1,1,1), ivec3(0), ivec3(pc.macro_w-1, pc.macro_h-1, pc.macro_d-1))).r);
+    
+    vec3 c00 = mix(c000, c100, f.x);
+    vec3 c01 = mix(c001, c101, f.x);
+    vec3 c10 = mix(c010, c110, f.x);
+    vec3 c11 = mix(c011, c111, f.x);
+    
+    vec3 c0 = mix(c00, c10, f.y);
+    vec3 c1 = mix(c01, c11, f.y);
+    
+    return mix(c0, c1, f.z);
+}
 
 void main() {
     vec3 L = normalize(vec3(0.5, 1.0, 0.3));
     float dif = clamp(dot(in_norm, L), 0.2, 1.0);
     
-    // Sample light slightly inside the "air" block
-    ivec3 p = ivec3(floor(in_world_pos + in_norm * 0.1));
-    uint light_raw = 0;
-    if (all(greaterThanEqual(p, ivec3(0))) && all(lessThan(p, ivec3(pc.grid_w, pc.grid_h, pc.grid_d)))) {
-        light_raw = imageLoad(all_storage_images[nonuniformEXT(pc.light_img)], p).r;
-    }
+    // Sample macro light volume with trilinear interpolation
+    vec3 light_color = sample_macro_light(in_world_pos + in_norm * 0.5);
     
-    vec3 light_color = vec3(0.0);
-    if (light_raw > 0) {
-        float r = float(light_raw & 0xFF) / 255.0;
-        float g = float((light_raw >> 8) & 0xFF) / 255.0;
-        float b = float((light_raw >> 16) & 0xFF) / 255.0;
-        light_color = vec3(r, g, b);
-    } else {
-        // Default ambient if completely dark
-        light_color = vec3(0.05);
+    if (length(light_color) < 0.01) {
+        light_color = vec3(0.05); // Default ambient
     }
     
     vec3 base_col = in_col * dif;

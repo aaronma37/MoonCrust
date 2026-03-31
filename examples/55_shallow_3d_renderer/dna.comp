@@ -26,7 +26,7 @@ layout(push_constant) uniform PushConstants {
     uint active_map_idx;
     uint dirty_map_idx;
     uint out_active_map_idx;
-    uint p0;
+    uint stats_buf_idx;
     float dt;
 } pc;
 
@@ -34,7 +34,10 @@ void mark_self(ivec3 p) {
     if (any(lessThan(p, ivec3(0))) || any(greaterThanEqual(p, ivec3(pc.grid_w, pc.grid_h, pc.grid_d)))) return;
     ivec3 cp = p / 16;
     uint chunk_idx = cp.x + (cp.y * (pc.grid_w/16)) + (cp.z * (pc.grid_w/16) * (pc.grid_h/16));
-    atomicOr(world[nonuniformEXT(pc.out_active_map_idx)].data[chunk_idx], 1);
+    uint prev = atomicOr(world[nonuniformEXT(pc.out_active_map_idx)].data[chunk_idx], 1);
+    if (prev == 0) {
+        atomicAdd(world[nonuniformEXT(pc.stats_buf_idx)].data[0], 1);
+    }
 }
 
 void mark_neighbors(ivec3 p) {
@@ -48,7 +51,10 @@ void mark_neighbors(ivec3 p) {
         if (any(lessThan(np, ivec3(0))) || any(greaterThanEqual(np, ivec3(pc.grid_w, pc.grid_h, pc.grid_d)))) continue;
         ivec3 cp = np / 16;
         uint chunk_idx = cp.x + (cp.y * (pc.grid_w/16)) + (cp.z * (pc.grid_w/16) * (pc.grid_h/16));
-        atomicOr(world[nonuniformEXT(pc.out_active_map_idx)].data[chunk_idx], 1);
+        uint prev = atomicOr(world[nonuniformEXT(pc.out_active_map_idx)].data[chunk_idx], 1);
+        if (prev == 0) {
+            atomicAdd(world[nonuniformEXT(pc.stats_buf_idx)].data[0], 1);
+        }
     }
 }
 

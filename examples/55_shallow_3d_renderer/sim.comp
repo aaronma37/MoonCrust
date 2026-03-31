@@ -15,12 +15,17 @@ layout(push_constant) uniform PushConstants {
     uint active_map_idx;
     uint dirty_map_idx;
     uint out_active_map_idx;
+    uint stats_buf_idx;
+    uint p1;
 } pc;
 
 void mark_self(ivec3 p, bool physical_change) {
     ivec3 cp = p / 16;
     uint chunk_idx = cp.x + (cp.y * (pc.grid_w/16)) + (cp.z * (pc.grid_w/16) * (pc.grid_h/16));
-    atomicOr(world[nonuniformEXT(pc.out_active_map_idx)].data[chunk_idx], 1);
+    uint prev = atomicOr(world[nonuniformEXT(pc.out_active_map_idx)].data[chunk_idx], 1);
+    if (prev == 0) {
+        atomicAdd(world[nonuniformEXT(pc.stats_buf_idx)].data[0], 1);
+    }
     if (physical_change) {
         atomicOr(world[nonuniformEXT(pc.dirty_map_idx)].data[chunk_idx], 1);
     }
@@ -37,12 +42,72 @@ void mark_neighbors(ivec3 p) {
         if (any(lessThan(np, ivec3(0))) || any(greaterThanEqual(np, ivec3(pc.grid_w, pc.grid_h, pc.grid_d)))) continue;
         ivec3 cp = np / 16;
         uint chunk_idx = cp.x + (cp.y * (pc.grid_w/16)) + (cp.z * (pc.grid_w/16) * (pc.grid_h/16));
-        atomicOr(world[nonuniformEXT(pc.out_active_map_idx)].data[chunk_idx], 1);
+        uint prev = atomicOr(world[nonuniformEXT(pc.out_active_map_idx)].data[chunk_idx], 1);
+        if (prev == 0) {
+            atomicAdd(world[nonuniformEXT(pc.stats_buf_idx)].data[0], 1);
+        }
     }
 }
 
 void main() {
     ivec3 pos = ivec3(gl_GlobalInvocationID.xyz);
+    // Grid sizes for macro light volume
+    uint mw = pc.grid_w / 8;
+    uint mh = pc.grid_h / 8;
+    uint md = pc.grid_d / 8;
+
+    if (pos.x < mw && pos.y < mh && pos.z < md) {
+        // Macro Light Propagation
+        uint light_out = 0;
+        
+        if (pos.y >= mh - 1) {
+            light_out = 255 | (240 << 8) | (220 << 16);
+        } else {
+            // Sample central high-res voxel to see if we are in air
+            ivec3 hp = pos * 8 + ivec3(4);
+            uint high_current = imageLoad(all_storage_images[nonuniformEXT(pc.in_img)], hp).r;
+            uint mat = high_current & 0xFF;
+            
+            if (mat == 0 || mat == 10 || (mat != 3 && mat != 0)) {
+                vec3 sum_light = vec3(0.0);
+                float count = 0.0;
+                ivec3 offsets[7] = {
+                    ivec3(0,0,0), ivec3(1,0,0), ivec3(-1,0,0),
+                    ivec3(0,1,0), ivec3(0,-1,0), ivec3(0,0,1), ivec3(0,0,-1)
+                };
+                
+                uint nl_self_raw = imageLoad(all_storage_images[nonuniformEXT(pc.light_in_img)], pos).r;
+                vec3 nl_self = vec3(float(nl_self_raw & 0xFF), float((nl_self_raw >> 8) & 0xFF), float((nl_self_raw >> 16) & 0xFF));
+
+                float bounce_factor = (mat == 0 || mat == 10) ? 0.95 : 0.70; // Solid surfaces reflect less
+
+                for (int i = 1; i < 7; i++) {
+                    ivec3 np = pos + offsets[i];
+                    if (all(greaterThanEqual(np, ivec3(0))) && all(lessThan(np, ivec3(mw, mh, md)))) {
+                        uint nl_raw = imageLoad(all_storage_images[nonuniformEXT(pc.light_in_img)], np).r;
+                        vec3 nl = vec3(float(nl_raw & 0xFF), float((nl_raw >> 8) & 0xFF), float((nl_raw >> 16) & 0xFF));
+                        
+                        if (offsets[i] == ivec3(0, 1, 0) && nl.r > 240.0) {
+                            // Direct sunlight propagates down perfectly through air
+                            sum_light += (mat == 0 || mat == 10) ? nl : nl * bounce_factor;
+                        } else {
+                            sum_light += nl * bounce_factor;
+                        }
+                        count += 1.0;
+                    }
+                }
+                
+                vec3 avg_light = (count > 0.0) ? (sum_light / count) : vec3(0.0);
+                vec3 final_light = max(avg_light, nl_self * (bounce_factor - 0.05));
+                
+                light_out = uint(final_light.r) | (uint(final_light.g) << 8) | (uint(final_light.b) << 16);
+            } else if (mat == 3) {
+                light_out = 50 | (100 << 8) | (255 << 16);
+            }
+        }
+        imageStore(all_storage_images[nonuniformEXT(pc.light_out_img)], pos, uvec4(light_out));
+    }
+
     if (any(greaterThanEqual(pos, ivec3(pc.grid_w, pc.grid_h, pc.grid_d)))) return;
 
     ivec3 cp = pos / 16;
