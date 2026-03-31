@@ -102,10 +102,10 @@ ffi.cdef[[
         float light_mvp[16];
         uint32_t v_buf, light_img, grid_w, grid_h;
         uint32_t grid_d, macro_w, macro_h, macro_d;
-        uint32_t shadow_idx, shadow_vol_idx;
-        float p0, p1; 
+        uint32_t shadow_idx, shadow_vol_idx, gi_vol_idx, p0;
         float cam_pos[3], p3;
     } RenderPC;
+
 
     typedef struct ShadowPC {
         float mvp[16];
@@ -142,6 +142,7 @@ function M.init()
     state.depth_img = mc.gpu.image(state.sw.extent.width, state.sw.extent.height, vk.VK_FORMAT_D32_SFLOAT, "depth")
     state.shadow_vol = mc.gpu.image_3d(M.shadow_w, M.shadow_h, M.shadow_d, vk.VK_FORMAT_R16_SFLOAT, "storage sampled")
     state.shadow_sampler = mc.gpu.sampler(vk.VK_FILTER_LINEAR, vk.VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE)
+    state.gi_sampler = mc.gpu.sampler(vk.VK_FILTER_LINEAR, vk.VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE)
     
     local num_chunks = (M.grid_w/M.chunk_size) * (M.grid_h/M.chunk_size) * (M.grid_d/M.chunk_size)
     state.dirty_map = mc.gpu.buffer(num_chunks * 4, "storage", nil, true)
@@ -217,6 +218,10 @@ function M.init()
     descriptors.update_storage_image_set(state.device, state.bindless_set, 2, vk.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, state.macro_light_b.view, vk.VK_IMAGE_LAYOUT_GENERAL, 5)
     descriptors.update_storage_image_set(state.device, state.bindless_set, 2, vk.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, state.shadow_vol.view, vk.VK_IMAGE_LAYOUT_GENERAL, 8)
     descriptors.update_image_set(state.device, state.bindless_set, 1, vk.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, state.shadow_vol.view, state.shadow_sampler, vk.VK_IMAGE_LAYOUT_GENERAL, 11)
+    
+    -- Register the light volumes for high-speed sampling in fragment shader
+    descriptors.update_image_set(state.device, state.bindless_set, 1, vk.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, state.light_vol_a.view, state.gi_sampler, vk.VK_IMAGE_LAYOUT_GENERAL, 13)
+    descriptors.update_image_set(state.device, state.bindless_set, 1, vk.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, state.light_vol_b.view, state.gi_sampler, vk.VK_IMAGE_LAYOUT_GENERAL, 14)
     
     descriptors.update_buffer_set(state.device, state.bindless_set, 0, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, state.dirty_map.handle, 0, state.dirty_map.size, 0)
     descriptors.update_buffer_set(state.device, state.bindless_set, 0, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, state.v_buf.handle, 0, state.v_buf.size, 1)
@@ -546,7 +551,7 @@ function M.update()
             light_img = light_in_idx, 
             grid_w = M.grid_w, grid_h = M.grid_h, grid_d = M.grid_d, 
             macro_w = M.macro_w, macro_h = M.macro_h, macro_d = M.macro_d, 
-            shadow_idx = 10, shadow_vol_idx = 11,
+            shadow_idx = 10, shadow_vol_idx = 11, gi_vol_idx = (vol_in_idx == 0) and 13 or 14,
             cam_pos = {M.cam_pos_smooth[1], M.cam_pos_smooth[2], M.cam_pos_smooth[3]} 
         })
         vk.vkCmdPushConstants(cb, state.render_layout, bit.bor(vk.VK_SHADER_STAGE_VERTEX_BIT, vk.VK_SHADER_STAGE_FRAGMENT_BIT), 0, ffi.sizeof("RenderPC"), pc)

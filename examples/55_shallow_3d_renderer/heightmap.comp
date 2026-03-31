@@ -1,0 +1,31 @@
+#version 450
+#extension GL_EXT_nonuniform_qualifier : require
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(set = 0, binding = 2, r32ui) uniform uimage3D all_storage_images[];
+layout(set = 0, binding = 2, r16f) uniform image2D all_storage_floats_2d[];
+
+layout(push_constant) uniform PushConstants {
+    uint in_img;        // High-res volume
+    uint out_img;       // 2D Heightmap (R16F)
+    uint grid_w, grid_h, grid_d;
+} pc;
+
+void main() {
+    ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
+    if (pos.x >= pc.grid_w || pos.y >= pc.grid_d) return;
+
+    float h = 0.0;
+    // Scan down from the top to find the first opaque voxel
+    for (int y = int(pc.grid_h) - 1; y >= 0; y--) {
+        uint val = imageLoad(all_storage_images[nonuniformEXT(pc.in_img)], ivec3(pos.x, y, pos.y)).r;
+        uint mat = val & 0xFF;
+        if (mat != 0 && mat != 3) { // Air=0, Crystal=3
+            h = float(y);
+            break;
+        }
+    }
+    
+    imageStore(all_storage_floats_2d[nonuniformEXT(pc.out_img)], pos, vec4(h));
+}
