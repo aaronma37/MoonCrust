@@ -1,0 +1,49 @@
+#version 450
+#extension GL_EXT_nonuniform_qualifier : require
+
+layout(local_size_x = 4, local_size_y = 4, local_size_z = 4) in;
+
+layout(set = 0, binding = 2, r32ui) uniform uimage3D all_storage_images[];
+layout(set = 0, binding = 2, r16f) uniform image3D all_storage_floats[];
+
+layout(push_constant) uniform PushConstants {
+    uint in_img;        // High-res volume
+    uint out_img;       // Low-res shadow volume (R16F)
+    uint grid_w, grid_h, grid_d;
+    uint shadow_w, shadow_h, shadow_d;
+    vec3 sun_dir;
+} pc;
+
+void main() {
+    ivec3 pos = ivec3(gl_GlobalInvocationID.xyz);
+    if (any(greaterThanEqual(pos, ivec3(pc.shadow_w, pc.shadow_h, pc.shadow_d)))) return;
+
+    // Calculate world position of this cell center
+    vec3 grid_res = vec3(pc.grid_w, pc.grid_h, pc.grid_d);
+    vec3 shadow_res = vec3(pc.shadow_w, pc.shadow_h, pc.shadow_d);
+    vec3 world_pos = (vec3(pos) + 0.5) * (grid_res / shadow_res);
+    
+    float shadow = 1.0;
+    vec3 ray_dir = normalize(pc.sun_dir);
+    
+    // Optimized Trace: 32 steps, jumping 4 voxels at a time
+    vec3 ray_pos = world_pos;
+    for (int i = 0; i < 32; i++) {
+        ray_pos += ray_dir * 4.0; 
+        
+        ivec3 ipos = ivec3(floor(ray_pos));
+        if (any(lessThan(ipos, ivec3(0))) || any(greaterThanEqual(ipos, ivec3(pc.grid_w, pc.grid_h, pc.grid_d)))) {
+            break; 
+        }
+        
+        uint val = imageLoad(all_storage_images[nonuniformEXT(pc.in_img)], ipos).r;
+        uint mat = val & 0xFF;
+        
+        if (mat != 0 && mat != 3) { // Air=0, Crystal=3
+            shadow = 0.0;
+            break;
+        }
+    }
+    
+    imageStore(all_storage_floats[nonuniformEXT(pc.out_img)], pos, vec4(shadow));
+}

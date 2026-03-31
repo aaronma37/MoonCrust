@@ -18,6 +18,9 @@ local M = {
     macro_w = 64,
     macro_h = 16,
     macro_d = 64,
+    shadow_w = 64,
+    shadow_h = 16,
+    shadow_d = 64,
     chunk_size = 16,
     player_pos = {256, 40, 256},
     prev_player_pos = {256, 40, 256},
@@ -84,6 +87,11 @@ ffi.cdef[[
         uint32_t in_img, out_img, light_in_idx, light_out_idx, grid_w, grid_h, grid_d, macro_w, macro_h, macro_d; 
     } GIPC;
 
+    typedef struct ShadowVolPC { 
+        uint32_t in_img, out_img, grid_w, grid_h, grid_d, shadow_w, shadow_h, shadow_d; 
+        float sun_dir[3], p0; 
+    } ShadowVolPC;
+
     typedef struct MesherPC { 
         uint32_t in_img, dirty_map_idx, v_buf, indirect_buf, grid_w, grid_h, grid_d, active_map_idx; 
         int32_t px, py, pz, p0; 
@@ -94,8 +102,8 @@ ffi.cdef[[
         float light_mvp[16];
         uint32_t v_buf, light_img, grid_w, grid_h;
         uint32_t grid_d, macro_w, macro_h, macro_d;
-        uint32_t shadow_idx;
-        float p0, p1, p2; 
+        uint32_t shadow_idx, shadow_vol_idx;
+        float p0, p1; 
         float cam_pos[3], p3;
     } RenderPC;
 
@@ -132,8 +140,8 @@ function M.init()
     state.macro_light_b = mc.gpu.image_3d(M.macro_w, M.macro_h, M.macro_d, vk.VK_FORMAT_R32_UINT, "storage sampled")
     
     state.depth_img = mc.gpu.image(state.sw.extent.width, state.sw.extent.height, vk.VK_FORMAT_D32_SFLOAT, "depth")
-    state.shadow_img = mc.gpu.image(4096, 4096, vk.VK_FORMAT_D32_SFLOAT, "depth sampled")
-    state.shadow_sampler = mc.gpu.sampler(vk.VK_FILTER_LINEAR, vk.VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER)
+    state.shadow_vol = mc.gpu.image_3d(M.shadow_w, M.shadow_h, M.shadow_d, vk.VK_FORMAT_R16_SFLOAT, "storage sampled")
+    state.shadow_sampler = mc.gpu.sampler(vk.VK_FILTER_LINEAR, vk.VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE)
     
     local num_chunks = (M.grid_w/M.chunk_size) * (M.grid_h/M.chunk_size) * (M.grid_d/M.chunk_size)
     state.dirty_map = mc.gpu.buffer(num_chunks * 4, "storage", nil, true)
@@ -195,7 +203,7 @@ function M.init()
     state.res_v_buf = state.rg:register_resource("v_buf", graph.TYPE_BUFFER, state.v_buf.handle)
     state.res_indirect = state.rg:register_resource("indirect", graph.TYPE_BUFFER, state.indirect_buf.handle)
     state.res_depth = state.rg:register_resource("depth", graph.TYPE_IMAGE, state.depth_img.handle, { layout = vk.VK_IMAGE_LAYOUT_UNDEFINED, access = 0, stage = vk.VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT })
-    state.res_shadow = state.rg:register_resource("shadow", graph.TYPE_IMAGE, state.shadow_img.handle, { layout = vk.VK_IMAGE_LAYOUT_UNDEFINED, access = 0, stage = vk.VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT })
+    state.res_shadow_vol = state.rg:register_resource("shadow_vol", graph.TYPE_IMAGE, state.shadow_vol.handle, { layout = vk.VK_IMAGE_LAYOUT_GENERAL, access = vk.VK_ACCESS_SHADER_WRITE_BIT, stage = vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT })
     state.res_player = state.rg:register_resource("player", graph.TYPE_BUFFER, state.player_state_buf.handle)
     state.res_entities = state.rg:register_resource("entities", graph.TYPE_BUFFER, state.entity_buf.handle)
     state.res_stats = state.rg:register_resource("stats", graph.TYPE_BUFFER, state.stats_buf.handle)
@@ -207,7 +215,8 @@ function M.init()
     descriptors.update_storage_image_set(state.device, state.bindless_set, 2, vk.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, state.light_vol_b.view, vk.VK_IMAGE_LAYOUT_GENERAL, 3)
     descriptors.update_storage_image_set(state.device, state.bindless_set, 2, vk.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, state.macro_light_a.view, vk.VK_IMAGE_LAYOUT_GENERAL, 4)
     descriptors.update_storage_image_set(state.device, state.bindless_set, 2, vk.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, state.macro_light_b.view, vk.VK_IMAGE_LAYOUT_GENERAL, 5)
-    descriptors.update_image_set(state.device, state.bindless_set, 1, vk.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, state.shadow_img.view, state.shadow_sampler, vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 10)
+    descriptors.update_storage_image_set(state.device, state.bindless_set, 2, vk.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, state.shadow_vol.view, vk.VK_IMAGE_LAYOUT_GENERAL, 8)
+    descriptors.update_image_set(state.device, state.bindless_set, 1, vk.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, state.shadow_vol.view, state.shadow_sampler, vk.VK_IMAGE_LAYOUT_GENERAL, 11)
     
     descriptors.update_buffer_set(state.device, state.bindless_set, 0, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, state.dirty_map.handle, 0, state.dirty_map.size, 0)
     descriptors.update_buffer_set(state.device, state.bindless_set, 0, vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, state.v_buf.handle, 0, state.v_buf.size, 1)
@@ -225,6 +234,7 @@ function M.init()
     state.pipe_player = mc.gpu.compute_pipeline("examples/55_shallow_3d_renderer/player.comp", ffi.sizeof("PlayerUpdatePC"))
     state.pipe_physics = mc.gpu.compute_pipeline("examples/55_shallow_3d_renderer/physics.comp", ffi.sizeof("PhysicsPC"))
     state.pipe_dna = mc.gpu.compute_pipeline("examples/55_shallow_3d_renderer/dna.comp", ffi.sizeof("DNAPC"))
+    state.pipe_shadow_vol = mc.gpu.compute_pipeline("examples/55_shallow_3d_renderer/shadow_vol.comp", ffi.sizeof("ShadowVolPC"))
     
     local bl_layout = mc.gpu.get_bindless_layout()
     local pc_ranges = ffi.new("VkPushConstantRange[1]", {{ stageFlags = bit.bor(vk.VK_SHADER_STAGE_VERTEX_BIT, vk.VK_SHADER_STAGE_FRAGMENT_BIT), offset = 0, size = ffi.sizeof("RenderPC") }})
@@ -232,14 +242,6 @@ function M.init()
     local v_mod = shader.create_module(state.device, shader.compile_glsl(io.open("examples/55_shallow_3d_renderer/render.vert"):read("*all"), vk.VK_SHADER_STAGE_VERTEX_BIT))
     local f_mod = shader.create_module(state.device, shader.compile_glsl(io.open("examples/55_shallow_3d_renderer/render.frag"):read("*all"), vk.VK_SHADER_STAGE_FRAGMENT_BIT))
     state.pipe_render = pipeline.create_graphics_pipeline(state.device, state.render_layout, v_mod, f_mod, { depth_test = true, depth_write = true, cull_mode = vk.VK_CULL_MODE_BACK_BIT, depth_format = vk.VK_FORMAT_D32_SFLOAT, color_formats = { state.sw.format } })
-
-    local shadow_pc_ranges = ffi.new("VkPushConstantRange[1]", {{ stageFlags = vk.VK_SHADER_STAGE_VERTEX_BIT, offset = 0, size = ffi.sizeof("ShadowPC") }})
-    state.shadow_layout = pipeline.create_layout(state.device, {bl_layout}, shadow_pc_ranges)
-    local sv_mod = shader.create_module(state.device, shader.compile_glsl(io.open("examples/55_shallow_3d_renderer/shadow.vert"):read("*all"), vk.VK_SHADER_STAGE_VERTEX_BIT))
-    state.pipe_shadow = pipeline.create_graphics_pipeline(state.device, state.shadow_layout, sv_mod, nil, { 
-        depth_test = true, depth_write = true, depth_format = vk.VK_FORMAT_D32_SFLOAT, color_formats = {},
-        depth_bias_enable = true, depth_bias_constant = 4.0, depth_bias_slope = 1.5
-    })
 
     local robot_pc_ranges = ffi.new("VkPushConstantRange[1]", {{ stageFlags = bit.bor(vk.VK_SHADER_STAGE_VERTEX_BIT, vk.VK_SHADER_STAGE_FRAGMENT_BIT), offset = 0, size = ffi.sizeof("RobotRenderPC") }})
     state.robot_layout = pipeline.create_layout(state.device, {bl_layout}, robot_pc_ranges)
@@ -264,11 +266,11 @@ function M.init()
         elseif i == 4 then vol_bar[i].image = state.macro_light_a.handle
         elseif i == 5 then vol_bar[i].image = state.macro_light_b.handle
         elseif i == 6 then 
-            vol_bar[i].image = state.shadow_img.handle
-            vol_bar[i].newLayout = vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+            vol_bar[i].image = state.shadow_vol.handle
+            vol_bar[i].newLayout = vk.VK_IMAGE_LAYOUT_GENERAL
         end
         vol_bar[i].srcAccessMask, vol_bar[i].dstAccessMask = 0, vk.VK_ACCESS_SHADER_WRITE_BIT
-        vol_bar[i].subresourceRange = { aspectMask = (i == 6) and vk.VK_IMAGE_ASPECT_DEPTH_BIT or vk.VK_IMAGE_ASPECT_COLOR_BIT, levelCount = 1, layerCount = 1 }
+        vol_bar[i].subresourceRange = { aspectMask = vk.VK_IMAGE_ASPECT_COLOR_BIT, levelCount = 1, layerCount = 1 }
     end
     vk.vkCmdPipelineBarrier(gcb, vk.VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nil, 0, nil, 7, vol_bar)
     vk.vkCmdFillBuffer(gcb, state.dirty_map.handle, 0, state.dirty_map.size, 1)
@@ -506,22 +508,15 @@ function M.update()
        :using(state.res_v_buf, vk.VK_ACCESS_SHADER_WRITE_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT)
        :using(state.res_indirect, vk.VK_ACCESS_SHADER_WRITE_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT)
 
-    state.rg:add_pass("Shadow", function(cb)
-        local depth_attach = ffi.new("VkRenderingAttachmentInfo[1]")
-        depth_attach[0].sType, depth_attach[0].imageView, depth_attach[0].imageLayout, depth_attach[0].loadOp, depth_attach[0].storeOp, depth_attach[0].clearValue.depthStencil = vk.VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, ffi.cast("VkImageView", state.shadow_img.view), vk.VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, vk.VK_ATTACHMENT_LOAD_OP_CLEAR, vk.VK_ATTACHMENT_STORE_OP_STORE, {depth=1, stencil=0}
-        vk.vkCmdBeginRendering(cb, ffi.new("VkRenderingInfo", { sType=vk.VK_STRUCTURE_TYPE_RENDERING_INFO, renderArea={extent={width=4096, height=4096}}, layerCount=1, colorAttachmentCount=0, pDepthAttachment=depth_attach }))
-        vk.vkCmdSetViewport(cb, 0, 1, ffi.new("VkViewport", { width=4096, height=4096, maxDepth=1 }))
-        vk.vkCmdSetScissor(cb, 0, 1, ffi.new("VkRect2D", { extent={width=4096, height=4096} }))
-        vk.vkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, state.pipe_shadow)
-        vk.vkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, state.shadow_layout, 0, 1, ffi.new("VkDescriptorSet[1]", {state.bindless_set}), 0, nil)
-        local spc = ffi.new("ShadowPC", { mvp = light_mvp.m, v_buf = 1, light_img = 4, grid_w = M.grid_w, grid_h = M.grid_h, grid_d = M.grid_d })
-        vk.vkCmdPushConstants(cb, state.shadow_layout, vk.VK_SHADER_STAGE_VERTEX_BIT, 0, ffi.sizeof("ShadowPC"), spc)
-        vk.vkCmdBindIndexBuffer(cb, state.index_buf.handle, 0, vk.VK_INDEX_TYPE_UINT16)
-        vk.vkCmdDrawIndexedIndirect(cb, state.indirect_buf.handle, 0, cx*cy*cz, 20)
-        vk.vkCmdEndRendering(cb)
-    end):using(state.res_shadow, vk.VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT, vk.VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT, vk.VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
-       :using(state.res_v_buf, vk.VK_ACCESS_SHADER_READ_BIT, vk.VK_PIPELINE_STAGE_VERTEX_SHADER_BIT)
-       :using(state.res_indirect, vk.VK_ACCESS_INDIRECT_COMMAND_READ_BIT, vk.VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT)
+    state.rg:add_pass("Shadow_Vol", function(cb)
+        vk.vkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_COMPUTE, state.pipe_shadow_vol.handle)
+        vk.vkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_COMPUTE, state.pipe_shadow_vol.layout, 0, 1, ffi.new("VkDescriptorSet[1]", {state.bindless_set}), 0, nil)
+        local sun_dir = {0.5, 1.0, 0.3}
+        local pc = ffi.new("ShadowVolPC", { in_img = vol_in_idx, out_img = 8, grid_w = M.grid_w, grid_h = M.grid_h, grid_d = M.grid_d, shadow_w = M.shadow_w, shadow_h = M.shadow_h, shadow_d = M.shadow_d, sun_dir = sun_dir })
+        vk.vkCmdPushConstants(cb, state.pipe_shadow_vol.layout, vk.VK_SHADER_STAGE_COMPUTE_BIT, 0, ffi.sizeof("ShadowVolPC"), pc)
+        vk.vkCmdDispatch(cb, M.shadow_w/4, M.shadow_h/4, M.shadow_d/4)
+    end):using(vol_in_res, vk.VK_ACCESS_SHADER_READ_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, vk.VK_IMAGE_LAYOUT_GENERAL)
+       :using(state.res_shadow_vol, vk.VK_ACCESS_SHADER_WRITE_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, vk.VK_IMAGE_LAYOUT_GENERAL)
 
     state.rg:add_pass("Sync_Barrier", function(cb)
         local bar = ffi.new("VkMemoryBarrier2", {
@@ -551,7 +546,7 @@ function M.update()
             light_img = light_in_idx, 
             grid_w = M.grid_w, grid_h = M.grid_h, grid_d = M.grid_d, 
             macro_w = M.macro_w, macro_h = M.macro_h, macro_d = M.macro_d, 
-            shadow_idx = 10,
+            shadow_idx = 10, shadow_vol_idx = 11,
             cam_pos = {M.cam_pos_smooth[1], M.cam_pos_smooth[2], M.cam_pos_smooth[3]} 
         })
         vk.vkCmdPushConstants(cb, state.render_layout, bit.bor(vk.VK_SHADER_STAGE_VERTEX_BIT, vk.VK_SHADER_STAGE_FRAGMENT_BIT), 0, ffi.sizeof("RenderPC"), pc)
@@ -569,7 +564,7 @@ function M.update()
         imgui.render(cb, state.frame_count)
         vk.vkCmdEndRendering(cb)
     end):using(state.res_v_buf, vk.VK_ACCESS_SHADER_READ_BIT, vk.VK_PIPELINE_STAGE_VERTEX_SHADER_BIT)
-       :using(state.res_shadow, vk.VK_ACCESS_SHADER_READ_BIT, vk.VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+       :using(state.res_shadow_vol, vk.VK_ACCESS_SHADER_READ_BIT, vk.VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, vk.VK_IMAGE_LAYOUT_GENERAL)
        :using(state.res_depth, vk.VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT, vk.VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT, vk.VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
 
     state.rg:execute(cb)
