@@ -82,10 +82,10 @@ void main() {
                         max_light = max(max_light, vec3(r, g, b)); 
                     } else if (i == 0) {
                         // Self slowly decays if no neighbors have higher light
-                        max_light = max(max_light, vec3(r, g, b) * 0.90);
+                        max_light = max(max_light, vec3(r, g, b) * 0.95);
                     } else {
                         // Propagate from neighbors with decay
-                        max_light = max(max_light, vec3(r, g, b) * 0.80);
+                        max_light = max(max_light, vec3(r, g, b) * 0.90);
                     }
                 }
             }

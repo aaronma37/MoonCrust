@@ -357,7 +357,9 @@ function M.update()
 
     rg:add_pass("Clear_Active", function(cb)
         vk.vkCmdFillBuffer(cb, (act_out_idx == 0) and active_map_a.handle or active_map_b.handle, 0, active_map_a.size, 0)
+        vk.vkCmdFillBuffer(cb, dirty_map.handle, 0, dirty_map.size, 0)
     end):using(act_out_res, vk.VK_ACCESS_TRANSFER_WRITE_BIT, vk.VK_PIPELINE_STAGE_TRANSFER_BIT)
+       :using(res_dirty, vk.VK_ACCESS_TRANSFER_WRITE_BIT, vk.VK_PIPELINE_STAGE_TRANSFER_BIT)
 
     rg:add_pass("Physics", function(cb)
         vk.vkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_COMPUTE, pipe_physics.handle)
