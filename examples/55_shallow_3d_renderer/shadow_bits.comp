@@ -1,0 +1,51 @@
+#version 450
+#extension GL_EXT_nonuniform_qualifier : require
+
+layout(local_size_x = 8, local_size_y = 4, local_size_z = 8) in;
+
+layout(set = 0, binding = 2, r32ui) uniform uimage3D all_storage_images[];
+layout(set = 0, binding = 0) buffer GlobalBuffers { uint data[]; } world[];
+
+layout(push_constant) uniform PushConstants {
+    uint in_img;        
+    uint out_buf;       
+    uint grid_w, grid_h, grid_d;
+    uint active_map_idx;
+    vec3 sun_dir;       // Properly aligned to offset 32
+} pc;
+
+void main() {
+    ivec3 pos = ivec3(gl_GlobalInvocationID.xyz);
+    if (any(greaterThanEqual(pos, ivec3(pc.grid_w, pc.grid_h, pc.grid_d)))) return;
+
+    // Optimization: Skip entire empty chunks
+    uint chunk_idx = (pos.x/16) + (pos.y/16)*(pc.grid_w/16) + (pos.z/16)*(pc.grid_w/16)*(pc.grid_h/16);
+    if (world[nonuniformEXT(pc.active_map_idx)].data[chunk_idx] == 0) return;
+
+    uint val = imageLoad(all_storage_images[nonuniformEXT(pc.in_img)], pos).r;
+    if ((val & 0xFF) == 0) return;
+
+    float shadow = 1.0;
+    vec3 ray_dir = normalize(pc.sun_dir);
+    vec3 ray_pos = vec3(pos) + 0.5; 
+    
+    for (int i = 0; i < 64; i++) {
+        ray_pos += ray_dir * 2.0; 
+        ivec3 ipos = ivec3(floor(ray_pos));
+        
+        if (any(lessThan(ipos, ivec3(0))) || any(greaterThanEqual(ipos, ivec3(pc.grid_w, pc.grid_h, pc.grid_d)))) break;
+        
+        uint v = imageLoad(all_storage_images[nonuniformEXT(pc.in_img)], ipos).r;
+        if ((v & 0xFF) != 0 && (v & 0xFF) != 3) { 
+            shadow = 0.0;
+            break;
+        }
+    }
+    
+    if (shadow == 0.0) {
+        uint bit_idx = uint(pos.x) + uint(pos.z) * pc.grid_w + uint(pos.y) * (pc.grid_w * pc.grid_d);
+        uint word_idx = bit_idx / 32;
+        uint bit_offset = bit_idx % 32;
+        atomicOr(world[nonuniformEXT(pc.out_buf)].data[word_idx], (1u << bit_offset));
+    }
+}

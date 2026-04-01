@@ -4,11 +4,32 @@
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
 layout(set = 0, binding = 2, r32ui) uniform uimage3D all_storage_images[];
+layout(set = 0, binding = 0) buffer GlobalBuffers { uint data[]; } world[];
 
 layout(push_constant) uniform PushConstants {
     uint img;
     uint grid_w, grid_h, grid_d;
+    uint active_map_idx;
+    uint dirty_map_idx;
+    uint stats_buf_idx;
 } pc;
+
+void mark_chunk(ivec3 p, bool simulation_needed) {
+    uint chunk_res_x = pc.grid_w / 16;
+    uint chunks_per_slice = (pc.grid_w / 16) * (pc.grid_h / 16);
+    ivec3 c = p / 16;
+    uint idx = c.x + c.y * chunk_res_x + c.z * chunks_per_slice;
+    
+    // Always mark as dirty for initial meshing
+    atomicOr(world[nonuniformEXT(pc.dirty_map_idx)].data[idx], 1);
+    
+    if (simulation_needed) {
+        uint prev = atomicOr(world[nonuniformEXT(pc.active_map_idx)].data[idx], 1);
+        if (prev == 0) {
+            atomicAdd(world[nonuniformEXT(pc.stats_buf_idx)].data[0], 1);
+        }
+    }
+}
 
 float hash(vec3 p) {
     p = fract(p * 0.3183099 + 0.1);
@@ -21,13 +42,14 @@ void main() {
     if (pos.x >= pc.grid_w || pos.y >= pc.grid_h || pos.z >= pc.grid_d) return;
 
     uint val = 0;
+    bool needs_sim = false;
     
     // Floor at y=0
     if (pos.y == 0) {
         if (((pos.x / 8) + (pos.z / 8)) % 2 == 0) {
-            val = 1;
+            val = 1; needs_sim = true;
         } else {
-            val = 2;
+            val = 2; needs_sim = true;
         }
     }
     
@@ -61,5 +83,6 @@ void main() {
         }
     }
 
+    if (val > 0) mark_chunk(pos, needs_sim);
     imageStore(all_storage_images[nonuniformEXT(pc.img)], pos, uvec4(val));
 }

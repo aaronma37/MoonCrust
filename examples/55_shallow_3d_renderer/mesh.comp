@@ -41,7 +41,7 @@ void main() {
     uint chunk_idx = gl_WorkGroupID.x + gl_WorkGroupID.y * (pc.grid_w/16) + gl_WorkGroupID.z * (pc.grid_w/16) * (pc.grid_h/16);
     ivec3 chunk_origin = ivec3(gl_WorkGroupID) * 16;
     
-    if (world[nonuniformEXT(pc.active_map_idx)].data[chunk_idx] == 0) return;
+    if (world[nonuniformEXT(pc.dirty_map_idx)].data[chunk_idx] == 0) return;
     
     if (gl_LocalInvocationIndex == 0) local_vertex_count = 0;
     barrier();

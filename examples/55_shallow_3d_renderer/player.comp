@@ -21,43 +21,60 @@ struct PlayerState {
 layout(set = 0, binding = 0) buffer PlayerBuffer { PlayerState s; } player_storage[];
 
 layout(push_constant) uniform PushConstants {
-    uint img_a;
-    uint img_b;
+    uint img;
     uint grid_w, grid_h, grid_d;
-    uint active_map_idx;
     uint dirty_map_idx;
     uint player_buf_idx;
-    uint plant_seed;
+    uint spawn_type; // 0=none, >0 material to add
+    uint dig_radius; // 0=none, >0 radius to remove
     uint stats_buf_idx;
 } pc;
 
-void mark_chunk(ivec3 p) {
+void mark_dirty(ivec3 p) {
     if (p.x < 0 || p.x >= pc.grid_w || p.y < 0 || p.y >= pc.grid_h || p.z < 0 || p.z >= pc.grid_d) return;
     uint chunk_res_x = pc.grid_w / 16;
     uint chunks_per_slice = (pc.grid_w / 16) * (pc.grid_h / 16);
     ivec3 c = p / 16;
     uint idx = c.x + c.y * chunk_res_x + c.z * chunks_per_slice;
     atomicOr(world[nonuniformEXT(pc.dirty_map_idx)].data[idx], 1);
-    uint prev = atomicOr(world[nonuniformEXT(pc.active_map_idx)].data[idx], 1);
-    if (prev == 0) {
-        atomicAdd(world[nonuniformEXT(pc.stats_buf_idx)].data[0], 1);
-    }
 }
 
 void main() {
     uint p_idx = nonuniformEXT(pc.player_buf_idx);
     vec3 p = player_storage[p_idx].s.pos;
-    
-    // NO MORE PAINTING THE ROBOT (Material 10) INTO THE GRID.
-    // This allows the robot to be a continuous entity.
+    ivec3 ip = ivec3(floor(p));
 
-    if (pc.plant_seed > 0) {
-        ivec3 ip = ivec3(floor(p));
-        if (all(greaterThanEqual(ip, ivec3(0))) && all(lessThan(ip, ivec3(pc.grid_w, pc.grid_h, pc.grid_d)))) {
-            // Force plant an emissive crystal (material 3) into both buffers
-            imageStore(all_storage_images[nonuniformEXT(pc.img_a)], ip, uvec4(3));
-            imageStore(all_storage_images[nonuniformEXT(pc.img_b)], ip, uvec4(3));
-            mark_chunk(ip);
+    // Addition
+    if (pc.spawn_type > 0) {
+        // Place a block in front of the player or at feet
+        for (int dy = -1; dy <= 1; dy++) {
+            for (int dx = -1; dx <= 1; dx++) {
+                for (int dz = -1; dz <= 1; dz++) {
+                    ivec3 target = ip + ivec3(dx, dy, dz);
+                    if (all(greaterThanEqual(target, ivec3(0))) && all(lessThan(target, ivec3(pc.grid_w, pc.grid_h, pc.grid_d)))) {
+                        imageStore(all_storage_images[nonuniformEXT(pc.img)], target, uvec4(pc.spawn_type));
+                        mark_dirty(target);
+                    }
+                }
+            }
+        }
+    }
+
+    // Subtraction
+    if (pc.dig_radius > 0) {
+        int r = int(pc.dig_radius);
+        for (int dy = -r; dy <= r; dy++) {
+            for (int dx = -r; dx <= r; dx++) {
+                for (int dz = -r; dz <= r; dz++) {
+                    if (dx*dx + dy*dy + dz*dz <= r*r) {
+                        ivec3 target = ip + ivec3(dx, dy, dz);
+                        if (all(greaterThanEqual(target, ivec3(0))) && all(lessThan(target, ivec3(pc.grid_w, pc.grid_h, pc.grid_d)))) {
+                            imageStore(all_storage_images[nonuniformEXT(pc.img)], target, uvec4(0));
+                            mark_dirty(target);
+                        }
+                    }
+                }
+            }
         }
     }
 }

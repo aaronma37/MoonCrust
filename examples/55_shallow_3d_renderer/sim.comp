@@ -20,6 +20,7 @@ layout(push_constant) uniform PushConstants {
 } pc;
 
 void mark_self(ivec3 p, bool physical_change) {
+    if (any(lessThan(p, ivec3(0))) || any(greaterThanEqual(p, ivec3(pc.grid_w, pc.grid_h, pc.grid_d)))) return;
     ivec3 cp = p / 16;
     uint chunk_idx = cp.x + (cp.y * (pc.grid_w/16)) + (cp.z * (pc.grid_w/16) * (pc.grid_h/16));
     uint prev = atomicOr(world[nonuniformEXT(pc.out_active_map_idx)].data[chunk_idx], 1);
@@ -33,9 +34,9 @@ void mark_self(ivec3 p, bool physical_change) {
 
 void mark_neighbors(ivec3 p) {
     ivec3 offsets[6] = {
-        ivec3(16,0,0), ivec3(-16,0,0),
-        ivec3(0,16,0), ivec3(0,-16,0),
-        ivec3(0,0,16), ivec3(0,0,-16)
+        ivec3(1,0,0), ivec3(-1,0,0),
+        ivec3(0,1,0), ivec3(0,-1,0),
+        ivec3(0,0,1), ivec3(0,0,-1)
     };
     for (int i = 0; i < 6; i++) {
         ivec3 np = p + offsets[i];
@@ -60,16 +61,91 @@ void main() {
     uint current = imageLoad(all_storage_images[nonuniformEXT(pc.in_img)], pos).r;
     uint mat = current & 0xFF;
     
-    if (mat == 10) {
-        imageStore(all_storage_images[nonuniformEXT(pc.out_img)], pos, uvec4(10));
+    if (mat == 0) {
+        imageStore(all_storage_images[nonuniformEXT(pc.out_img)], pos, uvec4(0));
+        return;
+    }
+
+    if (mat == 10) { // Robot/Solid
+        imageStore(all_storage_images[nonuniformEXT(pc.out_img)], pos, uvec4(current));
+        mark_self(pos, false);
         return;
     }
 
     uint next = current;
-    // (CA logic disabled)
+    bool changed = false;
+
+    // Temporal checkerboard to prevent double-updates and races
+    bool parity = ((pos.x + pos.y + pos.z + int(pc.p1)) % 2 == 0);
+
+    if (parity) {
+        // Material 1: Falling Sand
+        if (mat == 1) {
+            if (pos.y > 0) {
+                ivec3 down = pos + ivec3(0, -1, 0);
+                uint d_val = imageLoad(all_storage_images[nonuniformEXT(pc.in_img)], down).r;
+                if ((d_val & 0xFF) == 0) {
+                    imageStore(all_storage_images[nonuniformEXT(pc.out_img)], down, uvec4(current));
+                    next = 0;
+                    changed = true;
+                    mark_self(down, true);
+                    mark_neighbors(down);
+                    mark_neighbors(pos);
+                } else {
+                    uint seed = pc.p1 + uint(pos.x * 13 + pos.z * 7 + pos.y * 31);
+                    int side = (seed % 2 == 0) ? 1 : -1;
+                    ivec3 diag = pos + ivec3(side, -1, 0);
+                    if (all(greaterThanEqual(diag, ivec3(0))) && all(lessThan(diag, ivec3(pc.grid_w, pc.grid_h, pc.grid_d)))) {
+                        uint diag_val = imageLoad(all_storage_images[nonuniformEXT(pc.in_img)], diag).r;
+                        if ((diag_val & 0xFF) == 0) {
+                            imageStore(all_storage_images[nonuniformEXT(pc.out_img)], diag, uvec4(current));
+                            next = 0;
+                            changed = true;
+                            mark_self(diag, true);
+                            mark_neighbors(diag);
+                            mark_neighbors(pos);
+                        }
+                    }
+                }
+            }
+        }
+        // Material 2: Flowing Water
+        else if (mat == 2) {
+            if (pos.y > 0) {
+                ivec3 down = pos + ivec3(0, -1, 0);
+                uint d_val = imageLoad(all_storage_images[nonuniformEXT(pc.in_img)], down).r;
+                if ((d_val & 0xFF) == 0) {
+                    imageStore(all_storage_images[nonuniformEXT(pc.out_img)], down, uvec4(current));
+                    next = 0;
+                    changed = true;
+                    mark_self(down, true);
+                    mark_neighbors(down);
+                    mark_neighbors(pos);
+                } else {
+                    uint seed = pc.p1 + uint(pos.x * 17 + pos.z * 11 + pos.y * 19);
+                    ivec3 dirs[4] = { ivec3(1,0,0), ivec3(-1,0,0), ivec3(0,0,1), ivec3(0,0,-1) };
+                    ivec3 side = pos + dirs[seed % 4];
+                    if (all(greaterThanEqual(side, ivec3(0))) && all(lessThan(side, ivec3(pc.grid_w, pc.grid_h, pc.grid_d)))) {
+                        uint s_val = imageLoad(all_storage_images[nonuniformEXT(pc.in_img)], side).r;
+                        if ((s_val & 0xFF) == 0) {
+                            imageStore(all_storage_images[nonuniformEXT(pc.out_img)], side, uvec4(current));
+                            next = 0;
+                            changed = true;
+                            mark_self(side, true);
+                            mark_neighbors(side);
+                            mark_neighbors(pos);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     imageStore(all_storage_images[nonuniformEXT(pc.out_img)], pos, uvec4(next));
-    if (current != next) {
+    // If we didn't move but are a mobile material, keep self awake to try next frame
+    if (mat == 1 || mat == 2) {
+        mark_self(pos, changed);
+    } else if (changed) {
         mark_self(pos, true);
-        mark_neighbors(pos);
     }
 }

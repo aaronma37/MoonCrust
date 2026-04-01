@@ -2,6 +2,8 @@
 #extension GL_EXT_nonuniform_qualifier : require
 
 layout(set = 0, binding = 0) buffer GlobalBuffers { uint data[]; } world[];
+
+// MUST MATCH main.lua RenderPC byte-for-byte
 layout(push_constant) uniform PushConstants {
     mat4 mvp;           // 0-63
     mat4 light_mvp;     // 64-127
@@ -11,8 +13,7 @@ layout(push_constant) uniform PushConstants {
     uint grid_h;        // 140-143
     uint grid_d;        // 144-147
     uint macro_w, macro_h, macro_d; // 148-159
-    uint shadow_idx;    // 160-163
-    float p0, p1, p2;   // 164-175
+    uint shadow_idx, shadow_vol_idx, gi_vol_idx, p0; // 160-175
     vec3 cam_pos;       // 176-187
 } pc;
 
@@ -38,7 +39,7 @@ const vec3 normals[6] = {
 uint mat_to_col_idx(uint mat) {
     if (mat == 0) return 0;
     if (mat == 1) return 1;
-    if (mat == 2) return 2;
+    if (mat == 2) return 15; // Water
     if (mat == 7) return 3;
     if (mat == 10) return 12; // Player
     if (mat == 20) return 5; // Wood (Brown)
@@ -59,7 +60,7 @@ void main() {
     uint mat = (packed >> 15) & 255;
     uint ao = (packed >> 23) & 3;
 
-    const uint MAX_VERTS_PER_CHUNK = 16384; // Corrected stride
+    const uint MAX_VERTS_PER_CHUNK = 16384; 
     uint chunk_idx = gl_VertexIndex / MAX_VERTS_PER_CHUNK;
     uint chunks_per_row = pc.grid_w / 16;
     uint chunks_per_slice = (pc.grid_w / 16) * (pc.grid_h / 16);
@@ -94,7 +95,7 @@ void main() {
         vec3(0.8, 0.0, 0.8),   // 12: Player (Purple)
         vec3(0.5, 0.2, 0.8),   // 13
         vec3(0.4, 1.0, 0.4),   // 14: Seed (Bright Lime)
-        vec3(0.7)              // 15
+        vec3(0.1, 0.4, 0.9)    // 15: Water (Blue)
     };
 
     float ao_mult = 0.4 + (float(ao) / 3.0) * 0.6;

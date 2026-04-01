@@ -22,7 +22,7 @@ layout(push_constant) uniform PushConstants {
     uint grid_h;        // 140-143
     uint grid_d;        // 144-147
     uint macro_w, macro_h, macro_d; // 148-159
-    uint shadow_idx, shadow_vol_idx, gi_vol_idx, p0;
+    uint shadow_idx, shadow_vol_idx, gi_vol_idx, p0; // 160-175
     vec3 cam_pos;       // 176-187
 } pc;
 
@@ -57,10 +57,17 @@ void main() {
     
     // GI Indirect Light (Surface)
     vec3 indirect_light = sample_gi_macro(in_world_pos + in_norm * 0.5);
-    indirect_light = max(indirect_light, vec3(0.05));
+    indirect_light = max(indirect_light, vec3(0.015));
     
     vec3 base_col = in_col * dif * (shadow * 0.8 + 0.2); 
-    base_col += in_col * indirect_light * 1.5; 
+    base_col += in_col * indirect_light * 2.0; 
+    
+    float alpha = 1.0;
+    if (in_mat == 2) { // Water
+        base_col = mix(base_col, vec3(0.1, 0.4, 0.9), 0.6);
+        alpha = 0.8;
+        base_col *= (0.9 + 0.1 * sin(in_world_pos.x * 0.5 + in_world_pos.z * 0.5));
+    }
     
     if (in_mat == 3) base_col = in_col * 2.0; 
     
@@ -100,5 +107,5 @@ void main() {
     float distant_fog = clamp((ray_dist - 150.0) / 300.0, 0.0, 1.0);
     vec3 final_col = mix(base_col, sky_color, distant_fog) + volumetric_glow;
     
-    out_col = vec4(final_col, 1.0);
+    out_col = vec4(final_col, alpha);
 }
